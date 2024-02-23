@@ -9,22 +9,41 @@ pub const Script = struct {
     field_references: []const FieldReference,
     function_references: []const FunctionReference,
     field_definitions: []const FieldDefinition,
+    property_definitions: []const PropertyDefinition,
+};
+
+const ResolvableTypeReference = union(enum) {
+    type_reference: *const TypeReference,
+    idx: u32,
+};
+
+const ResolvableString = union(enum) {
+    string: *const []const u8,
+    idx: u32,
+};
+
+const PropertyDefinition = struct {
+    modifiers: u32,
+    type_reference: ResolvableTypeReference,
+    name: ResolvableString,
+    get_function_idx: u32,
+    set_function_idx: u32,
 };
 
 const FieldDefinition = struct {
     modifiers: u32,
-    type_reference: *const TypeReference,
-    name_string_idx: u32,
+    type_reference: ResolvableTypeReference,
+    name: ResolvableString,
 };
 
 const FunctionReference = struct {
-    type_reference: *const TypeReference,
-    name_string_idx: u32,
+    type_reference: ResolvableTypeReference,
+    name: ResolvableString,
 };
 
 pub const FieldReference = struct {
-    type_reference: *const TypeReference,
-    name_string_idx: u32,
+    type_reference: ResolvableTypeReference,
+    name: ResolvableString,
 };
 
 pub const TypeReference = struct {
@@ -33,7 +52,7 @@ pub const TypeReference = struct {
     dimension_count: u8,
     array_base_machine_type: u8,
     script: ?ResourceIdentifier,
-    type_name_string_idx: u32,
+    type_name: ResolvableString,
 };
 
 pub const Revision = struct {
@@ -265,24 +284,29 @@ pub fn MMReader(comptime Reader: type) type {
 
                     std.debug.print("modifiers: {d}\n", .{modifiers});
 
-                    const type_references = try self.readArray(TypeReference, allocator, null, ScriptReadType, null);
+                    const type_references = try self.readArray(TypeReference, allocator, null, ScriptReadType);
                     for (type_references) |type_reference| {
                         std.debug.print("type_reference: {}\n", .{type_reference});
                     }
 
-                    const field_references = try self.readArray(FieldReference, allocator, null, ScriptReadType, type_references);
+                    const field_references = try self.readArray(FieldReference, allocator, null, ScriptReadType);
                     for (field_references) |field_reference| {
                         std.debug.print("field_reference: {}\n", .{field_reference});
                     }
 
-                    const function_references = try self.readArray(FunctionReference, allocator, null, ScriptReadType, type_references);
+                    const function_references = try self.readArray(FunctionReference, allocator, null, ScriptReadType);
                     for (function_references) |function_reference| {
                         std.debug.print("function_reference: {}\n", .{function_reference});
                     }
 
-                    const field_definitions = try self.readArray(FieldDefinition, allocator, null, ScriptReadType, type_references);
+                    const field_definitions = try self.readArray(FieldDefinition, allocator, null, ScriptReadType);
                     for (field_definitions) |field_definition| {
                         std.debug.print("field_definition: {}\n", .{field_definition});
+                    }
+
+                    const property_definitions = try self.readArray(PropertyDefinition, allocator, null, ScriptReadType);
+                    for (property_definitions) |property_definition| {
+                        std.debug.print("property_definition: {}\n", .{property_definition});
                     }
 
                     return Script{
@@ -294,6 +318,7 @@ pub fn MMReader(comptime Reader: type) type {
                         .field_references = field_references,
                         .function_references = function_references,
                         .field_definitions = field_definitions,
+                        .property_definitions = property_definitions,
                     };
                 },
             }
@@ -321,7 +346,7 @@ pub fn MMReader(comptime Reader: type) type {
             return null;
         }
 
-        pub fn readArray(self: Self, comptime T: type, allocator: std.mem.Allocator, length: ?usize, comptime ScriptReadType: type, types: ?[]const TypeReference) ![]const T {
+        pub fn readArray(self: Self, comptime T: type, allocator: std.mem.Allocator, length: ?usize, comptime ScriptReadType: type) ![]const T {
             const len: usize = length orelse try self.readInt(u32);
 
             const arr = try allocator.alloc(T, len);
@@ -335,16 +360,23 @@ pub fn MMReader(comptime Reader: type) type {
                         .dimension_count = try self.readByte(),
                         .array_base_machine_type = try self.readByte(),
                         .script = try self.readResource(false),
-                        .type_name_string_idx = try self.readInt(u32),
+                        .type_name = .{ .idx = try self.readInt(u32) },
                     },
                     FieldReference, FunctionReference => .{
-                        .type_reference = &types.?[try self.readInt(u32)],
-                        .name_string_idx = try self.readInt(u32),
+                        .type_reference = .{ .idx = try self.readInt(u32) },
+                        .name = .{ .idx = try self.readInt(u32) },
                     },
                     FieldDefinition => .{
                         .modifiers = try self.readInt(ScriptReadType),
-                        .type_reference = &types.?[try self.readInt(u32)],
-                        .name_string_idx = try self.readInt(u32),
+                        .type_reference = .{ .idx = try self.readInt(u32) },
+                        .name = .{ .idx = try self.readInt(u32) },
+                    },
+                    PropertyDefinition => .{
+                        .modifiers = try self.readInt(ScriptReadType),
+                        .type_reference = .{ .idx = try self.readInt(u32) },
+                        .name = .{ .idx = try self.readInt(u32) },
+                        .get_function_idx = try self.readInt(u32),
+                        .set_function_idx = try self.readInt(u32),
                     },
                     else => @compileError("Unknown type " ++ @typeName(T)),
                 };
