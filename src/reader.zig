@@ -7,10 +7,23 @@ pub const Script = struct {
     modifiers: u32,
     type_references: []const TypeReference,
     field_references: []const FieldReference,
+    function_references: []const FunctionReference,
+    field_definitions: []const FieldDefinition,
+};
+
+const FieldDefinition = struct {
+    modifiers: u32,
+    type_reference: *const TypeReference,
+    name_string_idx: u32,
+};
+
+const FunctionReference = struct {
+    type_reference: *const TypeReference,
+    name_string_idx: u32,
 };
 
 pub const FieldReference = struct {
-    type_reference_idx: u32,
+    type_reference: *const TypeReference,
     name_string_idx: u32,
 };
 
@@ -243,23 +256,33 @@ pub fn MMReader(comptime Reader: type) type {
 
             switch (read_type_is_u16) {
                 inline else => |val| {
-                    const ReadType = if (val) u16 else u32;
+                    const ScriptReadType = if (val) u16 else u32;
 
                     const modifiers = if (self.revision.head >= 0x1e5)
-                        try self.readInt(ReadType)
+                        try self.readInt(ScriptReadType)
                     else
                         0;
 
                     std.debug.print("modifiers: {d}\n", .{modifiers});
 
-                    const type_references = try self.readArray(TypeReference, allocator, null);
+                    const type_references = try self.readArray(TypeReference, allocator, null, ScriptReadType, null);
                     for (type_references) |type_reference| {
                         std.debug.print("type_reference: {}\n", .{type_reference});
                     }
 
-                    const field_references = try self.readArray(FieldReference, allocator, null);
+                    const field_references = try self.readArray(FieldReference, allocator, null, ScriptReadType, type_references);
                     for (field_references) |field_reference| {
                         std.debug.print("field_reference: {}\n", .{field_reference});
+                    }
+
+                    const function_references = try self.readArray(FunctionReference, allocator, null, ScriptReadType, type_references);
+                    for (function_references) |function_reference| {
+                        std.debug.print("function_reference: {}\n", .{function_reference});
+                    }
+
+                    const field_definitions = try self.readArray(FieldDefinition, allocator, null, ScriptReadType, type_references);
+                    for (field_definitions) |field_definition| {
+                        std.debug.print("field_definition: {}\n", .{field_definition});
                     }
 
                     return Script{
@@ -269,6 +292,8 @@ pub fn MMReader(comptime Reader: type) type {
                         .modifiers = modifiers,
                         .type_references = type_references,
                         .field_references = field_references,
+                        .function_references = function_references,
+                        .field_definitions = field_definitions,
                     };
                 },
             }
@@ -296,7 +321,7 @@ pub fn MMReader(comptime Reader: type) type {
             return null;
         }
 
-        pub fn readArray(self: Self, comptime T: type, allocator: std.mem.Allocator, length: ?usize) ![]const T {
+        pub fn readArray(self: Self, comptime T: type, allocator: std.mem.Allocator, length: ?usize, comptime ScriptReadType: type, types: ?[]const TypeReference) ![]const T {
             const len: usize = length orelse try self.readInt(u32);
 
             const arr = try allocator.alloc(T, len);
@@ -304,21 +329,22 @@ pub fn MMReader(comptime Reader: type) type {
 
             for (arr) |*item| {
                 item.* = switch (T) {
-                    TypeReference => blk: {
-                        break :blk .{
-                            .machine_type = try self.reader.readEnum(MachineType, .big),
-                            .fish_type = try self.reader.readEnum(FishType, .big),
-                            .dimension_count = try self.readByte(),
-                            .array_base_machine_type = try self.readByte(),
-                            .script = try self.readResource(false),
-                            .type_name_string_idx = try self.readInt(u32),
-                        };
+                    TypeReference => .{
+                        .machine_type = try self.reader.readEnum(MachineType, .big),
+                        .fish_type = try self.reader.readEnum(FishType, .big),
+                        .dimension_count = try self.readByte(),
+                        .array_base_machine_type = try self.readByte(),
+                        .script = try self.readResource(false),
+                        .type_name_string_idx = try self.readInt(u32),
                     },
-                    FieldReference => blk: {
-                        break :blk .{
-                            .type_reference_idx = try self.readInt(u32),
-                            .name_string_idx = try self.readInt(u32),
-                        };
+                    FieldReference, FunctionReference => .{
+                        .type_reference = &types.?[try self.readInt(u32)],
+                        .name_string_idx = try self.readInt(u32),
+                    },
+                    FieldDefinition => .{
+                        .modifiers = try self.readInt(ScriptReadType),
+                        .type_reference = &types.?[try self.readInt(u32)],
+                        .name_string_idx = try self.readInt(u32),
                     },
                     else => @compileError("Unknown type " ++ @typeName(T)),
                 };

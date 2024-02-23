@@ -9,8 +9,8 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     // const file = try std.fs.openFileAbsolute("/home/beyley/sackboyanim.ff.dec", .{});
-    // const file = try std.fs.openFileAbsolute("/home/beyley/world.ff.dec", .{});
-    const file = try std.fs.openFileAbsolute("/home/beyley/Documents/inventorycache.ff.dec", .{});
+    const file = try std.fs.openFileAbsolute("/home/beyley/world.ff.dec", .{});
+    // const file = try std.fs.openFileAbsolute("/home/beyley/Documents/inventorycache.ff.dec", .{});
     defer file.close();
 
     const MMReader = Reader.MMReader(std.fs.File.Reader);
