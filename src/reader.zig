@@ -356,12 +356,12 @@ pub fn MMReader(comptime Reader: type) type {
                 inline else => |val| {
                     const ScriptReadType = if (val) u16 else u32;
 
-                    const modifiers = if (self.revision.head >= 0x1e5)
+                    const modifiers: ?u32 = if (self.revision.head >= 0x1e5)
                         try self.readInt(ScriptReadType)
                     else
-                        0;
+                        null;
 
-                    std.debug.print("modifiers: {d}\n", .{modifiers});
+                    std.debug.print("modifiers: {?d}\n", .{modifiers});
 
                     const type_references = try self.readArray(TypeReference, allocator, null, ScriptReadType);
                     for (type_references) |type_reference| {
