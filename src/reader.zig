@@ -4,12 +4,17 @@ pub const Script = struct {
     up_to_date_script: ?ResourceIdentifier,
     class_name: []const u8,
     super_class_script: ?ResourceIdentifier,
-    modifiers: u32,
+    modifiers: ?u32,
     type_references: []const TypeReference,
     field_references: []const FieldReference,
     function_references: []const FunctionReference,
     field_definitions: []const FieldDefinition,
     property_definitions: []const PropertyDefinition,
+    functions: []const FunctionDefinition,
+    shared_arguments: []const Argument,
+    shared_bytecode: []const u64,
+    shared_line_numbers: []const u16,
+    shared_local_variables: []const LocalVariable,
 };
 
 const ResolvableTypeReference = union(enum) {
@@ -22,12 +27,86 @@ const ResolvableString = union(enum) {
     idx: u32,
 };
 
+const ResolvableFunction = union(enum) {
+    function: union(enum) {
+        function: *const Function,
+        function_definition: *const FunctionDefinition,
+    },
+    idx: u32,
+};
+
+const ResolvableArgumentSlice = union(enum) {
+    slice: []const Argument,
+    idx: struct {
+        begin: u32,
+        end: u32,
+    },
+};
+
+const ResolvableBytecodeSlice = union(enum) {
+    slice: []const u64,
+    idx: struct {
+        begin: u32,
+        end: u32,
+    },
+};
+
+const ResolvableLineNumberSlice = union(enum) {
+    slice: []const u16,
+    idx: struct {
+        begin: u32,
+        end: u32,
+    },
+};
+
+const ResolvableLocalVariableSlice = union(enum) {
+    slice: []const LocalVariable,
+    idx: struct {
+        begin: u32,
+        end: u32,
+    },
+};
+
+const FunctionDefinition = struct {
+    modifiers: u32,
+    type_reference: ResolvableTypeReference,
+    name: ResolvableString,
+    arguments: ResolvableArgumentSlice,
+    bytecode: ResolvableBytecodeSlice,
+    line_numbers: ResolvableLineNumberSlice,
+    local_variables: ResolvableLocalVariableSlice,
+    stack_size: u32,
+};
+
+const Function = struct {
+    modifiers: u32,
+    type_reference: ResolvableTypeReference,
+    name: ResolvableString,
+    arguments: []const Argument,
+    bytecode: []const u64,
+    line_numbers: []const u16,
+    local_variables: []const LocalVariable,
+    stack_size: u32,
+};
+
+const LocalVariable = struct {
+    modifiers: u32,
+    type_reference: ResolvableTypeReference,
+    name: ResolvableString,
+    offset: u32,
+};
+
+const Argument = struct {
+    type_reference: ResolvableTypeReference,
+    offset: u32,
+};
+
 const PropertyDefinition = struct {
     modifiers: u32,
     type_reference: ResolvableTypeReference,
     name: ResolvableString,
-    get_function_idx: u32,
-    set_function_idx: u32,
+    get_function: ResolvableFunction,
+    set_function: ResolvableFunction,
 };
 
 const FieldDefinition = struct {
@@ -309,6 +388,30 @@ pub fn MMReader(comptime Reader: type) type {
                         std.debug.print("property_definition: {}\n", .{property_definition});
                     }
 
+                    if (self.revision.head < 0x1ec) @panic("AAAA");
+
+                    const functions = try self.readArray(FunctionDefinition, allocator, null, ScriptReadType);
+                    const shared_arguments = try self.readArray(Argument, allocator, null, ScriptReadType);
+                    const shared_bytecode = try self.readArray(u64, allocator, null, ScriptReadType);
+                    const shared_line_numbers = try self.readArray(u16, allocator, null, ScriptReadType);
+                    const shared_local_variables = try self.readArray(LocalVariable, allocator, null, ScriptReadType);
+
+                    for (functions) |function_definition| {
+                        std.debug.print("function_definition: {}\n", .{function_definition});
+                    }
+
+                    for (shared_arguments) |shared_argument| {
+                        std.debug.print("shared_argument: {}\n", .{shared_argument});
+                    }
+
+                    std.debug.print("shared_bytecode: {d}\n", .{shared_bytecode});
+
+                    std.debug.print("shared_line_numbers: {d}\n", .{shared_line_numbers});
+
+                    for (shared_local_variables) |shared_local_variable| {
+                        std.debug.print("shared_local_variable: {}\n", .{shared_local_variable});
+                    }
+
                     return Script{
                         .up_to_date_script = up_to_date_script,
                         .class_name = class_name,
@@ -319,6 +422,11 @@ pub fn MMReader(comptime Reader: type) type {
                         .function_references = function_references,
                         .field_definitions = field_definitions,
                         .property_definitions = property_definitions,
+                        .functions = functions,
+                        .shared_arguments = shared_arguments,
+                        .shared_bytecode = shared_bytecode,
+                        .shared_line_numbers = shared_line_numbers,
+                        .shared_local_variables = shared_local_variables,
                     };
                 },
             }
@@ -353,7 +461,9 @@ pub fn MMReader(comptime Reader: type) type {
             errdefer allocator.free(arr);
 
             for (arr) |*item| {
-                item.* = switch (T) {
+                if (@typeInfo(T) == .Int) {
+                    item.* = try self.readInt(T);
+                } else item.* = switch (T) {
                     TypeReference => .{
                         .machine_type = try self.reader.readEnum(MachineType, .big),
                         .fish_type = try self.reader.readEnum(FishType, .big),
@@ -375,8 +485,48 @@ pub fn MMReader(comptime Reader: type) type {
                         .modifiers = try self.readInt(ScriptReadType),
                         .type_reference = .{ .idx = try self.readInt(u32) },
                         .name = .{ .idx = try self.readInt(u32) },
-                        .get_function_idx = try self.readInt(u32),
-                        .set_function_idx = try self.readInt(u32),
+                        .get_function = .{ .idx = try self.readInt(u32) },
+                        .set_function = .{ .idx = try self.readInt(u32) },
+                    },
+                    FunctionDefinition => .{
+                        .modifiers = try self.readInt(ScriptReadType),
+                        .type_reference = .{ .idx = try self.readInt(u32) },
+                        .name = .{ .idx = try self.readInt(u32) },
+                        .arguments = .{
+                            .idx = .{
+                                .begin = try self.readInt(ScriptReadType),
+                                .end = try self.readInt(ScriptReadType),
+                            },
+                        },
+                        .bytecode = .{
+                            .idx = .{
+                                .begin = try self.readInt(ScriptReadType),
+                                .end = try self.readInt(ScriptReadType),
+                            },
+                        },
+                        .line_numbers = .{
+                            .idx = .{
+                                .begin = try self.readInt(ScriptReadType),
+                                .end = try self.readInt(ScriptReadType),
+                            },
+                        },
+                        .local_variables = .{
+                            .idx = .{
+                                .begin = try self.readInt(ScriptReadType),
+                                .end = try self.readInt(ScriptReadType),
+                            },
+                        },
+                        .stack_size = try self.readInt(u32),
+                    },
+                    Argument => .{
+                        .type_reference = .{ .idx = try self.readInt(u32) },
+                        .offset = try self.readInt(u32),
+                    },
+                    LocalVariable => .{
+                        .modifiers = try self.readInt(ScriptReadType),
+                        .type_reference = .{ .idx = try self.readInt(u32) },
+                        .name = .{ .idx = try self.readInt(u32) },
+                        .offset = try self.readInt(u32),
                     },
                     else => @compileError("Unknown type " ++ @typeName(T)),
                 };
