@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const Script = struct {
     up_to_date_script: ?ResourceIdentifier,
@@ -15,6 +16,21 @@ pub const Script = struct {
     shared_bytecode: []const u64,
     shared_line_numbers: []const u16,
     shared_local_variables: []const LocalVariable,
+    a_string_table: AStringTable,
+    w_string_table: WStringTable,
+    constant_table_s64: ?[]const u32, //why is this called s64 but its a u32 data type
+    constant_table_float: []const f32,
+    depending_guids: ?[]const u32,
+};
+
+const AStringTable = struct {
+    buf: []const u8,
+    strings: []const []const u8,
+};
+
+const WStringTable = struct {
+    buf: []const u16,
+    strings: []const []const u16,
 };
 
 const ResolvableTypeReference = union(enum) {
@@ -273,18 +289,16 @@ pub fn MMReader(comptime Reader: type) type {
         const Self = @This();
 
         pub fn readInt(self: Self, comptime T: type) !T {
-            if (@typeInfo(T).Int.bits <= 8) @compileError("You probably want .readByte");
-
             //If the file has compressed integers, read the varint
-            if (self.compression_flags.compressed_integers)
+            if (self.compression_flags.compressed_integers and @typeInfo(T).Int.bits > 16)
                 return try self.readVarInt(T);
 
             //Else read the int as normal
             return try self.reader.readInt(T, .big);
         }
 
-        pub fn readByte(self: Self) !u8 {
-            return try self.reader.readByte();
+        pub fn readFloat(self: Self, comptime T: type) !T {
+            return @bitCast(try self.reader.readInt(std.meta.Int(.unsigned, @typeInfo(T).Float.bits), .big));
         }
 
         pub fn readSha1(self: Self) ![std.crypto.hash.Sha1.digest_length]u8 {
@@ -315,6 +329,10 @@ pub fn MMReader(comptime Reader: type) type {
             }
 
             return @bitCast(result);
+        }
+
+        fn readBytes(self: Self, buf: []u8) !usize {
+            return try self.reader.readAll(buf);
         }
 
         fn readString(self: Self, allocator: std.mem.Allocator) ![]const u8 {
@@ -379,8 +397,8 @@ pub fn MMReader(comptime Reader: type) type {
                     }
 
                     const field_definitions = try self.readArray(FieldDefinition, allocator, null, ScriptReadType);
-                    for (field_definitions) |field_definition| {
-                        std.debug.print("field_definition: {}\n", .{field_definition});
+                    for (field_definitions) |*field_definition| {
+                        std.debug.print("field_definition: {}\n", .{field_definition.*});
                     }
 
                     const property_definitions = try self.readArray(PropertyDefinition, allocator, null, ScriptReadType);
@@ -395,6 +413,16 @@ pub fn MMReader(comptime Reader: type) type {
                     const shared_bytecode = try self.readArray(u64, allocator, null, ScriptReadType);
                     const shared_line_numbers = try self.readArray(u16, allocator, null, ScriptReadType);
                     const shared_local_variables = try self.readArray(LocalVariable, allocator, null, ScriptReadType);
+
+                    // In revision 0x3d9, range ends were made to be relative, not absolute, this is probably to make save storage on large scripts
+                    if (self.revision.head >= 0x3d9) {
+                        for (functions) |*function_definition| {
+                            function_definition.arguments.idx.end += function_definition.arguments.idx.begin;
+                            function_definition.bytecode.idx.end += function_definition.bytecode.idx.begin;
+                            function_definition.line_numbers.idx.end += function_definition.line_numbers.idx.begin;
+                            function_definition.local_variables.idx.end += function_definition.local_variables.idx.begin;
+                        }
+                    }
 
                     for (functions) |function_definition| {
                         std.debug.print("function_definition: {}\n", .{function_definition});
@@ -412,6 +440,122 @@ pub fn MMReader(comptime Reader: type) type {
                         std.debug.print("shared_local_variable: {}\n", .{shared_local_variable});
                     }
 
+                    const a_str_table: AStringTable = blk: {
+                        const indices = try self.readTable(allocator);
+                        defer allocator.free(indices);
+
+                        std.debug.print("indices: {d}\n", .{indices});
+
+                        const str_buf_len = try self.readInt(u32);
+
+                        std.debug.print("str buf len: {d}\n", .{str_buf_len});
+
+                        //Read the full string buffer
+                        const str_buf = try allocator.alloc(u8, str_buf_len);
+                        if (try self.readBytes(str_buf) < str_buf_len)
+                            return error.EndOfStream;
+
+                        std.debug.print("str buf: {d}\n", .{str_buf});
+
+                        const str_count = std.mem.count(u8, str_buf, &.{0});
+
+                        const strings: [][]const u8 = try allocator.alloc([]const u8, str_count);
+
+                        var i: usize = 0;
+                        //Iterate over all strings
+                        for (strings) |*str| {
+                            const end = std.mem.indexOfPos(u8, str_buf, i, &.{0}).?;
+
+                            //Slice to the next 0 byte after the start
+                            str.* = str_buf[i..end];
+
+                            i = end + 1;
+                        }
+
+                        break :blk AStringTable{
+                            .buf = str_buf,
+                            .strings = strings,
+                        };
+                    };
+
+                    const w_str_table: WStringTable = blk: {
+                        const indices = try self.readTable(allocator);
+                        defer allocator.free(indices);
+
+                        std.debug.print("indices: {d}\n", .{indices});
+
+                        const str_buf_len = try self.readInt(u32);
+
+                        std.debug.print("str buf len: {d}\n", .{str_buf_len});
+
+                        //Read the full string buffer
+                        const str_buf = try allocator.alloc(u16, str_buf_len);
+                        if (try self.readBytes(std.mem.sliceAsBytes(str_buf)) < str_buf_len)
+                            return error.EndOfStream;
+
+                        std.debug.print("str buf: {d}\n", .{str_buf});
+
+                        const str_count = std.mem.count(u16, str_buf, &.{0});
+
+                        const strings: [][]u16 = try allocator.alloc([]u16, str_count);
+
+                        var i: usize = 0;
+                        //Iterate over all strings
+                        for (strings) |*str| {
+                            const end = std.mem.indexOfPos(u16, str_buf, i, &.{0}).?;
+
+                            //Slice to the next 0 byte after the start
+                            str.* = str_buf[i..end];
+
+                            // If we are on a LE machine, byte swap the data, since LBP uses BE UTF-16 here.
+                            if (builtin.cpu.arch.endian() == .little)
+                                for (str.*) |*c| {
+                                    c.* = @byteSwap(c.*);
+                                };
+
+                            i = end + 1;
+                        }
+
+                        break :blk WStringTable{
+                            .buf = str_buf,
+                            .strings = strings,
+                        };
+                    };
+
+                    for (a_str_table.strings) |str| {
+                        std.debug.print("astring \"{s}\"\n", .{str});
+                    }
+
+                    for (w_str_table.strings) |str| {
+                        var iter = std.unicode.Utf16LeIterator{
+                            .bytes = std.mem.sliceAsBytes(str),
+                            .i = 0,
+                        };
+                        std.debug.print("wstring \"", .{});
+                        while (try iter.nextCodepoint()) |codepoint| {
+                            std.debug.print("{u}", .{codepoint});
+                        }
+                        std.debug.print("\"\n", .{});
+                    }
+
+                    const constant_table_s64: ?[]const u32 =
+                        if (self.revision.head >= 0x3e2)
+                        try self.readArray(u32, allocator, null, ScriptReadType)
+                    else
+                        null;
+
+                    const constant_table_float: []const f32 = try self.readArray(f32, allocator, null, ScriptReadType);
+
+                    const depending_guids: ?[]const u32 =
+                        if (self.revision.head >= 0x1ec)
+                        try self.readArray(u32, allocator, null, ScriptReadType)
+                    else
+                        null;
+
+                    std.debug.print("constant_table_s64 {?d}\n", .{constant_table_s64});
+                    std.debug.print("constant_table_float: {d}\n", .{constant_table_float});
+                    std.debug.print("depending_guids: {?d}\n", .{depending_guids});
+
                     return Script{
                         .up_to_date_script = up_to_date_script,
                         .class_name = class_name,
@@ -427,6 +571,11 @@ pub fn MMReader(comptime Reader: type) type {
                         .shared_bytecode = shared_bytecode,
                         .shared_line_numbers = shared_line_numbers,
                         .shared_local_variables = shared_local_variables,
+                        .a_string_table = a_str_table,
+                        .w_string_table = w_str_table,
+                        .constant_table_s64 = constant_table_s64,
+                        .constant_table_float = constant_table_float,
+                        .depending_guids = depending_guids,
                     };
                 },
             }
@@ -438,7 +587,7 @@ pub fn MMReader(comptime Reader: type) type {
             const flags: u32 = if (self.revision.head > 0x22e and !skip_flags) try self.readInt(u32) else 0;
             _ = flags; // idk what flags does, seems to just be ignored
 
-            const ident_type = try self.readByte();
+            const ident_type = try self.readInt(u8);
 
             if (ident_type == hash) {
                 return .{
@@ -454,7 +603,7 @@ pub fn MMReader(comptime Reader: type) type {
             return null;
         }
 
-        pub fn readArray(self: Self, comptime T: type, allocator: std.mem.Allocator, length: ?usize, comptime ScriptReadType: type) ![]const T {
+        pub fn readArray(self: Self, comptime T: type, allocator: std.mem.Allocator, length: ?usize, comptime ScriptReadType: type) ![]T {
             const len: usize = length orelse try self.readInt(u32);
 
             const arr = try allocator.alloc(T, len);
@@ -463,12 +612,14 @@ pub fn MMReader(comptime Reader: type) type {
             for (arr) |*item| {
                 if (@typeInfo(T) == .Int) {
                     item.* = try self.readInt(T);
+                } else if (@typeInfo(T) == .Float) {
+                    item.* = try self.readFloat(T);
                 } else item.* = switch (T) {
                     TypeReference => .{
                         .machine_type = try self.reader.readEnum(MachineType, .big),
                         .fish_type = try self.reader.readEnum(FishType, .big),
-                        .dimension_count = try self.readByte(),
-                        .array_base_machine_type = try self.readByte(),
+                        .dimension_count = try self.readInt(u8),
+                        .array_base_machine_type = try self.readInt(u8),
                         .script = try self.readResource(false),
                         .type_name = .{ .idx = try self.readInt(u32) },
                     },
@@ -533,6 +684,34 @@ pub fn MMReader(comptime Reader: type) type {
             }
 
             return arr;
+        }
+
+        pub fn readTable(self: Self, allocator: std.mem.Allocator) ![]u32 {
+            if (!self.compression_flags.compressed_vectors) {
+                return self.readArray(u32, allocator, null, undefined);
+            }
+
+            const index_count = try self.readInt(u32);
+
+            //If theres no indices, return nothing
+            if (index_count == 0) return &.{};
+
+            const table_count = try self.readInt(u32);
+
+            //If theres no tables, return a single 0 item
+            if (table_count == 0) return try allocator.dupe(u32, &.{0});
+
+            const values = try allocator.alloc(u32, index_count);
+
+            for (0..index_count) |i|
+                values[i] = try self.readInt(u8);
+
+            for (1..table_count) |_|
+                for (0..index_count) |j| {
+                    values[j] += @as(u32, try self.readInt(u8)) * 0x100;
+                };
+
+            return values;
         }
     };
 }
