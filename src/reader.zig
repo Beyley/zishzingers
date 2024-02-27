@@ -21,16 +21,47 @@ pub const Script = struct {
     constant_table_s64: ?[]const u32, //why is this called s64 but its a u32 data type
     constant_table_float: []const f32,
     depending_guids: ?[]const u32,
+
+    pub fn deinit(self: *const Script, allocator: std.mem.Allocator) void {
+        allocator.free(self.class_name);
+        allocator.free(self.type_references);
+        allocator.free(self.field_references);
+        allocator.free(self.function_references);
+        allocator.free(self.field_definitions);
+        allocator.free(self.property_definitions);
+        allocator.free(self.functions);
+        allocator.free(self.shared_arguments);
+        allocator.free(self.shared_bytecode);
+        allocator.free(self.shared_line_numbers);
+        allocator.free(self.shared_local_variables);
+        self.a_string_table.deinit(allocator);
+        self.w_string_table.deinit(allocator);
+        if (self.constant_table_s64) |constant_table_s64|
+            allocator.free(constant_table_s64);
+        allocator.free(self.constant_table_float);
+        if (self.depending_guids) |depending_guids|
+            allocator.free(depending_guids);
+    }
 };
 
 const AStringTable = struct {
     buf: []const u8,
     strings: []const []const u8,
+
+    pub fn deinit(self: AStringTable, allocator: std.mem.Allocator) void {
+        allocator.free(self.strings);
+        allocator.free(self.buf);
+    }
 };
 
 const WStringTable = struct {
     buf: []const u16,
     strings: []const []const u16,
+
+    pub fn deinit(self: WStringTable, allocator: std.mem.Allocator) void {
+        allocator.free(self.strings);
+        allocator.free(self.buf);
+    }
 };
 
 const ResolvableTypeReference = union(enum) {
@@ -359,14 +390,8 @@ pub fn MMReader(comptime Reader: type) type {
             else
                 null;
 
-            std.debug.print("up_to_date_script: {?}\n", .{up_to_date_script});
-
             const class_name = try self.readString(allocator);
-            std.debug.print("class name: {s}\n", .{class_name});
-
             const super_class_script = try self.readResource(false);
-
-            std.debug.print("super class script: {?}\n", .{super_class_script});
 
             const read_type_is_u16 = self.revision.head >= 0x3d9;
 
@@ -379,32 +404,11 @@ pub fn MMReader(comptime Reader: type) type {
                     else
                         null;
 
-                    std.debug.print("modifiers: {?d}\n", .{modifiers});
-
                     const type_references = try self.readArray(TypeReference, allocator, null, ScriptReadType);
-                    for (type_references) |type_reference| {
-                        std.debug.print("type_reference: {}\n", .{type_reference});
-                    }
-
                     const field_references = try self.readArray(FieldReference, allocator, null, ScriptReadType);
-                    for (field_references) |field_reference| {
-                        std.debug.print("field_reference: {}\n", .{field_reference});
-                    }
-
                     const function_references = try self.readArray(FunctionReference, allocator, null, ScriptReadType);
-                    for (function_references) |function_reference| {
-                        std.debug.print("function_reference: {}\n", .{function_reference});
-                    }
-
                     const field_definitions = try self.readArray(FieldDefinition, allocator, null, ScriptReadType);
-                    for (field_definitions) |*field_definition| {
-                        std.debug.print("field_definition: {}\n", .{field_definition.*});
-                    }
-
                     const property_definitions = try self.readArray(PropertyDefinition, allocator, null, ScriptReadType);
-                    for (property_definitions) |property_definition| {
-                        std.debug.print("property_definition: {}\n", .{property_definition});
-                    }
 
                     if (self.revision.head < 0x1ec) @panic("AAAA");
 
@@ -424,38 +428,16 @@ pub fn MMReader(comptime Reader: type) type {
                         }
                     }
 
-                    for (functions) |function_definition| {
-                        std.debug.print("function_definition: {}\n", .{function_definition});
-                    }
-
-                    for (shared_arguments) |shared_argument| {
-                        std.debug.print("shared_argument: {}\n", .{shared_argument});
-                    }
-
-                    std.debug.print("shared_bytecode: {d}\n", .{shared_bytecode});
-
-                    std.debug.print("shared_line_numbers: {d}\n", .{shared_line_numbers});
-
-                    for (shared_local_variables) |shared_local_variable| {
-                        std.debug.print("shared_local_variable: {}\n", .{shared_local_variable});
-                    }
-
                     const a_str_table: AStringTable = blk: {
                         const indices = try self.readTable(allocator);
                         defer allocator.free(indices);
 
-                        std.debug.print("indices: {d}\n", .{indices});
-
                         const str_buf_len = try self.readInt(u32);
-
-                        std.debug.print("str buf len: {d}\n", .{str_buf_len});
 
                         //Read the full string buffer
                         const str_buf = try allocator.alloc(u8, str_buf_len);
                         if (try self.readBytes(str_buf) < str_buf_len)
                             return error.EndOfStream;
-
-                        std.debug.print("str buf: {d}\n", .{str_buf});
 
                         const str_count = std.mem.count(u8, str_buf, &.{0});
 
@@ -482,18 +464,12 @@ pub fn MMReader(comptime Reader: type) type {
                         const indices = try self.readTable(allocator);
                         defer allocator.free(indices);
 
-                        std.debug.print("indices: {d}\n", .{indices});
-
                         const str_buf_len = try self.readInt(u32);
-
-                        std.debug.print("str buf len: {d}\n", .{str_buf_len});
 
                         //Read the full string buffer
                         const str_buf = try allocator.alloc(u16, str_buf_len);
                         if (try self.readBytes(std.mem.sliceAsBytes(str_buf)) < str_buf_len)
                             return error.EndOfStream;
-
-                        std.debug.print("str buf: {d}\n", .{str_buf});
 
                         const str_count = std.mem.count(u16, str_buf, &.{0});
 
@@ -522,22 +498,6 @@ pub fn MMReader(comptime Reader: type) type {
                         };
                     };
 
-                    for (a_str_table.strings) |str| {
-                        std.debug.print("astring \"{s}\"\n", .{str});
-                    }
-
-                    for (w_str_table.strings) |str| {
-                        var iter = std.unicode.Utf16LeIterator{
-                            .bytes = std.mem.sliceAsBytes(str),
-                            .i = 0,
-                        };
-                        std.debug.print("wstring \"", .{});
-                        while (try iter.nextCodepoint()) |codepoint| {
-                            std.debug.print("{u}", .{codepoint});
-                        }
-                        std.debug.print("\"\n", .{});
-                    }
-
                     const constant_table_s64: ?[]const u32 =
                         if (self.revision.head >= 0x3e2)
                         try self.readArray(u32, allocator, null, ScriptReadType)
@@ -551,10 +511,6 @@ pub fn MMReader(comptime Reader: type) type {
                         try self.readArray(u32, allocator, null, ScriptReadType)
                     else
                         null;
-
-                    std.debug.print("constant_table_s64 {?d}\n", .{constant_table_s64});
-                    std.debug.print("constant_table_float: {d}\n", .{constant_table_float});
-                    std.debug.print("depending_guids: {?d}\n", .{depending_guids});
 
                     return Script{
                         .up_to_date_script = up_to_date_script,

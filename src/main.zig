@@ -30,7 +30,7 @@ pub fn main() !void {
     };
 
     const script = try reader.readScript(allocator);
-    _ = script; // autofix
+    defer script.deinit(allocator);
 
     // std.debug.print("script class_name: {s}\n", .{script.class_name});
     // std.debug.print("{}\n", .{script});
