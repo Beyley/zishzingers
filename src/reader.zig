@@ -12,10 +12,6 @@ pub const Script = struct {
     field_definitions: []const FieldDefinition,
     property_definitions: []const PropertyDefinition,
     functions: []const FunctionDefinition,
-    shared_arguments: []const Argument,
-    shared_bytecode: []const Bytecode,
-    shared_line_numbers: []const u16,
-    shared_local_variables: []const LocalVariable,
     a_string_table: AStringTable,
     w_string_table: WStringTable,
     constant_table_s64: ?[]const u32, //why is this called s64 but its a u32 data type
@@ -29,11 +25,9 @@ pub const Script = struct {
         allocator.free(self.function_references);
         allocator.free(self.field_definitions);
         allocator.free(self.property_definitions);
+        for (self.functions) |function|
+            function.deinit(allocator);
         allocator.free(self.functions);
-        allocator.free(self.shared_arguments);
-        allocator.free(self.shared_bytecode);
-        allocator.free(self.shared_line_numbers);
-        allocator.free(self.shared_local_variables);
         self.a_string_table.deinit(allocator);
         self.w_string_table.deinit(allocator);
         if (self.constant_table_s64) |constant_table_s64|
@@ -460,6 +454,13 @@ const FunctionDefinition = struct {
     line_numbers: ResolvableLineNumberSlice,
     local_variables: ResolvableLocalVariableSlice,
     stack_size: u32,
+
+    pub fn deinit(self: FunctionDefinition, allocator: std.mem.Allocator) void {
+        allocator.free(self.arguments.slice);
+        allocator.free(self.bytecode.slice);
+        allocator.free(self.line_numbers.slice);
+        allocator.free(self.local_variables.slice);
+    }
 };
 
 const Function = struct {
@@ -751,9 +752,13 @@ pub fn MMReader(comptime Reader: type) type {
 
                     const functions = try self.readArray(FunctionDefinition, allocator, null, ScriptReadType);
                     const shared_arguments = try self.readArray(Argument, allocator, null, ScriptReadType);
+                    defer allocator.free(shared_arguments);
                     const shared_bytecode = try self.readArray(Bytecode, allocator, null, ScriptReadType);
+                    defer allocator.free(shared_bytecode);
                     const shared_line_numbers = try self.readArray(u16, allocator, null, ScriptReadType);
+                    defer allocator.free(shared_line_numbers);
                     const shared_local_variables = try self.readArray(LocalVariable, allocator, null, ScriptReadType);
+                    defer allocator.free(shared_local_variables);
 
                     // In revision 0x3d9, range ends were made to be relative, not absolute, this is probably to make save storage on large scripts
                     if (self.revision.head >= 0x3d9) {
@@ -903,21 +908,6 @@ pub fn MMReader(comptime Reader: type) type {
                                 property_definition.get_function = .{ .function = &functions[property_definition.get_function.idx] };
                         }
 
-                        for (functions) |*function| {
-                            if (function.name.idx != 0xFFFFFFFF)
-                                function.name = .{ .string = &a_str_table.strings[function.name.idx] }
-                            else
-                                function.name = .{ .string = null };
-
-                            if (function.type_reference.idx != 0xFFFFFFFF)
-                                function.type_reference = .{ .type_reference = &type_references[function.type_reference.idx] };
-
-                            function.arguments = .{ .slice = shared_arguments[function.arguments.idx.begin..function.arguments.idx.end] };
-                            function.bytecode = .{ .slice = shared_bytecode[function.bytecode.idx.begin..function.bytecode.idx.end] };
-                            function.line_numbers = .{ .slice = shared_line_numbers[function.line_numbers.idx.begin..function.line_numbers.idx.end] };
-                            function.local_variables = .{ .slice = shared_local_variables[function.local_variables.idx.begin..function.local_variables.idx.end] };
-                        }
-
                         for (shared_arguments) |*argument| {
                             if (argument.type_reference.idx != 0xFFFFFFFF)
                                 argument.type_reference = .{ .type_reference = &type_references[argument.type_reference.idx] };
@@ -932,6 +922,21 @@ pub fn MMReader(comptime Reader: type) type {
                             else
                                 local_variable.name = .{ .string = null };
                         }
+
+                        for (functions) |*function| {
+                            if (function.name.idx != 0xFFFFFFFF)
+                                function.name = .{ .string = &a_str_table.strings[function.name.idx] }
+                            else
+                                function.name = .{ .string = null };
+
+                            if (function.type_reference.idx != 0xFFFFFFFF)
+                                function.type_reference = .{ .type_reference = &type_references[function.type_reference.idx] };
+
+                            function.arguments = .{ .slice = try allocator.dupe(Argument, shared_arguments[function.arguments.idx.begin..function.arguments.idx.end]) };
+                            function.bytecode = .{ .slice = try allocator.dupe(Bytecode, shared_bytecode[function.bytecode.idx.begin..function.bytecode.idx.end]) };
+                            function.line_numbers = .{ .slice = try allocator.dupe(u16, shared_line_numbers[function.line_numbers.idx.begin..function.line_numbers.idx.end]) };
+                            function.local_variables = .{ .slice = try allocator.dupe(LocalVariable, shared_local_variables[function.local_variables.idx.begin..function.local_variables.idx.end]) };
+                        }
                     }
 
                     return Script{
@@ -945,10 +950,6 @@ pub fn MMReader(comptime Reader: type) type {
                         .field_definitions = field_definitions,
                         .property_definitions = property_definitions,
                         .functions = functions,
-                        .shared_arguments = shared_arguments,
-                        .shared_bytecode = shared_bytecode,
-                        .shared_line_numbers = shared_line_numbers,
-                        .shared_local_variables = shared_local_variables,
                         .a_string_table = a_str_table,
                         .w_string_table = w_str_table,
                         .constant_table_s64 = constant_table_s64,
