@@ -82,16 +82,49 @@ pub fn main() !void {
 
         if (function.bytecode.slice.len > 0) {
             std.debug.print("   - Bytecode\n", .{});
+
             for (function.bytecode.slice, function.line_numbers.slice, 0..) |bytecode, line_number, i| {
-                std.debug.print("      {d:0>4}: 0x{x:0>16} {s} (ln: {d})\n", .{
+                _ = line_number; // autofix
+
+                std.debug.print("      {d:0>4}: 0x{x:0>16} {s} ", .{
                     i,
-                    bytecode,
-                    @tagName(try std.meta.intToEnum(
-                        Reader.InstructionType,
-                        @as(u8, @truncate(bytecode)),
-                    )),
-                    line_number,
+                    @as(u64, @bitCast(bytecode)),
+                    @tagName(bytecode.op),
                 });
+                switch (bytecode.op) {
+                    inline else => |op| {
+                        const params = @field(bytecode.params, @tagName(op));
+
+                        const ParamsType = @TypeOf(params);
+
+                        switch (ParamsType) {
+                            Reader.NopClass => {},
+                            Reader.LoadConstClass => std.debug.print("r{d}, cid{d}", .{ params.dst_idx, params.constant_idx }),
+                            Reader.UnaryClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.src_idx }),
+                            Reader.BinaryClass => std.debug.print("r{d}, r{d}, r{d}", .{ params.dst_idx, params.src_a_idx, params.src_b_idx }),
+                            Reader.GetBuiltinMemberClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
+                            Reader.SetBuiltinMemberClass => std.debug.print("r{d}, r{d}", .{ params.src_idx, params.base_idx }),
+                            Reader.GetMemberClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
+                            Reader.SetMemberClass => std.debug.print("r{d}, r{d}", .{ params.src_idx, params.base_idx }),
+                            Reader.GetElementClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
+                            Reader.SetElementClass => std.debug.print("r{d}, r{d}", .{ params.src_idx, params.base_idx }),
+                            Reader.NewArrayClass => std.debug.print("r{d}, t{d}[r{d}]", .{ params.dst_idx, params.type_idx, params.size_idx }),
+                            Reader.WriteClass => std.debug.print("r{d}", .{params.src_idx}),
+                            Reader.ArgClass => std.debug.print("a{d}, r{d}", .{ params.arg_idx, params.src_idx }),
+                            Reader.CallClass => std.debug.print("r{d}, c{d}", .{ params.dst_idx, params.call_idx }),
+                            Reader.ReturnClass => std.debug.print("r{d}", .{params.src_idx}),
+                            Reader.BranchClass => std.debug.print("r{d}, @{d}", .{ params.src_idx, params.branch_offset + @as(i32, @intCast(i)) }),
+                            Reader.CastClass => std.debug.print("r{d}, t{d}, r{d}", .{ params.dst_idx, params.type_idx, params.src_idx }),
+                            Reader.NewObjectClass => std.debug.print("r{d}, t{d}", .{ params.dst_idx, params.type_idx }),
+                            else => @compileError("Unhandled class type " ++ @typeName(ParamsType)),
+                        }
+                    },
+                }
+
+                if (bytecode.type != .void)
+                    std.debug.print(" ({s})\n", .{@tagName(bytecode.type)})
+                else
+                    std.debug.print("\n", .{});
             }
         }
     }
