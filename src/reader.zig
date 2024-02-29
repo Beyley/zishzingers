@@ -364,7 +364,7 @@ pub fn MMReader(comptime Reader: type) type {
                         .name = .{ .idx = try self.readInt(u32) },
                     },
                     MMTypes.FieldDefinition => .{
-                        .modifiers = try self.readInt(ScriptReadType),
+                        .modifiers = @bitCast(@as(u32, try self.readInt(ScriptReadType))),
                         .type_reference = .{ .idx = try self.readInt(u32) },
                         .name = .{ .idx = try self.readInt(u32) },
                     },
@@ -376,7 +376,7 @@ pub fn MMReader(comptime Reader: type) type {
                         .set_function = .{ .idx = try self.readInt(u32) },
                     },
                     MMTypes.FunctionDefinition => .{
-                        .modifiers = try self.readInt(ScriptReadType),
+                        .modifiers = @bitCast(@as(u32, try self.readInt(ScriptReadType))),
                         .type_reference = .{ .idx = try self.readInt(u32) },
                         .name = .{ .idx = try self.readInt(u32) },
                         .arguments = .{

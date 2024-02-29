@@ -446,7 +446,7 @@ const ResolvableLocalVariableSlice = union(enum) {
 };
 
 pub const FunctionDefinition = struct {
-    modifiers: u32,
+    modifiers: Modifiers,
     type_reference: ResolvableTypeReference,
     name: ResolvableString,
     arguments: ResolvableArgumentSlice,
@@ -494,8 +494,25 @@ pub const PropertyDefinition = struct {
     set_function: ResolvableFunction,
 };
 
+pub const Modifiers = packed struct(u32) {
+    static: bool,
+    native: bool,
+    ephemeral: bool,
+    pinned: bool,
+    @"const": bool,
+    public: bool,
+    protected: bool,
+    private: bool,
+    property: bool,
+    abstract: bool,
+    virtual: bool,
+    override: bool,
+    divergent: bool,
+    _unused: u19,
+};
+
 pub const FieldDefinition = struct {
-    modifiers: u32,
+    modifiers: Modifiers,
     type_reference: ResolvableTypeReference,
     name: ResolvableString,
 };
