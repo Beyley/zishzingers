@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Reader = @import("reader.zig");
+const MMTypes = @import("MMTypes.zig");
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -98,24 +99,24 @@ pub fn main() !void {
                         const ParamsType = @TypeOf(params);
 
                         switch (ParamsType) {
-                            Reader.NopClass => {},
-                            Reader.LoadConstClass => std.debug.print("r{d}, cid{d}", .{ params.dst_idx, params.constant_idx }),
-                            Reader.UnaryClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.src_idx }),
-                            Reader.BinaryClass => std.debug.print("r{d}, r{d}, r{d}", .{ params.dst_idx, params.src_a_idx, params.src_b_idx }),
-                            Reader.GetBuiltinMemberClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
-                            Reader.SetBuiltinMemberClass => std.debug.print("r{d}, r{d}", .{ params.src_idx, params.base_idx }),
-                            Reader.GetMemberClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
-                            Reader.SetMemberClass => std.debug.print("r{d}, r{d}", .{ params.src_idx, params.base_idx }),
-                            Reader.GetElementClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
-                            Reader.SetElementClass => std.debug.print("r{d}, r{d}", .{ params.src_idx, params.base_idx }),
-                            Reader.NewArrayClass => std.debug.print("r{d}, t{d}[r{d}]", .{ params.dst_idx, params.type_idx, params.size_idx }),
-                            Reader.WriteClass => std.debug.print("r{d}", .{params.src_idx}),
-                            Reader.ArgClass => std.debug.print("a{d}, r{d}", .{ params.arg_idx, params.src_idx }),
-                            Reader.CallClass => std.debug.print("r{d}, c{d}", .{ params.dst_idx, params.call_idx }),
-                            Reader.ReturnClass => std.debug.print("r{d}", .{params.src_idx}),
-                            Reader.BranchClass => std.debug.print("r{d}, @{d}", .{ params.src_idx, params.branch_offset + @as(i32, @intCast(i)) }),
-                            Reader.CastClass => std.debug.print("r{d}, t{d}, r{d}", .{ params.dst_idx, params.type_idx, params.src_idx }),
-                            Reader.NewObjectClass => std.debug.print("r{d}, t{d}", .{ params.dst_idx, params.type_idx }),
+                            MMTypes.NopClass => {},
+                            MMTypes.LoadConstClass => std.debug.print("r{d}, cid{d}", .{ params.dst_idx, params.constant_idx }),
+                            MMTypes.UnaryClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.src_idx }),
+                            MMTypes.BinaryClass => std.debug.print("r{d}, r{d}, r{d}", .{ params.dst_idx, params.src_a_idx, params.src_b_idx }),
+                            MMTypes.GetBuiltinMemberClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
+                            MMTypes.SetBuiltinMemberClass => std.debug.print("r{d}, r{d}", .{ params.src_idx, params.base_idx }),
+                            MMTypes.GetMemberClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
+                            MMTypes.SetMemberClass => std.debug.print("r{d}, r{d}", .{ params.src_idx, params.base_idx }),
+                            MMTypes.GetElementClass => std.debug.print("r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
+                            MMTypes.SetElementClass => std.debug.print("r{d}, r{d}", .{ params.src_idx, params.base_idx }),
+                            MMTypes.NewArrayClass => std.debug.print("r{d}, t{d}[r{d}]", .{ params.dst_idx, params.type_idx, params.size_idx }),
+                            MMTypes.WriteClass => std.debug.print("r{d}", .{params.src_idx}),
+                            MMTypes.ArgClass => std.debug.print("a{d}, r{d}", .{ params.arg_idx, params.src_idx }),
+                            MMTypes.CallClass => std.debug.print("r{d}, c{d}", .{ params.dst_idx, params.call_idx }),
+                            MMTypes.ReturnClass => std.debug.print("r{d}", .{params.src_idx}),
+                            MMTypes.BranchClass => std.debug.print("r{d}, @{d}", .{ params.src_idx, params.branch_offset + @as(i32, @intCast(i)) }),
+                            MMTypes.CastClass => std.debug.print("r{d}, t{d}, r{d}", .{ params.dst_idx, params.type_idx, params.src_idx }),
+                            MMTypes.NewObjectClass => std.debug.print("r{d}, t{d}", .{ params.dst_idx, params.type_idx }),
                             else => @compileError("Unhandled class type " ++ @typeName(ParamsType)),
                         }
                     },
