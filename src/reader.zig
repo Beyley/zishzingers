@@ -514,7 +514,7 @@ pub const TypeReference = struct {
     machine_type: MachineType,
     fish_type: FishType,
     dimension_count: u8,
-    array_base_machine_type: u8,
+    array_base_machine_type: MachineType,
     script: ?ResourceIdentifier,
     type_name: ResolvableString,
 };
@@ -1000,7 +1000,7 @@ pub fn MMReader(comptime Reader: type) type {
                         .machine_type = try self.reader.readEnum(MachineType, .big),
                         .fish_type = try self.reader.readEnum(FishType, .big),
                         .dimension_count = try self.readInt(u8),
-                        .array_base_machine_type = try self.readInt(u8),
+                        .array_base_machine_type = try self.reader.readEnum(MachineType, .big),
                         .script = try self.readResource(false),
                         .type_name = .{ .idx = try self.readInt(u32) },
                     },
