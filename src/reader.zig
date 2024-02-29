@@ -1097,6 +1097,80 @@ pub fn MMReader(comptime Reader: type) type {
     };
 }
 
+/// Demangles a function name
+pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std.mem.Allocator) ![]const u8 {
+    const sep_index = std.mem.indexOf(u8, orig, "__").?;
+
+    const name = orig[0..sep_index];
+
+    if (!extract_args)
+        return try allocator.dupe(u8, name);
+
+    const args_str = orig[sep_index + 2 ..];
+
+    var demangled = std.ArrayList(u8).init(allocator);
+    defer demangled.deinit();
+
+    try demangled.appendSlice(name);
+    try demangled.appendSlice("(");
+
+    var i: usize = 0;
+    while (i < args_str.len) : (i += 1) {
+        if (i > 0) try demangled.appendSlice(", ");
+
+        // std.debug.print("i: {d}", .{i});
+
+        const c = args_str[i];
+        if (c == 'Q') {
+            var digit_count: usize = 0;
+
+            //count the amount of numeric chars
+            for (args_str[i + 1 ..]) |d| {
+                if (std.ascii.isDigit(d))
+                    digit_count += 1
+                else
+                    break;
+            }
+
+            const count = try std.fmt.parseInt(usize, args_str[i + 1 .. i + digit_count + 1], 10);
+
+            const type_name = args_str[i + 1 + digit_count .. i + 1 + digit_count + count];
+
+            try demangled.appendSlice(type_name);
+
+            //Skip the whole parameter
+            i += digit_count + count;
+            continue;
+        }
+
+        const fish_type = fishTypeFromMangledId(c);
+
+        try demangled.appendSlice(@tagName(fish_type));
+    }
+
+    try demangled.appendSlice(")");
+
+    return demangled.toOwnedSlice();
+}
+
+fn fishTypeFromMangledId(id: u8) FishType {
+    return switch (id) {
+        'v' => .void,
+        'b' => .bool,
+        'w' => .char,
+        'i' => .s32,
+        'f' => .f32,
+        'p' => .v2,
+        'q' => .v3,
+        'r' => .v4,
+        'm' => .m44,
+        'g' => .guid,
+        'j' => .s64,
+        'd' => .f64,
+        else => std.debug.panic("Unknown mangling ID {c}", .{id}),
+    };
+}
+
 // /// Byteswap's all the fields of a struct individually from BE to LE
 // fn byteSwapFromBe(comptime T: type, val: T) T {
 //     //Short circuit the function on big endian, since no byte swap needs to take place
