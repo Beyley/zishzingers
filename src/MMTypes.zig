@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const MMTypes = @This();
+
 pub const Script = struct {
     up_to_date_script: ?ResourceIdentifier,
     class_name: []const u8,
@@ -161,7 +163,7 @@ pub const InstructionType = @typeInfo(TaggedInstruction).Union.tag_type.?;
 pub const InstructionParams = @Type(.{ .Union = blk: {
     var info = @typeInfo(TaggedInstruction).Union;
     info.tag_type = null;
-    info.layout = .Packed;
+    info.layout = .@"packed";
     info.decls = &.{};
     break :blk info;
 } });
@@ -542,78 +544,147 @@ pub const Revision = struct {
     branch_revision: u16,
 };
 
-pub const ResourceType = enum(u8) {
-    invalid = 0,
-    texture = 1,
-    // gtf_texture = 1,
-    // gxt_texture = 1,
-    mesh = 2,
-    pixel_shader = 3,
-    vertex_shader = 4,
-    animation = 5,
-    guid_substitution = 6,
-    gfx_material = 7,
-    spu_elf = 8,
-    level = 9,
-    filename = 10,
-    script = 11,
-    settings_character = 12,
-    file_of_bytes = 13,
-    settings_soft_phys = 14,
-    fontface = 15,
-    material = 16,
-    downloadable_content = 17,
-    editor_settings = 18,
-    joint = 19,
-    game_constants = 20,
-    poppet_settings = 21,
-    cached_level_data = 22,
-    synced_profile = 23,
-    bevel = 24,
-    game = 25,
-    settings_network = 26,
-    packs = 27,
-    big_profile = 28,
-    slot_list = 29,
-    translation = 30,
-    adventure_create_profile = 31,
-    local_profile = 32,
-    limits_settings = 33,
-    tutorials = 34,
-    guid_list = 35,
-    audio_materials = 36,
-    settings_fluid = 37,
-    plan = 38,
-    texture_list = 39,
-    music_settings = 40,
-    mixer_settings = 41,
-    replay_config = 42,
-    palette = 43,
-    static_mesh = 44,
-    animated_texture = 45,
-    voip_recording = 46,
-    pins = 47,
-    instrument = 48,
-    sample = 49,
-    outfit_list = 50,
-    paint_brush = 51,
-    thing_recording = 52,
-    painting = 53,
-    quest = 54,
-    animation_bank = 55,
-    animation_set = 56,
-    skeleton_map = 57,
-    skeleton_registry = 58,
-    skeleton_anim_styles = 59,
-    crossplay_vita = 60,
-    streaming_chunk = 61,
-    shared_adventure_data = 62,
-    adventure_play_profile = 63,
-    animation_map = 64,
-    cached_costume_data = 65,
-    data_labels = 66,
-    adventure_maps = 67,
+pub const ResourceType = GeneratedTypes.ResourceType;
+pub const headerToResourceType = GeneratedTypes.headerToResourceType;
+pub const resourceTypeToHeader = GeneratedTypes.resourceTypeToHeader;
+
+const GeneratedTypes = GenerateResourceType(.{
+    .{ "invalid", null, 0 },
+    .{ "texture", "TEX", 1 },
+    // .{ "gtf_texture", "GTF", 1 },
+    // .{ "gxt_texture", "GXT", 1 },
+    .{ "mesh", "MSH", 2 },
+    .{ "pixel_shader", null, 3 },
+    .{ "vertex_shader", null, 4 },
+    .{ "animation", "ANM", 5 },
+    .{ "guid_substitution", "GSB", 6 },
+    .{ "gfx_material", "GMT", 7 },
+    .{ "spu_elf", null, 8 },
+    .{ "level", "LVL", 9 },
+    .{ "filename", null, 10 },
+    .{ "script", "FSH", 11 },
+    .{ "settings_character", "CHA", 12 },
+    .{ "file_of_bytes", null, 13 },
+    .{ "settings_soft_phys", "SSP", 14 },
+    .{ "fontface", "FNT", 15 },
+    .{ "material", "MAT", 16 },
+    .{ "downloadable_content", "DLC", 17 },
+    .{ "editor_settings", null, 18 },
+    .{ "joint", "JNT", 19 },
+    .{ "game_constants", "CON", 20 },
+    .{ "poppet_settings", "POP", 21 },
+    .{ "cached_level_data", "CLD", 22 },
+    .{ "synced_profile", "PRF", 23 },
+    .{ "bevel", "BEV", 24 },
+    .{ "game", "GAM", 25 },
+    .{ "settings_network", "NWS", 26 },
+    .{ "packs", "PCK", 27 },
+    .{ "big_profile", "BPR", 28 },
+    .{ "slot_list", "SLT", 29 },
+    .{ "translation", null, 30 },
+    .{ "adventure_create_profile", "ADC", 31 },
+    .{ "local_profile", "IPR", 32 },
+    .{ "limits_settings", "LMT", 33 },
+    .{ "tutorials", "TUT", 34 },
+    .{ "guid_list", "GLT", 35 },
+    .{ "audio_materials", "AUM", 36 },
+    .{ "settings_fluid", "SSF", 37 },
+    .{ "plan", "PLN", 38 },
+    .{ "texture_list", "TXL", 39 },
+    .{ "music_settings", "MUS", 40 },
+    .{ "mixer_settings", "MIX", 41 },
+    .{ "replay_config", "REP", 42 },
+    .{ "palette", "PAL", 43 },
+    .{ "static_mesh", "SMH", 44 },
+    .{ "animated_texture", "ATX", 45 },
+    .{ "voip_recording", "VOP", 46 },
+    .{ "pins", "PIN", 47 },
+    .{ "instrument", "INS", 48 },
+    .{ "sample", null, 49 },
+    .{ "outfit_list", "OFT", 50 },
+    .{ "paint_brush", "PBR", 51 },
+    .{ "thing_recording", "REC", 52 },
+    .{ "painting", "PTG", 53 },
+    .{ "quest", "QST", 54 },
+    .{ "animation_bank", "ABK", 55 },
+    .{ "animation_set", "AST", 56 },
+    .{ "skeleton_map", "SMP", 57 },
+    .{ "skeleton_registry", "SRG", 58 },
+    .{ "skeleton_anim_styles", "SAS", 59 },
+    .{ "crossplay_vita", null, 60 },
+    .{ "streaming_chunk", "CHK", 61 },
+    .{ "shared_adventure_data", "ADS", 62 },
+    .{ "adventure_play_profile", "ADP", 63 },
+    .{ "animation_map", "AMP", 64 },
+    .{ "cached_costume_data", "CCD", 65 },
+    .{ "data_labels", "DLA", 66 },
+    .{ "adventure_maps", "ADM", 67 },
+});
+
+pub const SerializationMethod = enum(u8) {
+    binary = 'b',
+    text = 't',
+    encrypted_binary = 'e',
+    texture = ' ',
+    gxt_simple = 's',
+    gxt_extended = 'S',
 };
+
+fn GenerateResourceType(items: anytype) type {
+    comptime {
+        var enum_fields: [items.len]std.builtin.Type.EnumField = undefined;
+
+        for (items, &enum_fields) |item, *field| {
+            const name = item[0];
+            // const header = item[1];
+            const value = item[2];
+
+            field.* = .{
+                .name = name,
+                .value = value,
+            };
+        }
+
+        return struct {
+            pub const ResourceType = @Type(std.builtin.Type{
+                .Enum = .{
+                    .tag_type = u8,
+                    .decls = &.{},
+                    .is_exhaustive = false,
+                    .fields = &enum_fields,
+                },
+            });
+
+            pub fn headerToResourceType(header: [3]u8) ?@This().ResourceType {
+                inline for (items) |item| {
+                    if (@TypeOf(item[1]) == @TypeOf(null)) continue;
+
+                    const header_u24: u24 = @bitCast(header);
+                    const item_header_u24: u24 = @bitCast(@as([3]u8, item[1].*));
+
+                    if (item_header_u24 == header_u24) {
+                        return @enumFromInt(item[2]);
+                    }
+                }
+
+                return null;
+            }
+
+            pub fn resourceTypeToHeader(resource_type: @This().ResourceType) ?[3]u8 {
+                inline for (items) |item| {
+                    if (@intFromEnum(resource_type) == item[2]) {
+                        if (@TypeOf(item[1]) == @TypeOf(null))
+                            return null;
+
+                        return item[1].*;
+                    }
+                }
+
+                return null;
+            }
+        };
+    }
+}
 
 pub const MachineType = enum(u8) {
     void = 0x0,
@@ -653,7 +724,7 @@ pub const ResourceIdentifier = union(enum) {
 };
 
 pub const ResourceDescriptor = struct {
-    type: ResourceType,
+    type: MMTypes.ResourceType,
     ident: ResourceIdentifier,
     flags: u32,
 };

@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const Reader = @import("reader.zig");
+const Stream = @import("stream.zig");
 
 const MMTypes = @import("MMTypes.zig");
 
@@ -106,7 +106,7 @@ pub fn serializeDisassembly(writer: anytype, script: MMTypes.Script, allocator: 
             }
         }
 
-        const demangled_name = try Reader.demangleFunctionName(function.name.string.?.*, false, allocator);
+        const demangled_name = try Stream.demangleFunctionName(function.name.string.?.*, false, allocator);
         defer allocator.free(demangled_name);
 
         try writer.writeAll("func");

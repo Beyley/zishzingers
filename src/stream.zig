@@ -3,43 +3,42 @@ const builtin = @import("builtin");
 
 const MMTypes = @import("MMTypes.zig");
 
-pub fn MMReader(comptime Reader: type) type {
-    _ = Reader; // autofix
+pub fn MMStream(comptime Stream: type) type {
     return struct {
-        reader: std.fs.File.Reader,
+        stream: Stream,
         compression_flags: MMTypes.CompressionFlags,
         revision: MMTypes.Revision,
 
         const Self = @This();
 
-        pub fn readInt(self: Self, comptime T: type) !T {
+        pub fn readInt(self: *Self, comptime T: type) !T {
             //If the file has compressed integers, read the varint
             if (self.compression_flags.compressed_integers and @typeInfo(T).Int.bits > 16)
                 return try self.readVarInt(T);
 
             //Else read the int as normal
-            return try self.reader.readInt(T, .big);
+            return try self.stream.reader().readInt(T, .big);
         }
 
-        pub fn readFloat(self: Self, comptime T: type) !T {
-            return @bitCast(try self.reader.readInt(std.meta.Int(.unsigned, @typeInfo(T).Float.bits), .big));
+        pub fn readFloat(self: *Self, comptime T: type) !T {
+            return @bitCast(try self.stream.reader().readInt(std.meta.Int(.unsigned, @typeInfo(T).Float.bits), .big));
         }
 
-        pub fn readSha1(self: Self) ![std.crypto.hash.Sha1.digest_length]u8 {
+        pub fn readSha1(self: *Self) ![std.crypto.hash.Sha1.digest_length]u8 {
             var ret: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
 
-            _ = try self.reader.readAtLeast(&ret, std.crypto.hash.Sha1.digest_length);
+            _ = try self.stream.reader().readAtLeast(&ret, std.crypto.hash.Sha1.digest_length);
 
             return ret;
         }
 
-        fn readVarInt(self: Self, comptime IntType: type) !IntType {
+        fn readVarInt(self: *Self, comptime IntType: type) !IntType {
             //Do all the work in unsigned space to prevent signed-ness shenanigans
             var result: std.meta.Int(.unsigned, @bitSizeOf(IntType)) = 0;
             var i: std.meta.Int(.unsigned, std.math.log2(@bitSizeOf(IntType))) = 0;
 
             while (true) {
-                const b: u8 = try self.reader.readByte();
+                const b: u8 = try self.stream.reader().readByte();
 
                 result |= @as(@TypeOf(result), b & 0b01111111) << i;
 
@@ -55,13 +54,12 @@ pub fn MMReader(comptime Reader: type) type {
             return @bitCast(result);
         }
 
-        fn readBytes(self: Self, buf: []u8) !usize {
-            return try self.reader.readAll(buf);
+        fn readBytes(self: *Self, buf: []u8) !usize {
+            return try self.stream.reader().readAll(buf);
         }
 
-        fn readString(self: Self, allocator: std.mem.Allocator) ![]const u8 {
-            const len =
-                if (self.compression_flags.compressed_integers)
+        fn readString(self: *Self, allocator: std.mem.Allocator) ![]const u8 {
+            const len = if (self.compression_flags.compressed_integers)
                 @divExact(try self.readInt(u32), 2)
             else
                 try self.readInt(u32);
@@ -71,26 +69,25 @@ pub fn MMReader(comptime Reader: type) type {
             errdefer allocator.free(str);
 
             //Make sure that we read the whole string
-            if (try self.reader.readAll(str) < len)
+            if (try self.stream.reader().readAll(str) < len)
                 return error.EndOfStream;
 
             return str;
         }
 
-        pub fn readScript(self: Self, allocator: std.mem.Allocator) !MMTypes.Script {
+        pub fn readScript(self: *Self, allocator: std.mem.Allocator) !MMTypes.Script {
             const up_to_date_script: ?MMTypes.ResourceIdentifier = if (self.revision.head <= 0x33a)
                 try self.readResource(false)
             else
                 null;
 
             const class_name = try self.readString(allocator);
+            errdefer allocator.free(class_name);
             const super_class_script = try self.readResource(false);
 
-            const read_type_is_u16 = self.revision.head >= 0x3d9;
-
-            switch (read_type_is_u16) {
-                inline else => |val| {
-                    const ScriptReadType = if (val) u16 else u32;
+            switch (self.revision.head >= 0x3d9) {
+                inline else => |read_type_is_u16| {
+                    const ScriptReadType = if (read_type_is_u16) u16 else u32;
 
                     const modifiers: ?u32 = if (self.revision.head >= 0x1e5)
                         try self.readInt(ScriptReadType)
@@ -98,14 +95,20 @@ pub fn MMReader(comptime Reader: type) type {
                         null;
 
                     const type_references = try self.readArray(MMTypes.TypeReference, allocator, null, ScriptReadType);
+                    errdefer allocator.free(type_references);
                     const field_references = try self.readArray(MMTypes.FieldReference, allocator, null, ScriptReadType);
+                    errdefer allocator.free(field_references);
                     const function_references = try self.readArray(MMTypes.FunctionReference, allocator, null, ScriptReadType);
+                    errdefer allocator.free(function_references);
                     const field_definitions = try self.readArray(MMTypes.FieldDefinition, allocator, null, ScriptReadType);
+                    errdefer allocator.free(field_definitions);
                     const property_definitions = try self.readArray(MMTypes.PropertyDefinition, allocator, null, ScriptReadType);
+                    errdefer allocator.free(property_definitions);
 
-                    if (self.revision.head < 0x1ec) @panic("AAAA");
+                    if (self.revision.head < 0x1ec) @panic("Unimplemented reading of revision < 0x1ec");
 
                     const functions = try self.readArray(MMTypes.FunctionDefinition, allocator, null, ScriptReadType);
+                    errdefer allocator.free(functions);
                     const shared_arguments = try self.readArray(MMTypes.Argument, allocator, null, ScriptReadType);
                     defer allocator.free(shared_arguments);
                     const shared_bytecode = try self.readArray(MMTypes.Bytecode, allocator, null, ScriptReadType);
@@ -315,8 +318,8 @@ pub fn MMReader(comptime Reader: type) type {
             }
         }
 
-        pub fn readResource(self: Self, skip_flags: bool) !?MMTypes.ResourceIdentifier {
-            const hash: u32, const guid: u32 = if (self.revision.head <= 0x18b) .{ 2, 1 } else .{ 1, 2 };
+        pub fn readResource(self: *Self, skip_flags: bool) !?MMTypes.ResourceIdentifier {
+            const hash: u8, const guid: u8 = if (self.revision.head <= 0x18b) .{ 2, 1 } else .{ 1, 2 };
 
             const flags: u32 = if (self.revision.head > 0x22e and !skip_flags) try self.readInt(u32) else 0;
             _ = flags; // idk what flags does, seems to just be ignored
@@ -337,25 +340,26 @@ pub fn MMReader(comptime Reader: type) type {
             return null;
         }
 
-        pub fn readArray(self: Self, comptime T: type, allocator: std.mem.Allocator, length: ?usize, comptime ScriptReadType: type) ![]T {
+        pub fn readArray(self: *Self, comptime T: type, allocator: std.mem.Allocator, length: ?usize, comptime ScriptReadType: type) ![]T {
             const len: usize = length orelse try self.readInt(u32);
 
             const arr = try allocator.alloc(T, len);
             errdefer allocator.free(arr);
 
+            const TypeInfo = @typeInfo(T);
+
             for (arr) |*item| {
-                if (@typeInfo(T) == .Int) {
+                if (TypeInfo == .Int) {
                     item.* = try self.readInt(T);
-                } else if (@typeInfo(T) == .Float) {
+                } else if (TypeInfo == .Float) {
                     item.* = try self.readFloat(T);
                 } else item.* = switch (T) {
                     MMTypes.Bytecode => @bitCast(try self.readInt(u64)),
-                    // Bytecode => byteSwapFromBe(Bytecode, @bitCast(try self.readInt(u64))),
                     MMTypes.TypeReference => .{
-                        .machine_type = try self.reader.readEnum(MMTypes.MachineType, .big),
-                        .fish_type = try self.reader.readEnum(MMTypes.FishType, .big),
+                        .machine_type = try self.stream.reader().readEnum(MMTypes.MachineType, .big),
+                        .fish_type = try self.stream.reader().readEnum(MMTypes.FishType, .big),
                         .dimension_count = try self.readInt(u8),
-                        .array_base_machine_type = try self.reader.readEnum(MMTypes.MachineType, .big),
+                        .array_base_machine_type = try self.stream.reader().readEnum(MMTypes.MachineType, .big),
                         .script = try self.readResource(false),
                         .type_name = .{ .idx = try self.readInt(u32) },
                     },
@@ -422,7 +426,7 @@ pub fn MMReader(comptime Reader: type) type {
             return arr;
         }
 
-        pub fn readTable(self: Self, allocator: std.mem.Allocator) ![]u32 {
+        pub fn readTable(self: *Self, allocator: std.mem.Allocator) ![]u32 {
             if (!self.compression_flags.compressed_vectors) {
                 return self.readArray(u32, allocator, null, undefined);
             }
@@ -449,6 +453,86 @@ pub fn MMReader(comptime Reader: type) type {
 
             return values;
         }
+
+        pub fn writeInt(self: Self, comptime T: type, val: T) !void {
+            const bit_count = @typeInfo(T).Int.bits;
+
+            //If the int is >16 bits and we have compressed integers enabled, use them
+            if (bit_count > 16 and self.compression_flags.compressed_integers) {
+                const UnsignedType = std.meta.Int(.unsigned, bit_count);
+
+                //Bitcast the number to unsigned, this is so the shifts are all done as unsigned shifts
+                var cur: UnsignedType = @bitCast(val);
+
+                if (cur == 0) {
+                    return self.writer.writeByte(0);
+                }
+
+                // While we still have more bits to write
+                while (cur > 0) {
+                    //Get the last seven bits of the int
+                    const b: u8 = @intCast(cur & 0b01111111);
+
+                    //Shift value right by 7 bits to work on the next bits
+                    cur >>= 7;
+
+                    //If theres more bits to write
+                    if (cur > 0) {
+                        //Set the uppermost bit, to mark theres more data after this
+                        b |= 0b10000000;
+                    }
+
+                    try self.writer.writeByte(b);
+                }
+            } else {
+                return self.writer.writeInt(T, val, .big);
+            }
+        }
+
+        pub fn writeFloat(self: Self, val: anytype) !void {
+            return self.writer.writeInt(
+                std.meta.Int(.unsigned, @typeInfo(@TypeOf(val)).Float.bits),
+                @bitCast(val),
+                .big,
+            );
+        }
+
+        pub fn writeSha1(self: Self, val: [std.crypto.hash.Sha1.digest_length]u8) !void {
+            return self.writer.writeAll(&val);
+        }
+
+        pub fn writeString(self: Self, str: []const u8) !void {
+            if (self.compression_flags.compressed_integers) {
+                try self.writeInt(u32, @intCast(str.len * 2));
+            } else {
+                try self.writeInt(u32, @intCast(str.len));
+            }
+
+            return self.writer.writeAll(str);
+        }
+
+        pub fn writeScript(self: Self, script: MMTypes.Script) !void {
+            _ = self; // autofix
+            _ = script; // autofix
+        }
+
+        pub fn writeResource(self: Self, skip_flags: bool, resource_ident: ?MMTypes.ResourceIdentifier) !void {
+            const hash: u8, const guid: u8 = if (self.revision.head <= 0x18b) .{ 2, 1 } else .{ 1, 2 };
+
+            //write a default number for the flags
+            if (self.revision.head > 0x22e and !skip_flags) {
+                try self.writeInt(u32, 0);
+            }
+
+            if (resource_ident) |ident| {
+                switch (ident) {
+                    .guid => return self.writeInt(u8, guid),
+                    .hash => return self.writeInt(u8, hash),
+                }
+            } else {
+                return self.writeInt(u8, 0);
+            }
+        }
     };
 }
 
@@ -472,8 +556,6 @@ pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std
     var i: usize = 0;
     while (i < args_str.len) : (i += 1) {
         if (i > 0) try demangled.appendSlice(", ");
-
-        // std.debug.print("i: {d}", .{i});
 
         const c = args_str[i];
         if (c == 'Q') {
@@ -525,41 +607,3 @@ fn fishTypeFromMangledId(id: u8) MMTypes.FishType {
         else => std.debug.panic("Unknown mangling ID {c}", .{id}),
     };
 }
-
-// /// Byteswap's all the fields of a struct individually from BE to LE
-// fn byteSwapFromBe(comptime T: type, val: T) T {
-//     //Short circuit the function on big endian, since no byte swap needs to take place
-//     if (builtin.cpu.arch.endian() == .big)
-//         return val;
-
-//     const type_info: std.builtin.Type = @typeInfo(T);
-
-//     var ret: T = val;
-
-//     //we do the byteswap earlier :)
-//     if (T == Bytecode) {
-//         return ret;
-//     }
-
-//     switch (type_info) {
-//         .Struct => |data| {
-//             inline for (data.fields) |field| {
-//                 @field(ret, field.name) = byteSwapFromBe(field.type, @field(ret, field.name));
-//             }
-//         },
-//         .Int => {
-//             ret = @byteSwap(ret);
-//         },
-//         .Enum => |data| {
-//             ret = @enumFromInt(byteSwapFromBe(data.tag_type, @intFromEnum(ret)));
-//         },
-//         .Float => |float| {
-//             const IntermediaryIntType = std.meta.Int(.unsigned, float.bits);
-
-//             ret = @bitCast(@byteSwap(@as(IntermediaryIntType, ret)));
-//         },
-//         else => @compileError("Unsupported type " ++ @typeName(T)),
-//     }
-
-//     return ret;
-// }
