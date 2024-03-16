@@ -26,10 +26,10 @@ pub fn main() !void {
     const file_contents = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(file_contents);
 
-    var resource_stream = try Resource.readResource(file_contents, allocator);
-    defer allocator.free(resource_stream.stream.buffer);
+    var resource = try Resource.readResource(file_contents, allocator);
+    defer resource.deinit();
 
-    const script = try resource_stream.readScript(allocator);
+    const script = try resource.stream.readScript(allocator);
     defer script.deinit(allocator);
 
     try Debug.dumpScript(stdout, script);

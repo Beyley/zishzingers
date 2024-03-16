@@ -8,13 +8,19 @@ pub const MMStream = Stream.MMStream(std.io.FixedBufferStream([]const u8));
 pub const Resource = struct {
     stream: MMStream,
     allocator: std.mem.Allocator,
+    type: MMTypes.ResourceType,
 
-    pub fn deinit(self: Resource) !void {
+    pub fn deinit(self: Resource) void {
         self.allocator.free(self.stream.stream.buffer);
     }
 };
 
-pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !MMStream {
+pub fn writeResource(resource: Resource, allocator: std.mem.Allocator) !void {
+    _ = resource; // autofix
+    _ = allocator; // autofix
+}
+
+pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !Resource {
     var stream = std.io.fixedBufferStream(read_buf);
     const raw_reader = stream.reader();
 
@@ -67,7 +73,7 @@ pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !MMStrea
             if (serialization_method == .encrypted_binary)
                 @panic("Encrypted binary decryption not implemented yet");
 
-            var reader = MMStream{
+            var mm_stream = MMStream{
                 .stream = stream,
                 .compression_flags = compression_flags,
                 .revision = revision,
@@ -75,13 +81,13 @@ pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !MMStrea
 
             const buffer = if (compressed) blk: {
                 //Some kind of flags
-                _ = try reader.readInt(u16);
+                _ = try mm_stream.readInt(u16);
 
-                const chunks = try reader.readInt(u16);
+                const chunks = try mm_stream.readInt(u16);
 
                 if (chunks == 0) {
                     //We unwrap dependency_table_offset since the offset is always filled out when compression is set
-                    break :blk try allocator.dupe(u8, reader.stream.buffer[stream.pos..dependency_table_offset.?]);
+                    break :blk try allocator.dupe(u8, mm_stream.stream.buffer[stream.pos..dependency_table_offset.?]);
                 }
 
                 const bufs = try allocator.alloc(u16, chunks * 2);
@@ -92,8 +98,8 @@ pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !MMStrea
 
                 var full_size: usize = 0;
                 for (compressed_sizes, uncompressed_sizes) |*compressed_size, *uncompressed_size| {
-                    compressed_size.* = try reader.readInt(u16);
-                    uncompressed_size.* = try reader.readInt(u16);
+                    compressed_size.* = try mm_stream.readInt(u16);
+                    uncompressed_size.* = try mm_stream.readInt(u16);
 
                     full_size += uncompressed_size.*;
                 }
@@ -105,7 +111,7 @@ pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !MMStrea
 
                 // Iterate over all chunks, reading the compressed data, and decompressing it
                 for (compressed_sizes) |compressed_size| {
-                    var limited_reader = std.io.limitedReader(reader.stream.reader(), compressed_size);
+                    var limited_reader = std.io.limitedReader(mm_stream.stream.reader(), compressed_size);
 
                     try std.compress.zlib.decompress(limited_reader.reader(), decompressed_writer.writer());
                 }
@@ -116,14 +122,18 @@ pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !MMStrea
 
                 break :blk decompressed_buf;
             } else if (dependency_table_offset) |end_idx|
-                try allocator.dupe(u8, reader.stream.buffer[stream.pos..end_idx])
+                try allocator.dupe(u8, mm_stream.stream.buffer[stream.pos..end_idx])
             else
-                try allocator.dupe(u8, reader.stream.buffer[stream.pos..]);
+                try allocator.dupe(u8, mm_stream.stream.buffer[stream.pos..]);
             errdefer allocator.free(buffer);
 
-            reader.stream = std.io.fixedBufferStream(@as([]const u8, buffer));
+            mm_stream.stream = std.io.fixedBufferStream(@as([]const u8, buffer));
 
-            return reader;
+            return .{
+                .stream = mm_stream,
+                .allocator = allocator,
+                .type = resource_type,
+            };
         },
         else => std.debug.panic("Unknown serialization method {s}\n", .{@tagName(serialization_method)}),
     }
