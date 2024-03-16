@@ -9,15 +9,140 @@ pub const Resource = struct {
     stream: MMStream,
     allocator: std.mem.Allocator,
     type: MMTypes.ResourceType,
+    dependencies: ?[]const Dependency,
 
     pub fn deinit(self: Resource) void {
         self.allocator.free(self.stream.stream.buffer);
+        if (self.dependencies) |dependencies|
+            self.allocator.free(dependencies);
     }
 };
 
-pub fn writeResource(resource: Resource, allocator: std.mem.Allocator) !void {
-    _ = resource; // autofix
-    _ = allocator; // autofix
+pub fn writeResource(
+    resource_type: MMTypes.ResourceType,
+    compression_flags: MMTypes.CompressionFlags,
+    dependencies: []const Dependency,
+    revision: MMTypes.Revision,
+    stream: *std.io.StreamSource,
+    data: []const u8,
+    allocator: std.mem.Allocator,
+) !void {
+    //Compressing files <1k is probably not worth it, lets leave it uncompressed
+    const compress = data.len > 1024 and (revision.head >= 0x189 and resource_type != .static_mesh);
+
+    const writer = stream.writer();
+
+    //Write the header type
+    _ = try writer.writeAll(&(MMTypes.resourceTypeToHeader(resource_type).?));
+
+    //TODO: make this not hardcoded!
+    const serialization_method: MMTypes.SerializationMethod = .binary;
+    try writer.writeByte(@intFromEnum(serialization_method));
+
+    //Write out the revision head
+    try writer.writeInt(u32, revision.head, .big);
+
+    const dependency_table_offset_pos = try stream.getPos();
+
+    //In this revision the dependency table was added
+    if (revision.head >= 0x109) {
+        //Write a standin value, which will later be replaced by the dependency offset
+        try writer.writeInt(u32, undefined, .big);
+    }
+
+    //In this revision, compression flag was added to non-static mesh assets
+    if (revision.head >= 0x189) {
+        if (resource_type == .static_mesh)
+            @panic("Unimplemented, sorry");
+
+        //In this revision, branch id and branch offset was branch revision was added
+        if (revision.head >= 0x271) {
+            try writer.writeInt(u16, revision.branch_id, .big);
+            try writer.writeInt(u16, revision.branch_revision, .big);
+        }
+
+        //In revision 0x272 on the non-zero branch, compression flags were added. In revision 0x297, compression flags were made manditory
+        if (revision.head >= 0x297 or (revision.head == 0x272 and revision.branch_id != 0)) {
+            try writer.writeByte(@bitCast(compression_flags));
+        }
+
+        //Write whether its compressed with zlib compression
+        try writer.writeByte(if (compress) 1 else 0);
+    }
+
+    if (serialization_method == .encrypted_binary)
+        @panic("Not implemented, sorry");
+
+    if (compress) {
+        const chunk_size = 0x8000;
+
+        var compress_arena = std.heap.ArenaAllocator.init(allocator);
+        defer compress_arena.deinit();
+        const compress_allocator = compress_arena.allocator();
+
+        //Init with enough capacity to all but *assure* we have already allocated enough for every chunk beforehand.
+        var sizes = try std.ArrayList(struct { usize, usize }).initCapacity(compress_allocator, data.len / chunk_size);
+        var final_data = std.ArrayList(u8).init(compress_allocator);
+
+        var data_stream = std.io.fixedBufferStream(data);
+        const reader = data_stream.reader();
+
+        var read = try reader.readBoundedBytes(chunk_size);
+        while (read.len > 0) : (read = try reader.readBoundedBytes(chunk_size)) {
+            //Since compress may make multiple read/write calls, to lower the allocation *count*,
+            // lets ensure theres AT LEAST enough data here to fit the full uncompressed chunk, so theres likely only one allocation per iteration.
+            try final_data.ensureUnusedCapacity(read.len);
+
+            var uncompressed_data_stream = std.io.fixedBufferStream(read.constSlice());
+            var counting_writer = std.io.countingWriter(final_data.writer());
+            try std.compress.zlib.compress(uncompressed_data_stream.reader(), counting_writer.writer(), .{ .level = .best });
+
+            try sizes.append(.{ read.len, @bitCast(counting_writer.bytes_written) });
+        }
+
+        //Write the unknown flags (always 0x0001 apparently)
+        try writer.writeInt(u16, 0x0001, .big);
+        //Write the amount of chunks
+        try writer.writeInt(u16, @intCast(sizes.items.len), .big);
+
+        //Write all the chunk sizes
+        for (sizes.items) |size| {
+            const uncompressed_size, const compressed_size = size;
+
+            try writer.writeInt(u16, @intCast(compressed_size), .big);
+            try writer.writeInt(u16, @intCast(uncompressed_size), .big);
+        }
+
+        //Write all the chunks to the output stream
+        try writer.writeAll(final_data.items);
+    } else {
+        try writer.writeAll(data);
+    }
+
+    const dependency_table_offset = try stream.getPos();
+
+    //Write out all the dependencies
+    try writer.writeInt(u32, @intCast(dependencies.len), .big);
+    for (dependencies) |dependency| {
+        try writer.writeByte(@intFromEnum(dependency.ident));
+        switch (dependency.ident) {
+            .guid => |guid| {
+                try writer.writeInt(u32, guid, .big);
+            },
+            .hash => |hash| {
+                try writer.writeAll(&hash);
+            },
+        }
+        try writer.writeInt(u32, @intFromEnum(dependency.type), .big);
+    }
+
+    //Seek to where we need to write the dependency table offset
+    try stream.seekTo(dependency_table_offset_pos);
+    //Write the dependency table offset
+    try writer.writeInt(u32, @intCast(dependency_table_offset), .big);
+
+    //Seek back to the end
+    try stream.seekTo(try stream.getEndPos());
 }
 
 pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !Resource {
@@ -46,10 +171,10 @@ pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !Resourc
             var compressed = false;
 
             var dependency_table_offset: ?usize = null;
+            var dependencies: ?[]const Dependency = null;
 
             if (revision.head >= 0x109) {
-                dependency_table_offset = try raw_reader.readInt(u32, .big);
-                // dependency_table_offset, const dependencies = try getDependencies(raw_reader, allocator);
+                dependency_table_offset, dependencies = try getDependencies(&stream, allocator);
 
                 if (revision.head >= 0x189) {
                     if (resource_type == .static_mesh)
@@ -133,28 +258,46 @@ pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !Resourc
                 .stream = mm_stream,
                 .allocator = allocator,
                 .type = resource_type,
+                .dependencies = dependencies,
             };
         },
         else => std.debug.panic("Unknown serialization method {s}\n", .{@tagName(serialization_method)}),
     }
 }
 
-// fn getDependencies(reader: anytype, allocator: std.mem.Allocator) !struct { usize, []const MMTypes.ResourceIdentifier } {
-//     const offset = try reader.readInt(u32, .big);
+const Dependency = struct {
+    type: MMTypes.ResourceType,
+    ident: MMTypes.ResourceIdentifier,
+};
 
-//     const dependencies = try allocator.alloc(MMTypes.ResourceIdentifier, try reader.readInt(u32, .big));
-//     errdefer allocator.free(dependencies);
-//     for (dependencies) |*dependency| {
-//         dependency.* = switch (try reader.readByte()) {
-//             1 => .{ .hash = blk: {
-//                 var buf: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
-//                 _ = try reader.readAll(&buf);
-//                 break :blk buf;
-//             } },
-//             2 => .{ .guid = try reader.readInt(u32, .big) },
-//             else => |resource_type| std.debug.panic("Unknown resource type {d}", .{resource_type}),
-//         };
-//     }
+fn getDependencies(stream: *std.io.FixedBufferStream([]const u8), allocator: std.mem.Allocator) !struct { usize, []const Dependency } {
+    const reader = stream.reader();
 
-//     return .{ offset, dependencies };
-// }
+    const offset = try reader.readInt(u32, .big);
+
+    const start = try stream.getPos();
+    defer stream.seekTo(start) catch unreachable;
+
+    try stream.seekTo(offset);
+
+    const dependencies = try allocator.alloc(Dependency, try reader.readInt(u32, .big));
+    errdefer allocator.free(dependencies);
+    for (dependencies) |*dependency| {
+        dependency.* = .{
+            .ident = switch (try reader.readByte()) {
+                1 => .{
+                    .hash = blk: {
+                        var buf: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+                        _ = try reader.readAll(&buf);
+                        break :blk buf;
+                    },
+                },
+                2 => .{ .guid = try reader.readInt(u32, .big) },
+                else => |resource_type| std.debug.panic("Unknown resource type {d}", .{resource_type}),
+            },
+            .type = @enumFromInt(try reader.readInt(u32, .big)),
+        };
+    }
+
+    return .{ offset, dependencies };
+}

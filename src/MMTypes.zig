@@ -718,9 +718,9 @@ pub const FishType = enum(u8) {
     f64 = 0xb,
 };
 
-pub const ResourceIdentifier = union(enum) {
-    guid: u32,
-    hash: [std.crypto.hash.Sha1.digest_length]u8,
+pub const ResourceIdentifier = union(enum(u8)) {
+    guid: u32 = 2,
+    hash: [std.crypto.hash.Sha1.digest_length]u8 = 1,
 };
 
 pub const ResourceDescriptor = struct {
