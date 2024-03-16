@@ -4,6 +4,7 @@ const Stream = @import("stream.zig");
 const MMTypes = @import("MMTypes.zig");
 const Debug = @import("debug.zig");
 const Resource = @import("resource.zig");
+const ArrayListStreamSource = @import("ArrayListStreamSource.zig");
 
 const Disassembler = @import("disassembler.zig");
 
@@ -23,6 +24,9 @@ pub fn main() !void {
     const file = try std.fs.cwd().openFile(args[1], .{});
     defer file.close();
 
+    const out = try std.fs.cwd().createFile("out.ff", .{});
+    defer out.close();
+
     const file_contents = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(file_contents);
 
@@ -32,33 +36,29 @@ pub fn main() !void {
     const script = try resource.stream.readScript(allocator);
     defer script.deinit(allocator);
 
+    var stream: Stream.MMStream(ArrayListStreamSource) = .{
+        .compression_flags = resource.stream.compression_flags,
+        .revision = resource.stream.revision,
+        .stream = .{
+            .array_list = std.ArrayList(u8).init(allocator),
+            .pos = 0,
+        },
+    };
+    defer stream.stream.array_list.deinit();
+
+    try stream.writeScript(script, allocator);
+
+    var out_stream: std.io.StreamSource = .{ .file = out };
+
+    try Resource.writeResource(
+        resource.type,
+        resource.stream.compression_flags,
+        resource.dependencies orelse &.{},
+        resource.stream.revision,
+        &out_stream,
+        stream.stream.array_list.items,
+        allocator,
+    );
+
     try Debug.dumpScript(stdout, script);
-
-    // const MMWriter = Writer.MMWriter(std.fs.File.Writer);
-
-    // const writer = MMWriter{
-    //     .compression_flags = .{
-    //         .compressed_integers = true,
-    //         .compressed_matrices = true,
-    //         .compressed_vectors = true,
-    //     },
-    //     .writer = out.writer(),
-    //     .revision = .{
-    //         .head = 0x272,
-    //         .branch_id = 0,
-    //         .branch_revision = 0,
-    //     },
-    // };
-
-    // try writer.writeScript(script);
-
-    // const import_table_file = try std.fs.cwd().createFile("import.ffi", .{});
-    // defer import_table_file.close();
-
-    // const script_file = try std.fs.cwd().createFile("script.ff", .{});
-    // defer script_file.close();
-
-    // try Disassembler.serializeImportTable(import_table_file.writer(), script);
-    // try Disassembler.serializeDisassembly(script_file.writer(), script, allocator);
-
 }

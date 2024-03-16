@@ -23,12 +23,12 @@ pub fn writeResource(
     compression_flags: MMTypes.CompressionFlags,
     dependencies: []const Dependency,
     revision: MMTypes.Revision,
-    stream: *std.io.StreamSource,
+    stream: anytype,
     data: []const u8,
     allocator: std.mem.Allocator,
 ) !void {
-    //Compressing files <1k is probably not worth it, lets leave it uncompressed
-    const compress = data.len > 1024 and (revision.head >= 0x189 and resource_type != .static_mesh);
+    //Compressing files <100b is probably not worth it, lets leave it uncompressed
+    const compress = data.len > 100 and (revision.head >= 0x189 and resource_type != .static_mesh);
 
     const writer = stream.writer();
 
@@ -55,7 +55,8 @@ pub fn writeResource(
         if (resource_type == .static_mesh)
             @panic("Unimplemented, sorry");
 
-        //In this revision, branch id and branch offset was branch revision was added
+        // NOTE(Aidan): Were they actually added on 0x27a, but how can it be on 0x272
+        // then?!
         if (revision.head >= 0x271) {
             try writer.writeInt(u16, revision.branch_id, .big);
             try writer.writeInt(u16, revision.branch_revision, .big);
@@ -152,7 +153,10 @@ pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !Resourc
     var magic: [3]u8 = undefined;
     _ = try raw_reader.readAll(&magic);
 
-    const resource_type: MMTypes.ResourceType = MMTypes.headerToResourceType(magic) orelse return error.UnknownResourceType;
+    const resource_type: MMTypes.ResourceType = MMTypes.headerToResourceType(magic) orelse {
+        std.debug.print("got unknown resource type {s}\n", .{magic});
+        return error.UnknownResourceType;
+    };
 
     const serialization_method = try std.meta.intToEnum(MMTypes.SerializationMethod, try raw_reader.readByte());
 

@@ -16,9 +16,13 @@ pub const Script = struct {
     functions: []const FunctionDefinition,
     a_string_table: AStringTable,
     w_string_table: WStringTable,
-    constant_table_s64: ?[]const u32, //why is this called s64 but its a u32 data type
+    constant_table_s64: ?[]const i64,
     constant_table_float: []const f32,
     depending_guids: ?[]const u32,
+    bytecode: []const Bytecode,
+    arguments: []const Argument,
+    line_numbers: []const u16,
+    local_variables: []const LocalVariable,
 
     pub fn deinit(self: *const Script, allocator: std.mem.Allocator) void {
         allocator.free(self.class_name);
@@ -27,8 +31,6 @@ pub const Script = struct {
         allocator.free(self.function_references);
         allocator.free(self.field_definitions);
         allocator.free(self.property_definitions);
-        for (self.functions) |function|
-            function.deinit(allocator);
         allocator.free(self.functions);
         self.a_string_table.deinit(allocator);
         self.w_string_table.deinit(allocator);
@@ -37,6 +39,10 @@ pub const Script = struct {
         allocator.free(self.constant_table_float);
         if (self.depending_guids) |depending_guids|
             allocator.free(depending_guids);
+        allocator.free(self.bytecode);
+        allocator.free(self.arguments);
+        allocator.free(self.line_numbers);
+        allocator.free(self.local_variables);
     }
 };
 
@@ -382,7 +388,7 @@ pub const TaggedInstruction = union(enum(u8)) {
 
 pub const AStringTable = struct {
     buf: []const u8,
-    strings: []const []const u8,
+    strings: []const [:0]const u8,
 
     pub fn deinit(self: AStringTable, allocator: std.mem.Allocator) void {
         allocator.free(self.strings);
@@ -392,7 +398,7 @@ pub const AStringTable = struct {
 
 pub const WStringTable = struct {
     buf: []const u16,
-    strings: []const []const u16,
+    strings: []const [:0]const u16,
 
     pub fn deinit(self: WStringTable, allocator: std.mem.Allocator) void {
         allocator.free(self.strings);
@@ -400,69 +406,73 @@ pub const WStringTable = struct {
     }
 };
 
-const ResolvableTypeReference = union(enum) {
-    type_reference: *const TypeReference,
-    idx: u32,
+const ResolvableTypeReference = u32;
+
+const ResolvableString = u32;
+
+const ResolvableFunction = u32;
+
+const ArgumentSlice = struct {
+    begin: u32,
+    end: u32,
+
+    pub inline fn len(self: ArgumentSlice) u32 {
+        return self.end - self.begin;
+    }
+
+    pub fn slice(self: ArgumentSlice, source: []const Argument) []const Argument {
+        return source[self.begin..self.end];
+    }
 };
 
-const ResolvableString = union(enum) {
-    string: ?*const []const u8,
-    idx: u32,
+const ResolvableBytecodeSlice = struct {
+    begin: u32,
+    end: u32,
+
+    pub inline fn len(self: ResolvableBytecodeSlice) u32 {
+        return self.end - self.begin;
+    }
+
+    pub fn slice(self: ResolvableBytecodeSlice, source: []const Bytecode) []const Bytecode {
+        return source[self.begin..self.end];
+    }
 };
 
-const ResolvableFunction = union(enum) {
-    function: *const FunctionDefinition,
-    idx: u32,
+const ResolvableLineNumberSlice = struct {
+    begin: u32,
+    end: u32,
+
+    pub inline fn len(self: ResolvableLineNumberSlice) u32 {
+        return self.end - self.begin;
+    }
+
+    pub fn slice(self: ResolvableLineNumberSlice, source: []const u16) []const u16 {
+        return source[self.begin..self.end];
+    }
 };
 
-const ResolvableArgumentSlice = union(enum) {
-    slice: []const Argument,
-    idx: struct {
-        begin: u32,
-        end: u32,
-    },
-};
+const ResolvableLocalVariableSlice = struct {
+    begin: u32,
+    end: u32,
 
-const ResolvableBytecodeSlice = union(enum) {
-    slice: []const Bytecode,
-    idx: struct {
-        begin: u32,
-        end: u32,
-    },
-};
+    pub inline fn len(self: ResolvableLocalVariableSlice) u32 {
+        return self.end - self.begin;
+    }
 
-const ResolvableLineNumberSlice = union(enum) {
-    slice: []const u16,
-    idx: struct {
-        begin: u32,
-        end: u32,
-    },
-};
-
-const ResolvableLocalVariableSlice = union(enum) {
-    slice: []const LocalVariable,
-    idx: struct {
-        begin: u32,
-        end: u32,
-    },
+    pub fn slice(self: ResolvableLocalVariableSlice, source: []const LocalVariable) []const LocalVariable {
+        return source[self.begin..self.end];
+    }
 };
 
 pub const FunctionDefinition = struct {
     modifiers: Modifiers,
     type_reference: ResolvableTypeReference,
     name: ResolvableString,
-    arguments: ResolvableArgumentSlice,
+    arguments: ArgumentSlice,
     bytecode: ResolvableBytecodeSlice,
     line_numbers: ResolvableLineNumberSlice,
     local_variables: ResolvableLocalVariableSlice,
     stack_size: u32,
-
-    pub fn deinit(self: FunctionDefinition, allocator: std.mem.Allocator) void {
-        allocator.free(self.arguments.slice);
-        allocator.free(self.bytecode.slice);
-        allocator.free(self.line_numbers.slice);
-        allocator.free(self.local_variables.slice);
-    }
 };
 
 const Function = struct {

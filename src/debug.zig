@@ -12,8 +12,8 @@ pub fn dumpScript(writer: anytype, script: MMTypes.Script) !void {
     try std.fmt.format(writer, " --- Type References ---\n", .{});
     for (script.type_references) |*type_reference| {
         try std.fmt.format(writer, " - Type {*} \n", .{type_reference});
-        if (type_reference.type_name.string) |type_name| {
-            try std.fmt.format(writer, "   - Type Name: {s}\n", .{type_name.*});
+        if (type_reference.type_name != 0xFFFFFFFF) {
+            try std.fmt.format(writer, "   - Type Name: {s}\n", .{script.a_string_table.strings[type_reference.type_name]});
         }
         try std.fmt.format(writer, "   - Machine Type: {s}\n", .{@tagName(type_reference.machine_type)});
         try std.fmt.format(writer, "   - Fish Type: {s}\n", .{@tagName(type_reference.fish_type)});
@@ -26,10 +26,10 @@ pub fn dumpScript(writer: anytype, script: MMTypes.Script) !void {
     try std.fmt.format(writer, " --- Field References ---\n", .{});
     for (script.field_references) |*field_reference| {
         try std.fmt.format(writer, " - Field {*} \n", .{field_reference});
-        if (field_reference.name.string) |type_name| {
-            try std.fmt.format(writer, "   - Name: {s}\n", .{type_name.*});
+        if (field_reference.name != 0xFFFFFFFF) {
+            try std.fmt.format(writer, "   - Name: {s}\n", .{script.a_string_table.strings[field_reference.name]});
         }
-        try std.fmt.format(writer, "   - Type: {*}\n", .{field_reference.type_reference.type_reference});
+        try std.fmt.format(writer, "   - Type: {*}\n", .{&script.type_references[field_reference.type_reference]});
     }
     try std.fmt.format(writer, "\n", .{});
 
@@ -38,23 +38,23 @@ pub fn dumpScript(writer: anytype, script: MMTypes.Script) !void {
         try std.fmt.format(writer, " - Function {*} \n", .{function});
         try std.fmt.format(writer, "   - Modifiers: {}\n", .{function.modifiers});
         try std.fmt.format(writer, "   - Stack size: {d}\n", .{function.stack_size});
-        if (function.name.string) |type_name| {
-            try std.fmt.format(writer, "   - Name: {s}\n", .{type_name.*});
+        if (function.name != 0xFFFFFFFF) {
+            try std.fmt.format(writer, "   - Name: {s}\n", .{script.a_string_table.strings[function.name]});
         }
-        try std.fmt.format(writer, "   - Type: {*}\n", .{function.type_reference.type_reference});
+        try std.fmt.format(writer, "   - Type: {*}\n", .{&script.type_references[function.type_reference]});
 
-        if (function.arguments.slice.len > 0) {
+        if (function.arguments.len() > 0) {
             try std.fmt.format(writer, "   - Arguments\n", .{});
-            for (function.arguments.slice) |argument| {
+            for (function.arguments.slice(script.arguments)) |argument| {
                 try std.fmt.format(writer, "      - Offset: {d}\n", .{argument.offset});
-                try std.fmt.format(writer, "      - Type: {*}\n", .{argument.type_reference.type_reference});
+                try std.fmt.format(writer, "      - Type: {*}\n", .{&script.type_references[argument.type_reference]});
             }
         }
 
-        if (function.bytecode.slice.len > 0) {
+        if (function.bytecode.len() > 0) {
             try std.fmt.format(writer, "   - Bytecode\n", .{});
 
-            for (function.bytecode.slice, function.line_numbers.slice, 0..) |bytecode, line_number, i| {
+            for (function.bytecode.slice(script.bytecode), function.line_numbers.slice(script.line_numbers), 0..) |bytecode, line_number, i| {
                 _ = line_number; // autofix
 
                 try std.fmt.format(writer, "      {d:0>4}: 0x{x:0>16} {s} ", .{
