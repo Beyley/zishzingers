@@ -216,7 +216,12 @@ pub const TaggedInstruction = union(enum(u8)) {
     GTEc: BinaryClass = 0x27,
     EQc: BinaryClass = 0x28,
     NEc: BinaryClass = 0x29,
+    /// Adds two 32-bit integers together,
+    /// with src_a_idx being signed, src_b_idx being unsigned,
+    /// and the result being stored in dst_idx as unsigned
     ADDi: BinaryClass = 0x2a,
+    /// Subtracts two 32-bit integers from each other, storing a 32-bit integer result.
+    /// Subtracting src_b_idx from src_a_idx, and storing the result into dst_idx
     SUBi: BinaryClass = 0x2b,
     MULi: BinaryClass = 0x2c,
     DIVi: BinaryClass = 0x2d,
@@ -338,10 +343,14 @@ pub const TaggedInstruction = union(enum(u8)) {
     ARRAY_CLEAR: SetElementClass = 0xa1,
     WRITE: WriteClass = 0xa2,
     ARG: ArgClass = 0xa3,
+    /// Calls the function specified by call_idx, storing the return value inside of dst_idx
     CALL: CallClass = 0xa4,
     RET: ReturnClass = 0xa5,
+    /// Unconditional relative branch, with the offset specified
     B: BranchClass = 0xa6,
+    /// Branches if the byte in the specified register is equal to zero
     BEZ: BranchClass = 0xa7,
+    /// Branches if the byte in the specified register is not equal to zero
     BNEZ: BranchClass = 0xa8,
     CASTsp: CastClass = 0xa9,
     INTb: UnaryClass = 0xaa,
