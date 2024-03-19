@@ -174,6 +174,7 @@ pub const InstructionParams = @Type(.{ .Union = blk: {
     break :blk info;
 } });
 pub const TaggedInstruction = union(enum(u8)) {
+    /// Does nothing, progresses to the next instruction
     NOP: NopClass = 0x0,
     LCb: LoadConstClass = 0x1,
     LCc: LoadConstClass = 0x2,
@@ -216,29 +217,87 @@ pub const TaggedInstruction = union(enum(u8)) {
     GTEc: BinaryClass = 0x27,
     EQc: BinaryClass = 0x28,
     NEc: BinaryClass = 0x29,
-    /// Adds two 32-bit integers together,
-    /// with src_a_idx being signed, src_b_idx being unsigned,
-    /// and the result being stored in dst_idx as unsigned
+    /// Adds two signed 32-bit integers together, storing the result in dst_idx
     ADDi: BinaryClass = 0x2a,
     /// Subtracts two 32-bit integers from each other, storing a 32-bit integer result.
     /// Subtracting src_b_idx from src_a_idx, and storing the result into dst_idx
     SUBi: BinaryClass = 0x2b,
+    /// Multiplies two 32-bit ingeters with eachother, storing a 32-bit integer result in dst_idx
     MULi: BinaryClass = 0x2c,
+    /// Divides two 32-bit ingeters, storing the result as a 32-bit integer
+    /// Divides src_a by src_b
     DIVi: BinaryClass = 0x2d,
+    /// Performs modulo on two signed 32-bit integers, storing the result as a signed 32-bit integer
+    /// Operation is as follows: dst = src_a % src_b
     MODi: BinaryClass = 0x2e,
+    /// Reads two signed 32-bit integers from the source registers,
+    /// storing the smaller value in the destination register as a signed 32-bit integer
     MINi: BinaryClass = 0x2f,
+    /// Reads two signed 32-bit integers from the source registers,
+    /// storing the larger value in the destination register as a signed 32-bit integer
     MAXi: BinaryClass = 0x30,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// masking src_b with 0x11111, then shifts src_a left by the masked value,
+    /// storing the result in dst_idx
+    ///
+    /// Zeroes are shifted in.
     SLAi: BinaryClass = 0x31,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// masking src_b with 0x11111, then shifts src_a right by the masked value,
+    /// storing the result as a signed 32-bit integer  in dst_idx
+    ///
+    /// The highest bit is shifted in.
     SRAi: BinaryClass = 0x32,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// masking src_b with 0x11111, then shifts src_a right by the masked value,
+    /// storing the result as a signed 32-bit integer in dst_idx
+    ///
+    /// Zeroes are shifted in.
     SRLi: BinaryClass = 0x33,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// then does a bitwise OR on the values, storing the result in dst_idx
     BIT_ORi: BinaryClass = 0x34,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// then does a bitwise AND on the values, storing the result in dst_idx
     BIT_ANDi: BinaryClass = 0x35,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// then does a bitwise XOR on the values, storing the result in dst_idx
     BIT_XORi: BinaryClass = 0x36,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// then compares whether src_a < src_b,
+    /// then storing the result into dst_idx as a 32-bit signed integer
+    ///
+    /// The result is 1 if true, 0 if false
     LTi: BinaryClass = 0x37,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// then compares whether src_a <= src_b,
+    /// then storing the result into dst_idx as a 32-bit signed integer
+    ///
+    /// The result is 1 if true, 0 if false
     LTEi: BinaryClass = 0x38,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// then compares whether src_a > src_b,
+    /// then storing the result into dst_idx as a 32-bit signed integer
+    ///
+    /// The result is 1 if true, 0 if false
     GTi: BinaryClass = 0x39,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// then compares whether src_a >= src_b,
+    /// then storing the result into dst_idx as a 32-bit signed integer
+    ///
+    /// The result is 1 if true, 0 if false
     GTEi: BinaryClass = 0x3a,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// then compares whether src_a == src_b,
+    /// then storing the result into dst_idx as a single byte (?)
+    ///
+    /// The result is 1 if true, 0 if false
     EQi: BinaryClass = 0x3b,
+    /// Loads a signed 32-bit integer from src_a and src_b,
+    /// then compares whether src_a != src_b,
+    /// then storing the result into dst_idx as a single byte (?)
+    ///
+    /// The result is 1 if true, 0 if false
     NEi: BinaryClass = 0x3c,
     ADDf: BinaryClass = 0x3d,
     SUBf: BinaryClass = 0x3e,
