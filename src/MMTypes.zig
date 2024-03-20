@@ -61,12 +61,14 @@ pub const CastClass = packed struct(u48) {
     type_idx: u16,
 };
 
+/// Used for instructions with a single source and a single destination register
 pub const UnaryClass = packed struct(u48) {
     dst_idx: u16,
     src_idx: u16,
     _unused: u16 = undefined,
 };
 
+/// Used for instructions with two source registers and one destination register
 pub const BinaryClass = packed struct(u48) {
     dst_idx: u16,
     src_a_idx: u16,
@@ -176,30 +178,81 @@ pub const InstructionParams = @Type(.{ .Union = blk: {
 pub const TaggedInstruction = union(enum(u8)) {
     /// Does nothing, progresses to the next instruction
     NOP: NopClass = 0x0,
+    /// Loads a boolean into the destination register,
+    /// storing a 1 for true, and 0 for false.
+    /// The result is a single byte
     LCb: LoadConstClass = 0x1,
+    /// Loads a 16-bit integer into the destination register,
+    /// This directly uses the upper 16-bits of the constant_idx as the loaded constant
     LCc: LoadConstClass = 0x2,
+    /// Loads a 32-bit integer into a the destination register,
+    /// This directly uses the constant_idx as the loaded constant
     LCi: LoadConstClass = 0x3,
+    /// Loads a 32-bit floating point number into the destination register
+    /// This directly uses the constant_idx as the loaded constant
     LCf: LoadConstClass = 0x4,
+    /// Loads the 32-bit pointer to a string into the destination register
+    /// This pulls from the wide-string table
     LCsw: LoadConstClass = 0x5,
+    /// Loads a 32-bit null pointer into the destination register
     LC_NULLsp: LoadConstClass = 0x6,
+    /// Moves a single byte from the source register into the destination register
     MOVb: UnaryClass = 0x7,
+    /// Negates the 1-byte boolean at the source register,
+    /// storing the result in the destination register as a 1-byte boolean
     LOG_NEGb: UnaryClass = 0x8,
+    /// Moves a two byte integer from the source register into the destination register
     MOVc: UnaryClass = 0x9,
+    /// Moves a four-byte integer from the source register into the destination register
     MOVi: UnaryClass = 0xa,
+    /// Increments the signed 32-bit integer at the source register,
+    /// storing the result as a signed 32-bit integer into the destination register
     INCi: UnaryClass = 0xb,
+    /// Decrements the signed 32-bit integer at the source register,
+    /// storing the result as a signed 32-bit integer into the destination register
     DECi: UnaryClass = 0xc,
+    /// Negates the signed 32-bit integer at the source register (eg `-val`),
+    /// storing the result as a signed 32-bit integer into the destination register
     NEGi: UnaryClass = 0xd,
+    /// Does a bitwise negation of the 4-byte region of data stored at the source register
+    /// storing the result into the destination register
     BIT_NEGi: UnaryClass = 0xe,
+    /// Does a logical negation of the 32-bit integer stored at the source register,
+    /// eg. turning a 1 into a 0, and a 0 into a 1
     LOG_NEGi: UnaryClass = 0xf,
+    /// Gets the absolute value of the 32-bit integer stored at the source register,
+    /// storing the result in the destination register
     ABSi: UnaryClass = 0x10,
+    /// Moves a 32-bit float from the source register into the destination register
     MOVf: UnaryClass = 0x11,
+    /// Negates the 32-bit float stored at the source register (eg. `-val`),
+    /// storing the result in the destination register
     NEGf: UnaryClass = 0x12,
+    /// Gets the absolute value of the 32-bit float stored at the source register
+    /// storing the result in the destination register
     ABSf: UnaryClass = 0x13,
+    /// Gets the square root of the 32-bit float stored at the source register
+    /// storing the result in the destination register
     SQRTf: UnaryClass = 0x14,
+    /// Does a sine operation on the 32-bit float stored at the source register,
+    /// first, the value is cast to a double before the operation takes place,
+    /// then the result of the operation is cast back to a 32-bit integer,
+    /// and stored in the destination register as a 32-bit float
     SINf: UnaryClass = 0x15,
+    /// Does a cosine operation on the 32-bit float stored at the source register,
+    /// first, the value is cast to a double before the operation takes place,
+    /// then the result of the operationis cast back to a 32-bit integer,
+    /// and stored in the destination register as a 32-bit float
     COSf: UnaryClass = 0x16,
+    /// Does a tangent operation on the 32-bit float stored at the source register,
+    /// storing the result in the destination register as a 32-bit float
     TANf: UnaryClass = 0x17,
+    /// Moves a v4 from the source register to the destination register
+    /// Both registers are rounded *down* to the nearest multiple of 16, due to AltiVec requirements
     MOVv4: UnaryClass = 0x18,
+    /// Flips the most signifigant bit of all 4 elements of the vector.
+    ///
+    /// TODO: figure out if this is really correct, look in deploy at 0x002180bc
     NEGv4: UnaryClass = 0x19,
     MOVm44: UnaryClass = 0x1a,
     IT_MOV_S_DEPRECATED: NopClass = 0x1b,
@@ -217,7 +270,7 @@ pub const TaggedInstruction = union(enum(u8)) {
     GTEc: BinaryClass = 0x27,
     EQc: BinaryClass = 0x28,
     NEc: BinaryClass = 0x29,
-    /// Adds two signed 32-bit integers together, storing the result in dst_idx
+    /// Adds two signed 32-bit integers together, storing the result in the destionation register
     ADDi: BinaryClass = 0x2a,
     /// Subtracts two 32-bit integers from each other, storing a 32-bit integer result.
     /// Subtracting src_b_idx from src_a_idx, and storing the result into dst_idx
