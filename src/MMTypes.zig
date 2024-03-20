@@ -401,6 +401,32 @@ pub const TaggedInstruction = union(enum(u8)) {
     ARRAY_FIND: GetElementClass = 0xa0,
     ARRAY_CLEAR: SetElementClass = 0xa1,
     WRITE: WriteClass = 0xa2,
+    /// Loads the specified register into the specified argument register
+    ///
+    /// The data loaded depends on the machine type of the instruction.
+    ///
+    /// If the destination register is a0 and the machine type is safe_ptr
+    /// it does something idk look at 218c14 in ghidra in deploy
+    /// its maybe a special "pointer to self" if I had to guess?
+    /// Its set to the CThing GUID when preparing a non-static function,
+    /// so its *probably* the self ptr or the attached GUID of the function if I had to guess.
+    ///
+    /// void       - No load takes place
+    /// bool       - Loads one byte
+    /// char       - Loads two bytes
+    /// s32        - Loads four bytes
+    /// f32        - Loads four bytes
+    /// v4         - Loads sixteen bytes, rounding *down* the src and dst registers
+    ///              to the nearest multiple of 16, due to Altivec requirements.
+    /// m44        - Loads four packed v4 (total of 64 bytes), rounding *down* the src and dst registers
+    ///              to the nearest multiple of 16, due to Altivec requirements.
+    /// deprecated - No load takes place
+    /// raw_ptr    - Loaded as s32
+    /// ref_ptr    - No load takes place
+    /// safe_ptr   - Loaded as s32
+    /// object_ref - Loaded as s32
+    /// s64        - Loads eight bytes
+    /// f64        - Loads eight bytes
     ARG: ArgClass = 0xa3,
     /// Calls the function specified by call_idx, storing the return value inside of dst_idx
     CALL: CallClass = 0xa4,
@@ -766,18 +792,27 @@ fn GenerateResourceType(items: anytype) type {
 
 pub const MachineType = enum(u8) {
     void = 0x0,
+    /// A boolean, one byte in size.
     bool = 0x1,
+    /// A character, two bytes in size, presumably as a single big endian UTF-16 codepoint
     char = 0x2,
+    /// A signed 32-bit integer
     s32 = 0x3,
+    /// A 32-bit floating point number
     f32 = 0x4,
+    /// A four element (TODO: ensure this is actually f32) f32 vector, sixteen bytes in size
     v4 = 0x5,
+    /// A 4x4 matrix of (TODO: ensure this is actually f32) f32, total of 64 bytes.
+    /// This is in-memory equivalent to four v4 next to eachother.
     m44 = 0x6,
     deprecated = 0x7,
     raw_ptr = 0x8,
     ref_ptr = 0x9,
     safe_ptr = 0xa,
     object_ref = 0xb,
+    /// A signed 64-bit integer
     s64 = 0xc,
+    /// A 64-bit floating point number
     f64 = 0xd,
 };
 
