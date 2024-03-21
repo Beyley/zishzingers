@@ -497,60 +497,203 @@ pub const TaggedInstruction = union(enum(u8)) {
     /// Gets the W [3] member of the v4 specified in the base register,
     /// stores the result in the destination register as an f32
     GET_V4_W: GetBuiltinMemberClass = 0x5d,
+    /// TODO
     GET_V4_LEN2: GetBuiltinMemberClass = 0x5e,
+    /// TODO
     GET_V4_LEN3: GetBuiltinMemberClass = 0x5f,
+    /// TODO
     GET_V4_LEN4: GetBuiltinMemberClass = 0x60,
+    /// Loads the X, X element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x00
     GET_M44_XX: GetBuiltinMemberClass = 0x61,
+    /// Loads the X, Y element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x10
     GET_M44_XY: GetBuiltinMemberClass = 0x62,
+    /// Loads the X, Z element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x20
     GET_M44_XZ: GetBuiltinMemberClass = 0x63,
+    /// Loads the X, W element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x30
     GET_M44_XW: GetBuiltinMemberClass = 0x64,
+    /// Loads the Y, X element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x04
     GET_M44_YX: GetBuiltinMemberClass = 0x65,
+    /// Loads the Y, Y element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x14
     GET_M44_YY: GetBuiltinMemberClass = 0x66,
+    /// Loads the Y, Z element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x24
     GET_M44_YZ: GetBuiltinMemberClass = 0x67,
+    /// Loads the Y, W element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x34
     GET_M44_YW: GetBuiltinMemberClass = 0x68,
+    /// Loads the Z, X element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x08
     GET_M44_ZX: GetBuiltinMemberClass = 0x69,
+    /// Loads the Z, Y element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x18
     GET_M44_ZY: GetBuiltinMemberClass = 0x6a,
+    /// Loads the Z, Z element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x28
     GET_M44_ZZ: GetBuiltinMemberClass = 0x6b,
+    /// Loads the Z, W element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x38
     GET_M44_ZW: GetBuiltinMemberClass = 0x6c,
+    /// Loads the W, X element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x0c
     GET_M44_WX: GetBuiltinMemberClass = 0x6d,
+    /// Loads the W, Y element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x1c
     GET_M44_WY: GetBuiltinMemberClass = 0x6e,
+    /// Loads the W, Z element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x2c
     GET_M44_WZ: GetBuiltinMemberClass = 0x6f,
+    /// Loads the W, W element of the 4x4 matrix,
+    /// storing the result as a 32-bit float inside of the destination register
+    ///
+    /// The load offset is 0x3c
     GET_M44_WW: GetBuiltinMemberClass = 0x70,
+    /// Gets the X row of the matrix,
+    /// storing the result in the destination register
     GET_M44_rX: GetBuiltinMemberClass = 0x71,
+    /// Gets the Y row of the matrix,
+    /// storing the result in the destination register
     GET_M44_rY: GetBuiltinMemberClass = 0x72,
+    /// Gets the Z row of the matrix,
+    /// storing the result in the destination register
     GET_M44_rZ: GetBuiltinMemberClass = 0x73,
+    /// Gets the W row of the matrix,
+    /// storing the result in the destination register
     GET_M44_rW: GetBuiltinMemberClass = 0x74,
+    /// Gets the X column of the matrix,
+    /// storing the result in the destination register
     GET_M44_cX: GetBuiltinMemberClass = 0x75,
+    /// Gets the Y column of the matrix,
+    /// storing the result in the destination register
     GET_M44_cY: GetBuiltinMemberClass = 0x76,
+    /// Gets the Z column of the matrix,
+    /// storing the result in the destination register
     GET_M44_cZ: GetBuiltinMemberClass = 0x77,
+    /// Gets the W column of the matrix,
+    /// storing the result in the destination register
     GET_M44_cW: GetBuiltinMemberClass = 0x78,
+    /// Sets the X [0] element of the vector to the f32 stored in the source register
     SET_V4_X: SetBuiltinMemberClass = 0x79,
+    /// Sets the Y [1] element of the vector to the f32 stored in the source register
     SET_V4_Y: SetBuiltinMemberClass = 0x7a,
+    /// Sets the Z [2] element of the vector to the f32 stored in the source register
     SET_V4_Z: SetBuiltinMemberClass = 0x7b,
+    /// Sets the W [3] element of the vector to the f32 stored in the source register
     SET_V4_W: SetBuiltinMemberClass = 0x7c,
+    /// Sets the X, X element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x00
     SET_M44_XX: SetBuiltinMemberClass = 0x7d,
+    /// Sets the X, Y element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x10
     SET_M44_XY: SetBuiltinMemberClass = 0x7e,
+    /// Sets the X, Z element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x20
     SET_M44_XZ: SetBuiltinMemberClass = 0x7f,
+    /// Sets the X, W element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x30
     SET_M44_XW: SetBuiltinMemberClass = 0x80,
+    /// Sets the Y, X element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x04
     SET_M44_YX: SetBuiltinMemberClass = 0x81,
+    /// Sets the Y, Y element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x14
     SET_M44_YY: SetBuiltinMemberClass = 0x82,
+    /// Sets the Y, Z element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x24
     SET_M44_YZ: SetBuiltinMemberClass = 0x83,
+    /// Sets the Y, W element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x34
     SET_M44_YW: SetBuiltinMemberClass = 0x84,
+    /// Sets the Z, X element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x08
     SET_M44_ZX: SetBuiltinMemberClass = 0x85,
+    /// Sets the Z, Y element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x18
     SET_M44_ZY: SetBuiltinMemberClass = 0x86,
+    /// Sets the Z, Z element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x28
     SET_M44_ZZ: SetBuiltinMemberClass = 0x87,
+    /// Sets the Z, W element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x38
     SET_M44_ZW: SetBuiltinMemberClass = 0x88,
+    /// Sets the W, X element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x0c
     SET_M44_WX: SetBuiltinMemberClass = 0x89,
+    /// Sets the W, Y element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x1c
     SET_M44_WY: SetBuiltinMemberClass = 0x8a,
+    /// Sets the W, Z element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x2c
     SET_M44_WZ: SetBuiltinMemberClass = 0x8b,
+    /// Sets the W, W element of the 4x4 matrix, to the f32 stored in the source register
+    ///
+    /// The store offset is 0x3c
     SET_M44_WW: SetBuiltinMemberClass = 0x8c,
+    /// Sets the X row of the 4x4 matrix to the v4 specified in the source register
     SET_M44_rX: SetBuiltinMemberClass = 0x8d,
+    /// Sets the Y row of the 4x4 matrix to the v4 specified in the source register
     SET_M44_rY: SetBuiltinMemberClass = 0x8e,
+    /// Sets the Z row of the 4x4 matrix to the v4 specified in the source register
     SET_M44_rZ: SetBuiltinMemberClass = 0x8f,
+    /// Sets the W row of the 4x4 matrix to the v4 specified in the source register
     SET_M44_rW: SetBuiltinMemberClass = 0x90,
+    /// Sets the X column of the 4x4 matrix to the v4 specified in the source register
     SET_M44_cX: SetBuiltinMemberClass = 0x91,
+    /// Sets the Y column of the 4x4 matrix to the v4 specified in the source register
     SET_M44_cY: SetBuiltinMemberClass = 0x92,
+    /// Sets the Z column of the 4x4 matrix to the v4 specified in the source register
     SET_M44_cZ: SetBuiltinMemberClass = 0x93,
+    /// Sets the W column of the 4x4 matrix to the v4 specified in the source register
     SET_M44_cW: SetBuiltinMemberClass = 0x94,
     GET_SP_MEMBER: GetMemberClass = 0x95,
     GET_RP_MEMBER: GetMemberClass = 0x96,
@@ -969,6 +1112,7 @@ pub const MachineType = enum(u8) {
     v4 = 0x5,
     /// A 4x4 matrix of f32 elements, total of 64 bytes.
     /// This is in-memory equivalent to four v4 next to eachother.
+    /// This is stored in column-major order
     m44 = 0x6,
     deprecated = 0x7,
     raw_ptr = 0x8,
