@@ -383,38 +383,119 @@ pub const TaggedInstruction = union(enum(u8)) {
     ///
     /// The result is 1 if true, 0 if false
     NEi: BinaryClass = 0x3c,
+    /// Adds the two 32-bit floats stored at the source registers together,
+    /// then stores the result in the destination register as a 32-bit float
     ADDf: BinaryClass = 0x3d,
+    /// Subtracts the 32-bit float from the src_b register from the src_a register (eg. `*src_a - *src_b`),
+    /// then stores the result in the destination register as a 32-bit float
     SUBf: BinaryClass = 0x3e,
+    /// Multiplies the two 32-bit floats stored in the source registers,
+    /// then stores the result in the destination register
     MULf: BinaryClass = 0x3f,
+    /// Divides the 32-bit float stored in src_a by the 32-bit float stored in src_b (eg. *src_a / *src_b),
+    /// then stores the result in the destination register
     DIVf: BinaryClass = 0x40,
+    /// Stores the lower 32-bit float of the two source registers into the destination register
     MINf: BinaryClass = 0x41,
+    /// Stores the higher 32-bit float of the two source registers into the destination register
     MAXf: BinaryClass = 0x42,
+    /// Compares whether the 32-bit float stored at src_a is less than the 32-bit float stored at src_b
+    /// Stores the result as a boolean into the destination register
     LTf: BinaryClass = 0x43,
+    /// Compares whether the 32-bit float stored at src_a is less than or equal to the 32-bit float stored at src_b
+    /// Stores the result as a boolean into the destination register
     LTEf: BinaryClass = 0x44,
+    /// Compares whether the 32-bit float stored at src_a is greater than the 32-bit float stored at src_b
+    /// Stores the result as a boolean into the destination register
     GTf: BinaryClass = 0x45,
+    /// Compares whether the 32-bit float stored at src_a is greater than or equal to the 32-bit float stored at src_b
+    /// Stores the result as a boolean into the destination register
     GTEf: BinaryClass = 0x46,
+    /// Compares whether the two 32-bit floats in the source registers are equal,
+    /// storing the result as a boolean in the destination register
     EQf: BinaryClass = 0x47,
+    /// Compares whether the two 32-bit floats in the source registers are not equal,
+    /// storing the result as a boolean in the destination register
     NEf: BinaryClass = 0x48,
+    /// Adds the four 32-bit floating point numbers in the src_a register with the ones in the src_b register,
+    /// storing the result in the destination register
+    ///
+    /// The source and destination registers are rounded *down* to the nearest multiple of 16, due to Altivec requirements
     ADDv4: BinaryClass = 0x49,
+    /// Subtracts the four 32-bit floating point numbers in the src_b register from the ones in the src_b register,
+    /// storing the result in the destination register (eg. *src_a - *src_b)
+    ///
+    /// The source and destination registers are rounded *down* to the nearest multiple of 16, due to Altivec requirements
     SUBv4: BinaryClass = 0x4a,
+    /// TODO: 0x00217b98
     MULSv4: BinaryClass = 0x4b,
+    /// TODO: 0x00217b1c
     DIVSv4: BinaryClass = 0x4c,
+    /// Does a dot-product of two 4-element vectors stored at src_a and src_b,
+    /// and stores the result as a 32-bit floating point number in the destination register
+    ///
+    /// Due to AltiVec requirements, the source registers are rounded *down* to the nearest multiple of 16,
+    /// and the destination register is rounded *down* to the nearest multiple of 4
     DOT4v4: BinaryClass = 0x4d,
+    /// Does a dot product of the rightmost three elements stored in both vectors,
+    /// storing the result as a 32-bit float in the destination register
+    ///
+    /// Due to AltiVec requirements, the source registers are rounded *down* to the nearest multiple of 16,
+    /// and the destination register is rounded *down* to the nearest multiple of 4
     DOT3v4: BinaryClass = 0x4e,
+    /// Does a dot product on the rightmost two elements stored in both vectors,
+    /// storing the result as a 32-bit float in the destination register
+    ///
+    /// Due to AltiVec requirements, the source registers are rounded *down* to the nearest multiple of 16,
+    /// and the destination register is rounded *down* to the nearest multiple of 4
     DOT2v4: BinaryClass = 0x4f,
+    /// Does a cross product on the vectors stored in the two input registers,
+    /// storing the result vector in the destination register
+    ///
+    /// Due to AltiVec requirements, the source and destination registers
+    /// are rounded *down* to the nearest multiple of 16
     CROSS3v4: BinaryClass = 0x50,
+    /// Multiplies two 4x4 matrices of f32 together.
+    /// Stores the result in the destination register.
+    ///
+    /// Due to AltiVec requirements, the source and destination registers
+    /// are rounded *down* to the nearest multiple of 16
     MULm44: BinaryClass = 0x51,
+    /// Treated as a NOP
     IT_EQ_S_DEPRECATED: NopClass = 0x52,
+    /// Treated as a NOP
     IT_NE_S_DEPRECATED: NopClass = 0x53,
+    /// Compares if the two 32-bit values stored in the source registers are equal,
+    /// storing the result in the destination register as a boolean
     EQrp: BinaryClass = 0x54,
+    /// Compares if the two 32-bit values stored in the source registers are not equal,
+    /// storing the result in the destination register as a boolean
     NErp: BinaryClass = 0x55,
+    /// Compares if the two 32-bit values stored in the source registers are equal,
+    /// storing the result in the destination register as a boolean
     EQo: BinaryClass = 0x56,
+    /// Compares if the two 32-bit values stored in the source registers are not equal,
+    /// storing the result in the destination register as a boolean
     NEo: BinaryClass = 0x57,
+    /// Gets the Things that are located at the two safe_ptrs in the source registers,
+    /// and checks if they are equal
+    /// Stores the result in the destination register as a boolean
     EQsp: BinaryClass = 0x58,
+    /// Gets the Things that are located at the two safe_ptrs in the source registers,
+    /// and checks if they are not equal
+    /// Stores the result in the destination register as a boolean
     NEsp: BinaryClass = 0x59,
+    /// Gets the X [0] member of the v4 specified in the base register,
+    /// stores the result in the destination register as an f32
     GET_V4_X: GetBuiltinMemberClass = 0x5a,
+    /// Gets the Y [1] member of the v4 specified in the base register,
+    /// stores the result in the destination register as an f32
     GET_V4_Y: GetBuiltinMemberClass = 0x5b,
+    /// Gets the Z [2] member of the v4 specified in the base register,
+    /// stores the result in the destination register as an f32
     GET_V4_Z: GetBuiltinMemberClass = 0x5c,
+    /// Gets the W [3] member of the v4 specified in the base register,
+    /// stores the result in the destination register as an f32
     GET_V4_W: GetBuiltinMemberClass = 0x5d,
     GET_V4_LEN2: GetBuiltinMemberClass = 0x5e,
     GET_V4_LEN3: GetBuiltinMemberClass = 0x5f,
@@ -884,7 +965,7 @@ pub const MachineType = enum(u8) {
     s32 = 0x3,
     /// A 32-bit floating point number
     f32 = 0x4,
-    /// A four element f32 vector, sixteen bytes in size
+    /// A four element f32 vector, sixteen bytes in size, in the order of XYZW
     v4 = 0x5,
     /// A 4x4 matrix of f32 elements, total of 64 bytes.
     /// This is in-memory equivalent to four v4 next to eachother.
