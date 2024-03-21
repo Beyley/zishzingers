@@ -250,25 +250,56 @@ pub const TaggedInstruction = union(enum(u8)) {
     /// Moves a v4 from the source register to the destination register
     /// Both registers are rounded *down* to the nearest multiple of 16, due to AltiVec requirements
     MOVv4: UnaryClass = 0x18,
-    /// Flips the most signifigant bit of all 4 elements of the vector.
-    ///
-    /// TODO: figure out if this is really correct, look in deploy at 0x002180bc
+    /// Negates the four f32 elements in the vector (eg `-val`)
+    /// Storing the result in the destination register
     NEGv4: UnaryClass = 0x19,
+    /// Moves the m44 matrix from the source register into the destination register
     MOVm44: UnaryClass = 0x1a,
+    /// Treated as a NOP
     IT_MOV_S_DEPRECATED: NopClass = 0x1b,
+    /// Moves a 4-byte raw_ptr from the source register into the destination register
     MOVrp: UnaryClass = 0x1c,
+    /// Treated as a NOP
     MOVcp: UnaryClass = 0x1d,
+    /// Moves a 4-byte safe_ptr from the source register into the destination register
     MOVsp: UnaryClass = 0x1e,
+    /// Moves a 4-byte object_ref from the source register into the destination register
     MOVo: UnaryClass = 0x1f,
+    /// Compares if the booleans stored at the source registers are equal,
+    /// storing into the destination register as a boolean
     EQb: BinaryClass = 0x20,
+    /// Compares if the booleans stored at the source registers are not equal,
+    /// storing into the destination register as a boolean
     NEb: BinaryClass = 0x21,
+    /// Seems to trigger a non-fatal "invalid instruction" message
     IT_RESERVED0_C: BinaryClass = 0x22,
+    /// Seems to trigger a non-fatal "invalid instruction" message
     IT_RESERVED1_C: BinaryClass = 0x23,
+    /// Compares two chars, checking if the value stored in src_a
+    /// is less than the value stored in src_b
+    ///
+    /// Stores the result into the destination register as a boolean
     LTc: BinaryClass = 0x24,
+    /// Compares two chars, checking if the value stored in src_a
+    /// is less than or equal to the value stored in src_b
+    ///
+    /// Stores the result into the destination register as a boolean
     LTEc: BinaryClass = 0x25,
+    /// Compares two chars, checking if the value stored in src_a
+    /// is greater than the value stored in src_b
+    ///
+    /// Stores the result into the destination register as a boolean
     GTc: BinaryClass = 0x26,
+    /// Compares two chars, checking if the value stored in src_a
+    /// is greater than or equal to the value stored in src_b
+    ///
+    /// Stores the result into the destination register as a boolean
     GTEc: BinaryClass = 0x27,
+    /// Compares if the chars stored at the source registers are equal,
+    /// storing into the destination register as a boolean
     EQc: BinaryClass = 0x28,
+    /// Compares if the chars stored at the source registers are not equal,
+    /// storing into the destination register as a boolean
     NEc: BinaryClass = 0x29,
     /// Adds two signed 32-bit integers together, storing the result in the destionation register
     ADDi: BinaryClass = 0x2a,
@@ -853,9 +884,9 @@ pub const MachineType = enum(u8) {
     s32 = 0x3,
     /// A 32-bit floating point number
     f32 = 0x4,
-    /// A four element (TODO: ensure this is actually f32) f32 vector, sixteen bytes in size
+    /// A four element f32 vector, sixteen bytes in size
     v4 = 0x5,
-    /// A 4x4 matrix of (TODO: ensure this is actually f32) f32, total of 64 bytes.
+    /// A 4x4 matrix of f32 elements, total of 64 bytes.
     /// This is in-memory equivalent to four v4 next to eachother.
     m44 = 0x6,
     deprecated = 0x7,
