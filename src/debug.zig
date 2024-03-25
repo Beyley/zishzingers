@@ -87,6 +87,7 @@ pub fn dumpScript(writer: anytype, script: MMTypes.Script) !void {
                             MMTypes.BranchClass => try std.fmt.format(writer, "r{d}, @{d}", .{ params.src_idx, params.branch_offset + @as(i32, @intCast(i)) }),
                             MMTypes.CastClass => try std.fmt.format(writer, "r{d}, t{d}, r{d}", .{ params.dst_idx, params.type_idx, params.src_idx }),
                             MMTypes.NewObjectClass => try std.fmt.format(writer, "r{d}, t{d}", .{ params.dst_idx, params.type_idx }),
+                            MMTypes.ExternalInvokeClass => try std.fmt.format(writer, "r{d}, 0x{x}", .{ params.dst_idx, params.call_address }),
                             else => @compileError("Unhandled class type " ++ @typeName(ParamsType)),
                         }
                     },

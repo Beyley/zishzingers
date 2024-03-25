@@ -152,6 +152,11 @@ pub const BranchClass = packed struct(u48) {
     branch_offset: i32,
 };
 
+pub const ExternalInvokeClass = packed struct(u48) {
+    dst_idx: u16,
+    call_address: u32,
+};
+
 pub const Bytecode = packed struct(u64) {
     op: InstructionType,
     type: MachineType,
@@ -870,6 +875,20 @@ pub const TaggedInstruction = union(enum(u8)) {
     CALLVo: CallClass = 0xc0,
     CALLVsp: CallClass = 0xc1,
     ASSERT: WriteClass = 0xc2,
+    //Past here are instructions only available on revision 0x30c or higher
+    LCs64: LoadConstClass = 0xc3,
+    MOVs64: UnaryClass = 0xc4,
+    ADDs64: BinaryClass = 0xc5,
+    EQs64: BinaryClass = 0xc6,
+    NEs64: BinaryClass = 0xc7,
+    BIT_ORs64: BinaryClass = 0xc8,
+    BIT_ANDs64: BinaryClass = 0xc9,
+    BIT_XORs64: BinaryClass = 0xca,
+    //These are instructions only available in Aidan's modified script runtime
+    EXT_ADDRESS: UnaryClass = 0xcb,
+    EXT_LOAD: UnaryClass = 0xcc,
+    EXT_STORE: UnaryClass = 0xcd,
+    EXT_INVOKE: ExternalInvokeClass = 0xce,
 
     pub inline fn destructure(tagged: TaggedInstruction) struct { InstructionType, InstructionParams } {
         return .{

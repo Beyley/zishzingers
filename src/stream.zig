@@ -199,7 +199,7 @@ pub fn MMStream(comptime Stream: type) type {
                     };
 
                     const constant_table_s64: ?[]i64 =
-                        if (self.revision.head >= 0x3e2)
+                        if (self.revision.head >= 0x30c)
                         try self.readArray(i64, allocator, null, ScriptReadType)
                     else
                         null;
@@ -507,8 +507,8 @@ pub fn MMStream(comptime Stream: type) type {
                         }
                     }
 
-                    // In revision 0x3e2 a s64 constant table was added
-                    if (self.revision.head >= 0x3e2) {
+                    // In revision 0x30c a s64 constant table was added
+                    if (self.revision.head >= 0x30c) {
                         try self.writeArray(
                             i64,
                             script.constant_table_s64 orelse &.{},
