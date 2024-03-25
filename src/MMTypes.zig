@@ -695,19 +695,118 @@ pub const TaggedInstruction = union(enum(u8)) {
     SET_M44_cZ: SetBuiltinMemberClass = 0x93,
     /// Sets the W column of the 4x4 matrix to the v4 specified in the source register
     SET_M44_cW: SetBuiltinMemberClass = 0x94,
+    /// Gets the specified member of a safe_ptr thing, storing the result in the destination register
+    ///
+    /// The amount of data moved depends on the machine type of the instruction
+    ///
+    /// void       - No load takes place
+    /// bool       - Loads one byte
+    /// char       - Loads two bytes
+    /// s32        - Loads four bytes
+    /// f32        - Loads four bytes
+    /// v4         - Loads 16 bytes
+    /// m44        - Loads 64 bytes
+    /// deprecated - No load takes place
+    /// raw_ptr    - Loads 4 bytes
+    /// ref_ptr    - No load takes place
+    /// safe_ptr   - Loads 4 bytes
+    /// object_ref - Loads 4 bytes
+    /// s64        - Loads 8 bytes
+    /// f64        - Loads 8 bytes
     GET_SP_MEMBER: GetMemberClass = 0x95,
+    /// Gets the specified member of a raw_ptr, storing the result in the destination register
+    ///
+    /// Throws a script exception if the pointer is equal to NULL
+    ///
+    /// probably does a very similar thing to GET_SP_MEMBER,
+    /// but idk it does some function pointer shenanigans and im too lazy to figure it out
     GET_RP_MEMBER: GetMemberClass = 0x96,
+    /// Sets the specified member of a safe_ptr thing, loading the value from the source regsiter
+    ///
+    /// The amount of data moved depends on the machine type of the instruction
+    ///
+    /// void       - No store takes place
+    /// bool       - Stores one byte
+    /// char       - Stores two bytes
+    /// s32        - Stores four bytes
+    /// f32        - Stores four bytes
+    /// v4         - Stores 16 bytes
+    /// m44        - Stores 64 bytes
+    /// deprecated - No store takes place
+    /// raw_ptr    - Stores 4 bytes
+    /// ref_ptr    - No store takes place
+    /// safe_ptr   - Stores 4 bytes
+    /// object_ref - Stores 4 bytes
+    /// s64        - Stores 8 bytes
+    /// f64        - Stores 8 bytes
     SET_SP_MEMBER: SetMemberClass = 0x97,
+    /// Sets the specified member of a raw_ptr, loading the value from the source regsiter
+    ///
+    /// Throws a script exception if the pointer is equal to NULL
+    ///
+    /// probably does a very similar thing to SET_SP_MEMBER,
+    /// but idk it does some function pointer shenanigans and im too lazy to figure it out
     SET_RP_MEMBER: SetMemberClass = 0x98,
+    /// Gets the Nth element of an array
+    ///
+    /// The array pointer is pulled from the base_idx register,
+    /// the index is pulled from the src_or_index_idx register,
+    /// and the result is stored in the dst_idx register
+    ///
+    /// theres vtable shenanigans going on here so im not 100% sure,
+    /// but im assuming data is moved identically to GET_SP_MEMBER based on the machine type
     GET_ELEMENT: GetElementClass = 0x99,
+    /// Sets the Nth element of an array
+    ///
+    /// The array pointer is pulled from the base_idx register,
+    /// the index is pulled from the index_idx register,
+    /// and the value is loaded from src_idx
+    ///
+    /// theres vtable shenanigans going on here so im not 100% sure,
+    /// but im assuming data is moved identically to GET_SP_MEMBER based on the machine type
     SET_ELEMENT: SetElementClass = 0x9a,
+    /// Gets the length of the array stored in the base_idx register,
+    /// storing the result as a 32-bit integer inside of the destination register
     GET_ARRAY_LEN: GetBuiltinMemberClass = 0x9b,
+    /// Creates a new array with the specified type, with the size coming from the size_idx register,
+    /// stores the result in the destination register
     NEW_ARRAY: NewArrayClass = 0x9c,
+    /// TODO: 0x211e08
+    ///
+    /// Assumption: Inserts the element from the source register
+    ///             into the index stored at the index_idx register
+    ///             at the array stored at the base_idx register
+    ///
+    ///             Data is copied in the same way as SET_SP_MEMBER
     ARRAY_INSERT: SetElementClass = 0x9d,
+    /// TODO: 0x2166e8
+    ///
+    /// Assumption: Appends the element from the source register to
+    ///             the the end of the array stored at the base_idx register
+    ///
+    ///             Data is copied in the same way as SET_SP_MEMBER
     ARRAY_APPEND: SetElementClass = 0x9e,
+    /// TODO: 0x2166a8
+    ///
+    /// Assumption: Removes the element index (stored at the index_idx register)
+    ///             from the array stored at the base_idx register
     ARRAY_ERASE: SetElementClass = 0x9f,
+    /// TODO: 0x216660
+    ///
+    /// Assumption: Searches for the element stored in the src_or_index_idx register
+    ///             in the array stored in the base_idx register
+    ///             storing the result in the destination register
     ARRAY_FIND: GetElementClass = 0xa0,
+    /// TODO: 0x216634
+    ///
+    /// Assumption: Clears the array stored at the base_idx register, eg. making it have only 0 elements
     ARRAY_CLEAR: SetElementClass = 0xa1,
+    /// TODO: 0x216614
+    ///
+    /// Assumption: Seems to be a type of debug log statement?
+    ///             Perhaps used for printf debugging,
+    ///             see the PodIntroductionThread script from LBP1,
+    ///             it uses this as a logger of sorts
     WRITE: WriteClass = 0xa2,
     /// Loads the specified register into the specified argument register
     ///
