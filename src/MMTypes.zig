@@ -936,19 +936,67 @@ pub const TaggedInstruction = union(enum(u8)) {
     ///
     /// Assumption: Triggers an immediate script exception, using the WString stored at the source register as the exception text.
     ASSERT: WriteClass = 0xc2,
-    //Past here are instructions only available on revision 0x30c or higher
+
+    // LBP2+
+
+    /// Loads an s64 constant from the s64 constant array into the destination register
+    ///
+    /// Only available in revision 0x30c or higher
     LCs64: LoadConstClass = 0xc3,
+    /// Moves an s64 from the source register into the destination register
+    ///
+    /// Only available in revision 0x30c or higher
     MOVs64: UnaryClass = 0xc4,
+    /// Adds the two s64 values from the source registers into the destination register
+    ///
+    /// Only available in revision 0x30c or higher
     ADDs64: BinaryClass = 0xc5,
+    /// Compares whether the two s64 values are equal,
+    /// storing the result as a boolean in the destination register
+    ///
+    /// Only available in revision 0x30c or higher
     EQs64: BinaryClass = 0xc6,
+    /// Compares whether the two s64 values are not equal,
+    /// storing the result as a boolean in the destination register
+    ///
+    /// Only available in revision 0x30c or higher
     NEs64: BinaryClass = 0xc7,
+    /// Does a bitwise OR on the two source registers, storing the result in the destination register
+    ///
+    /// Only available in revision 0x30c or higher
     BIT_ORs64: BinaryClass = 0xc8,
+    /// Does a bitwise AND on the two source registers, storing the result in the destination register
+    ///
+    /// Only available in revision 0x30c or higher
     BIT_ANDs64: BinaryClass = 0xc9,
+    /// Does a bitwise XOR on the two source registers, storing the result in the destination register
+    ///
+    /// Only available in revision 0x30c or higher
     BIT_XORs64: BinaryClass = 0xca,
-    //These are instructions only available in Aidan's modified script runtime
+
+    // Aidan's modified runtime only
+
+    /// Gets the native address to the specified register, storing the result in the destination register
+    ///
+    /// Only available in Aidan's modified script runtime
     EXT_ADDRESS: UnaryClass = 0xcb,
+    /// TODO:
+    ///
+    /// Assumption: Loads 4 bytes from the specified native address into the destination register
+    ///
+    /// Only available in Aidan's modified script runtime
     EXT_LOAD: UnaryClass = 0xcc,
+    /// TODO:
+    ///
+    /// Assumption: Stores 4 bytes from the specified native address into the destination register
+    ///
+    /// Only available in Aidan's modified script runtime
     EXT_STORE: UnaryClass = 0xcd,
+    /// Invokes a native method at the specified address, storing the result in the destination pointer,
+    /// the amount of data moved into the destination register depends on the machine type of the instruction
+    /// TODO: figure out the table here
+    ///
+    /// Only available in Aidan's modified script runtime
     EXT_INVOKE: ExternalInvokeClass = 0xce,
 
     pub inline fn destructure(tagged: TaggedInstruction) struct { InstructionType, InstructionParams } {
