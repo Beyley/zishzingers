@@ -842,6 +842,7 @@ pub const TaggedInstruction = union(enum(u8)) {
     ARG: ArgClass = 0xa3,
     /// Calls the function specified by call_idx, storing the return value inside of dst_idx
     CALL: CallClass = 0xa4,
+    /// Returns from the function, with the return value being pulled from the source register
     RET: ReturnClass = 0xa5,
     /// Unconditional relative branch, with the offset specified
     B: BranchClass = 0xa6,
@@ -849,31 +850,91 @@ pub const TaggedInstruction = union(enum(u8)) {
     BEZ: BranchClass = 0xa7,
     /// Branches if the byte in the specified register is not equal to zero
     BNEZ: BranchClass = 0xa8,
+    /// Casts the object contained at the source register to the type specified in type_idx, storing the result in the destination register
+    ///
+    /// This will place a NULL pointer into the destination pointer if the source register is null, or if the cast is invalid.
     CASTsp: CastClass = 0xa9,
+    /// Casts a boolean stored in the source register into a 32-bit integer, storing the result in the destination register
     INTb: UnaryClass = 0xaa,
+    /// Casts an unsigned 16-bit integer stored in the source register into a 32-bit integer in the destination register
     INTc: UnaryClass = 0xab,
+    /// Casts a 32-bit float stored in the source register into a 32-bit integer in the destination register
     INTf: UnaryClass = 0xac,
+    /// Casts a boolean stored in the source register into a 32-bit float, storing the result in the destination register
     FLOATb: UnaryClass = 0xad,
+    /// Casts an unsigned 16-bit integer stored in the source register into a 32-bit float stored in the destination register
     FLOATc: UnaryClass = 0xae,
+    /// Casts a signed 32-bit integer stored in the source register into a 32-bit float stored in the destination register
     FLOATi: UnaryClass = 0xaf,
+    /// Casts an unsigned 16-bit integer stored in the source register into a boolean stored in the destination register
+    ///
+    /// Any non-zero value is converted to 0x01
     BOOLc: UnaryClass = 0xb0,
+    /// Casts a signed 32-bit integer stored in the source register into a boolean stored in the destination register
+    ///
+    /// Any non-zero value is converted to 0xFF
+    ///
+    /// TODO: is this correct?
     BOOLi: UnaryClass = 0xb1,
+    /// Casts a 32-bit floating point number stored in the source register into a boolean stored in the destination register.
+    ///
+    /// This is equivalent to a standard float -> byte conversion
     BOOLf: UnaryClass = 0xb2,
+    /// Loads the field specified in field_ref on the object specified in the base_idx register,
+    /// and stores the result in the destination register
+    ///
+    /// Data is copied in the same way as GET_SP_MEMBER
     GET_OBJ_MEMBER: GetMemberClass = 0xb3,
+    /// Stores the data from the source register into the field specified by field_ref
+    /// on the object specified by the base_idx register
+    ///
+    /// Data is copied in the same way as SET_SP_MEMBER
     SET_OBJ_MEMBER: SetMemberClass = 0xb4,
+    /// Creates a new object specified by type_idx, storing the result in the destination register
     NEW_OBJECT: NewObjectClass = 0xb5,
+    /// Resizes the array stored in the base_idx register to the size specified in the index_idx register.
     ARRAY_RESIZE: SetElementClass = 0xb6,
+    /// TODO: 0x2161bc
     ARRAY_RESERVE: SetElementClass = 0xb7,
+    /// Loads a v4 const into the destination register,
+    /// the constant is pulled from the f32 constant array at the specified idx, uses 4 elements starting from that index
     LCv4: LoadConstClass = 0xb8,
+    /// Loads a null pointer into the destination register
     LC_NULLo: LoadConstClass = 0xb9,
+    /// Casts the object from the source register into the specified type, storing the result in the destination register
+    ///
+    /// Stores zero into the destination register if the source pointer is null or the cast is invalid
     CASTo: CastClass = 0xba,
+    /// TODO: 0x2160cc
+    ///
+    /// Gets the native member (specified in field_ref) of the Thing stored in the base_idx register,
+    /// storing the result in the destination register
+    ///
+    /// This instruction throws a script exception if the part is invalid (whatever that means)
+    /// or if the instructions machine type is not equal to raw_ptr
     GET_SP_NATIVE_MEMBER: GetMemberClass = 0xbb,
+    /// Loads the AString (UTF-8/ASCII) specified in constant_idx into the destination register.
     LCsa: LoadConstClass = 0xbc,
+    /// Does a bitwise OR on the booleans stored in the source registers,
+    /// storing the result as a boolean in the destination register
     BIT_ORb: BinaryClass = 0xbd,
+    /// Does a bitwise AND on the booleans stored in the source registers,
+    /// storing the result as a boolean in the destination register
     BIT_ANDb: BinaryClass = 0xbe,
+    /// Does a bitwise XOR on the booleans stored in the source registers,
+    /// storing the result as a boolean in the destination register
     BIT_XORb: BinaryClass = 0xbf,
+    /// Calls the specified method on the object, storing the result in the destination register
+    ///
+    /// Throws an exception if the object is NULL or the script object is invalid (TODO: does this just mean "if its a script or not"?)
     CALLVo: CallClass = 0xc0,
+    /// Calls the specified method on the safe ptr, storing the result in the destination register
+    ///
+    /// Throws an exception if the safe ptr lookup returns a NULL Thing
     CALLVsp: CallClass = 0xc1,
+    /// TODO:
+    ///
+    /// Assumption: Triggers an immediate script exception, using the WString stored at the source register as the exception text.
     ASSERT: WriteClass = 0xc2,
     //Past here are instructions only available on revision 0x30c or higher
     LCs64: LoadConstClass = 0xc3,
