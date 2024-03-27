@@ -6,7 +6,7 @@ const MMTypes = @import("MMTypes.zig");
 const Debug = @import("debug.zig");
 const Resource = @import("resource.zig");
 const ArrayListStreamSource = @import("ArrayListStreamSource.zig");
-const Lexer = @import("lexer.zig");
+const Parser = @import("parser.zig");
 
 const no_command_error =
     \\No command specified.
@@ -171,10 +171,23 @@ pub fn main() !void {
             const source_code: []const u8 = try std.fs.cwd().readFileAlloc(allocator, res.positionals[0], std.math.maxInt(usize));
             defer allocator.free(source_code);
 
-            var lexizer = Lexer.Lexizer{ .source = source_code };
-            while (try lexizer.next()) |lexeme| {
-                std.debug.print("\"{s}\"\n", .{lexeme});
-            }
+            //Get all the lexemes into a single big array
+            const lexemes = blk: {
+                var lexemes = std.ArrayList([]const u8).init(allocator);
+                defer lexemes.deinit();
+
+                var lexizer = Parser.Lexemeizer{ .source = source_code };
+
+                while (try lexizer.next()) |lexeme| {
+                    try lexemes.append(lexeme);
+                }
+
+                break :blk try lexemes.toOwnedSlice();
+            };
+            defer allocator.free(lexemes);
+
+            const tokens = try Parser.parse(allocator, lexemes);
+            _ = tokens; // autofix
         },
     }
 }
