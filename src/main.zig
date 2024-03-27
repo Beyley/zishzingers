@@ -6,6 +6,7 @@ const MMTypes = @import("MMTypes.zig");
 const Debug = @import("debug.zig");
 const Resource = @import("resource.zig");
 const ArrayListStreamSource = @import("ArrayListStreamSource.zig");
+const Lexer = @import("lexer.zig");
 
 const no_command_error =
     \\No command specified.
@@ -13,12 +14,14 @@ const no_command_error =
     \\Commands:
     \\
     \\    disasm      Disassembles a script file into a human readable format.
+    \\    compile     Compiles an A# source file into a script.
     \\
     \\
 ;
 
 const Subcommand = enum {
     disasm,
+    compile,
 };
 
 pub fn main() !void {
@@ -137,6 +140,40 @@ pub fn main() !void {
 
                     try Debug.disassembleScript(stdout, script);
                 }
+            }
+        },
+        .compile => {
+            const params = comptime clap.parseParamsComptime(
+                \\-h, --help                       Display this help and exit.
+                \\-o, --out-file <str>             The output path for the compilation, defaults to "inputname.ff"
+                \\<str>                            The source file
+                \\
+            );
+
+            var diag = clap.Diagnostic{};
+            var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &iter, .{
+                .diagnostic = &diag,
+                .allocator = gpa.allocator(),
+            }) catch |err| {
+                // Report useful error and exit
+                diag.report(std.io.getStdErr().writer(), err) catch {};
+                return err;
+            };
+            defer res.deinit();
+
+            //If no arguments are passed or the user requested the help menu, display the help menu
+            if (res.args.help != 0 or res.positionals.len == 0) {
+                try clap.help(stderr, clap.Help, &params, .{});
+
+                return;
+            }
+
+            const source_code: []const u8 = try std.fs.cwd().readFileAlloc(allocator, res.positionals[0], std.math.maxInt(usize));
+            defer allocator.free(source_code);
+
+            var lexizer = Lexer.Lexizer{ .source = source_code };
+            while (try lexizer.next()) |lexeme| {
+                std.debug.print("\"{s}\"\n", .{lexeme});
             }
         },
     }
