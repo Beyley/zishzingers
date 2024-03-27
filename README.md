@@ -2,7 +2,24 @@
 
 A set of tools for working with the fish fingers (FF) bytecode script format used in the mainline LittleBigPlanet franchise.
 
-Documentation is TODO
+## Compilation
+
+- Install the latest version of [Zig](https://ziglang.org/) (tested with version `0.12.0-dev.3439+31a7f22b8`)
+- Run `zig build`, which will place an executable file in `zig-out/bin/`
+
+## Usage
+
+All tools are compiled into the same `zishzingers` executable file, with each tool being available through a different subcommand
+
+### disasm
+Disassembles script files into a human-readable format
+
+```
+# When a script is inside the LBP resource container, just pass the script name
+$ zishzingers disasm compressed_script.ff
+# When a script is pre-decompressed, you need to specify the compression flags and the asset revision
+$ zishzingers disasm -n decompressed_script.ff -c integers -c matrices -c vectors -r 0x272
+```
 
 ## Special Thanks
 

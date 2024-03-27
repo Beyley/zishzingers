@@ -2,7 +2,7 @@ const std = @import("std");
 
 const MMTypes = @import("MMTypes.zig");
 
-pub fn dumpScript(writer: anytype, script: MMTypes.Script) !void {
+pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
     try std.fmt.format(writer, " --- Class Name: {s} ---\n", .{script.class_name});
     try std.fmt.format(writer, " --- Up to date script: {?} ---\n", .{script.up_to_date_script});
     try std.fmt.format(writer, " --- Super class script: {?} ---\n", .{script.super_class_script});

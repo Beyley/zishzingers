@@ -12,6 +12,8 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    exe.root_module.addImport("clap", b.dependency("clap", .{}).module("clap"));
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
 
