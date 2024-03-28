@@ -1136,20 +1136,33 @@ pub const PropertyDefinition = struct {
 };
 
 pub const Modifiers = packed struct(u32) {
-    static: bool,
-    native: bool,
-    ephemeral: bool,
-    pinned: bool,
-    @"const": bool,
-    public: bool,
-    protected: bool,
-    private: bool,
-    property: bool,
-    abstract: bool,
-    virtual: bool,
-    override: bool,
-    divergent: bool,
-    _unused: u19,
+    static: bool = false,
+    native: bool = false,
+    ephemeral: bool = false,
+    pinned: bool = false,
+    @"const": bool = false,
+    public: bool = false,
+    protected: bool = false,
+    private: bool = false,
+    property: bool = false,
+    abstract: bool = false,
+    virtual: bool = false,
+    override: bool = false,
+    divergent: bool = false,
+    _unused: u19 = undefined,
+
+    pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+        try writer.print("Modifiers{{ ", .{});
+        inline for (@typeInfo(Modifiers).Struct.fields) |field| {
+            if (comptime std.mem.eql(u8, "_unused", field.name))
+                continue;
+
+            if (@field(value, field.name)) {
+                try writer.print("{s}, ", .{field.name});
+            }
+        }
+        try writer.print(" }}", .{});
+    }
 };
 
 pub const FieldDefinition = struct {

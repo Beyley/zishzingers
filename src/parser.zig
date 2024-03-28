@@ -1,4 +1,5 @@
 const std = @import("std");
+const MMTypes = @import("MMTypes.zig");
 
 pub const UsingType = enum {
     library,
@@ -8,11 +9,13 @@ pub const TreeElementType = enum {
     using,
     import,
     from_import,
+    class,
+    field,
+    type_name,
+    expression,
+    function,
+    function_parameter,
 };
-
-fn NodeType(field: anytype) type {
-    return std.meta.Child(std.meta.fieldInfo(Node, field).type);
-}
 
 const FromImportWanted = union(enum) {
     all: void,
@@ -39,41 +42,110 @@ const FromImportWanted = union(enum) {
 };
 
 pub const Node = union(TreeElementType) {
-    using: *struct {
+    pub const Using = struct {
         type: UsingType,
         target: []const u8,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return writer.print("using{{ type = {s}, target = {s} }}", .{ @tagName(value.type), value.target });
         }
-    },
-    import: *struct {
+    };
+
+    pub const Import = struct {
         target: []const u8,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return writer.print("target{{ target = {s} }}", .{value.target});
         }
-    },
-    from_import: *struct {
+    };
+
+    pub const FromImport = struct {
         target: []const u8,
         wanted: FromImportWanted,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return writer.print("from_import{{ target = {s}, wanted = {} }}", .{ value.target, value.wanted });
         }
-    },
+    };
+
+    pub const Class = struct {
+        class_name: []const u8,
+        base_class: ?[]const u8,
+
+        fields: []const *Field,
+        functions: []const *Function,
+
+        pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            return writer.print("class{{ class_name = {s}, base_class: {?s} }}", .{ value.class_name, value.base_class });
+        }
+    };
+
+    pub const Field = struct {
+        modifiers: MMTypes.Modifiers,
+        name: []const u8,
+        type: *TypeName,
+        default_value: ?*Expression,
+
+        pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            return writer.print("field{{ name = {s}, type = {s}, default_value = {?}, modifiers: {} }}", .{ value.name, value.type.name, value.default_value, value.modifiers });
+        }
+    };
+
+    pub const TypeName = struct {
+        name: []const u8,
+    };
+
+    pub const Function = struct {
+        return_type: *TypeName,
+        parameters: []const *FunctionParameter,
+        body: []const Node,
+    };
+
+    pub const Expression = union(enum) {
+        s32_literal: i32,
+        s64_literal: i64,
+        f32_literal: f32,
+        bool_literal: bool,
+        ascii_string_literal: []const u8,
+        wide_string_literal: []const u8,
+        field_access: struct {
+            source: *Expression,
+            field: []const u8,
+        },
+        variable: []const u8,
+        this: void,
+        negate: *Expression,
+        function_call: struct {
+            name: []const u8,
+            parameters: []const *Expression,
+        },
+
+        pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            return switch (value) {
+                .s32_literal => |literal| writer.print("expression{{ .s32_literal = {d} }}", .{literal}),
+                else => @panic("SHIT"),
+            };
+        }
+    };
+
+    pub const FunctionParameter = struct {
+        name: []const u8,
+        type: *TypeName,
+    };
+
+    using: *Using,
+    import: *Import,
+    from_import: *FromImport,
+    class: *Class,
+    field: *Field,
+    type_name: *TypeName,
+    expression: *Expression,
+    function: *Function,
+    function_parameter: *FunctionParameter,
 };
 
-comptime {
-    const type_info: std.builtin.Type = @typeInfo(Node);
-
-    for (type_info.Union.fields) |field| {
-        if (@sizeOf(field.type) > @sizeOf(usize))
-            @compileError("Field " ++ field.name ++ " is too big!");
-    }
-}
-
 pub const Tree = struct {
+    arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
     root_elements: std.ArrayListUnmanaged(Node),
 };
@@ -104,7 +176,7 @@ pub fn SliceIterator(comptime T: type) type {
                 return null;
             }
 
-            return self.slice[self.pos + 1];
+            return self.slice[self.pos];
         }
 
         pub fn prev(self: Self) ?T {
@@ -118,10 +190,15 @@ pub fn SliceIterator(comptime T: type) type {
 }
 
 pub fn parse(allocator: std.mem.Allocator, lexemes: []const Lexeme) !Tree {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
     var tree: Tree = .{
-        .allocator = allocator,
+        .arena = arena,
+        .allocator = undefined,
         .root_elements = .{},
     };
+    tree.allocator = tree.arena.allocator();
 
     var lexeme_iter = SliceIterator(Lexeme){
         .pos = 0,
@@ -133,14 +210,19 @@ pub fn parse(allocator: std.mem.Allocator, lexemes: []const Lexeme) !Tree {
     return tree;
 }
 
-const hash = std.hash.Wyhash.hash;
+fn hashKeyword(keyword: []const u8) u72 {
+    var val: u72 = 0;
+    @memcpy(std.mem.asBytes(&val)[0..keyword.len], keyword);
+    return val;
+}
 
 fn consumeTopLevel(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     while (iter.next()) |lexeme| {
-        switch (hash(0, lexeme)) {
-            hash(0, "using") => try consumeUsingStatement(tree, iter),
-            hash(0, "import") => try consumeImportStatement(tree, iter),
-            hash(0, "from") => try consumeFromImportStatement(tree, iter),
+        switch (hashKeyword(lexeme)) {
+            hashKeyword("using") => try consumeUsingStatement(tree, iter),
+            hashKeyword("import") => try consumeImportStatement(tree, iter),
+            hashKeyword("from") => try consumeFromImportStatement(tree, iter),
+            hashKeyword("class") => try consumeClassStatement(tree, iter),
             else => {
                 for (tree.root_elements.items) |item| {
                     switch (item) {
@@ -156,8 +238,187 @@ fn consumeTopLevel(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     }
 }
 
+fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
+    const node = try tree.allocator.create(Node.Class);
+    errdefer tree.allocator.destroy(node);
+
+    if (consumeArbitraryLexemeIfAvailable(iter, "{")) {
+        std.debug.panic("Unexpected {{, expecting class name", .{});
+    }
+
+    //Unreachable since we error out right above if theres EOF
+    const class_name = iter.next() orelse unreachable;
+
+    node.* = .{
+        .class_name = class_name,
+        .base_class = null,
+        .functions = undefined,
+        .fields = undefined,
+    };
+
+    //Consume the scope start if available, if not, parse the class property
+    if (!consumeArbitraryLexemeIfAvailable(iter, "{")) {
+        const property = iter.next() orelse std.debug.panic("unexpected EOF when parsing class properties", .{});
+        switch (hashKeyword(property)) {
+            hashKeyword("extends") => {
+                const base_class = iter.next() orelse std.debug.panic("unexpected EOF when reading base class name", .{});
+
+                node.base_class = base_class;
+            },
+            else => std.debug.panic("Unknown class property {s}", .{property}),
+        }
+
+        //Consume the scope start
+        consumeArbitraryLexeme(iter, "{");
+    }
+
+    //TODO: parse class scope body
+
+    while (true) {
+        const lexeme = iter.peek() orelse std.debug.panic("unexpected EOF when parsing class body", .{});
+
+        //If we hit a `}`, we have reached the end of scope
+        if (lexeme[0] == '}') {
+            break;
+        }
+
+        const modifiers = consumeModifiers(iter);
+
+        const next = iter.peek() orelse std.debug.panic("unexpected EOF when parsing declaration", .{});
+
+        //If the next keyword is a function, then we are consuming a function
+        if (hashKeyword(next) == comptime hashKeyword("fn")) {}
+        // Else, we are consuming a field
+        else {
+            std.debug.print("{}\n", .{(try consumeField(tree.allocator, iter, modifiers)).*});
+        }
+    }
+
+    consumeArbitraryLexeme(iter, "}");
+
+    try tree.root_elements.append(tree.allocator, .{ .class = node });
+}
+
+fn consumeField(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modifiers: MMTypes.Modifiers) !*Node.Field {
+    const node = try allocator.create(Node.Field);
+    errdefer allocator.destroy(node);
+
+    const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing field name", .{});
+
+    var field_type: ?*Node.TypeName = if (consumeArbitraryLexemeIfAvailable(iter, ":")) blk: {
+        break :blk try consumeTypeName(allocator, iter);
+    } else null;
+
+    const default_value: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "=")) blk: {
+        break :blk try consumeExpression(allocator, iter);
+    } else null;
+
+    if (field_type == null) {
+        if (default_value) |curr_default_value| {
+            if (curr_default_value.* != .s32_literal)
+                @panic("TODO");
+
+            const type_node = try allocator.create(Node.TypeName);
+            type_node.* = .{ .name = "s32" };
+            field_type = type_node;
+        } else {
+            std.debug.panic("field has no type or default value, panicking.", .{});
+        }
+    }
+
+    node.* = .{
+        .modifiers = modifiers,
+        .name = name,
+        .type = field_type.?,
+        .default_value = default_value,
+    };
+
+    consumeSemicolon(iter);
+
+    return node;
+}
+
+fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !*Node.Expression {
+    const node = try allocator.create(Node.Expression);
+    errdefer allocator.destroy(node);
+
+    const first = iter.next() orelse @panic("eof");
+
+    //TODO: hex literals
+
+    var isNumber = true;
+    for (first) |c| {
+        if (!std.ascii.isDigit(c))
+            isNumber = false;
+    }
+
+    if (!isNumber)
+        @panic("TODO, non s32 expressions");
+
+    node.* = .{
+        .s32_literal = try std.fmt.parseInt(i32, first, 10),
+    };
+
+    return node;
+}
+
+fn consumeTypeName(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !*Node.TypeName {
+    const node = try allocator.create(Node.TypeName);
+    errdefer allocator.destroy(node);
+
+    node.* = .{
+        .name = iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{}),
+    };
+
+    return node;
+}
+
+fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modifiers: MMTypes.Modifiers) !*Node.Function {
+    _ = modifiers; // autofix
+    _ = allocator; // autofix
+    _ = iter; // autofix
+}
+
+fn consumeModifiers(iter: *SliceIterator(Lexeme)) MMTypes.Modifiers {
+    var current_modifiers: MMTypes.Modifiers = .{};
+
+    while (true) {
+        const lexeme = iter.peek() orelse std.debug.panic("unexpected EOF when parsing class body", .{});
+
+        const modifiers_type_info: std.builtin.Type = @typeInfo(MMTypes.Modifiers);
+
+        //special case pub
+        if (std.mem.eql(u8, lexeme, "pub")) {
+            current_modifiers.public = true;
+
+            _ = iter.next() orelse unreachable;
+        } else {
+            var found = false;
+
+            inline for (modifiers_type_info.Struct.fields) |field| {
+                if (comptime std.mem.eql(u8, field.name, "_unused"))
+                    continue;
+
+                if (std.mem.eql(u8, field.name, lexeme)) {
+                    @field(current_modifiers, field.name) = true;
+                    found = true;
+                    break;
+                }
+            }
+
+            //If its not a valid modifier keyword, immediately break out, we are done
+            if (!found)
+                break;
+
+            _ = iter.next() orelse unreachable;
+        }
+    }
+
+    return current_modifiers;
+}
+
 fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
-    const node = try tree.allocator.create(NodeType(.from_import));
+    const node = try tree.allocator.create(Node.FromImport);
     errdefer tree.allocator.destroy(node);
 
     const target = iter.next() orelse std.debug.panic("unexpected EOF after from statement", .{});
@@ -169,8 +430,8 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
 
     var was_multi_import = false;
 
-    const wanted: FromImportWanted = switch (hash(0, first_import_lexeme)) {
-        hash(0, "{") => .{
+    const wanted: FromImportWanted = switch (hashKeyword(first_import_lexeme)) {
+        hashKeyword("{") => .{
             .multiple = blk: {
                 var wanted_imports = std.ArrayListUnmanaged([]const u8){};
 
@@ -200,7 +461,7 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
                 break :blk try wanted_imports.toOwnedSlice(tree.allocator);
             },
         },
-        hash(0, "*") => .{ .all = {} },
+        hashKeyword("*") => .{ .all = {} },
         else => .{ .single = first_import_lexeme },
     };
 
@@ -217,7 +478,7 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
 }
 
 fn consumeImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
-    const node = try tree.allocator.create(NodeType(.import));
+    const node = try tree.allocator.create(Node.Import);
     errdefer tree.allocator.destroy(node);
 
     node.* = .{
@@ -230,7 +491,7 @@ fn consumeImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
 }
 
 fn consumeUsingStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
-    const node = try tree.allocator.create(NodeType(.using));
+    const node = try tree.allocator.create(Node.Using);
     errdefer tree.allocator.destroy(node);
 
     const using_type_str = iter.next() orelse std.debug.panic("unexpected EOF after using statement", .{});
