@@ -12,6 +12,11 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    if (b.option(bool, "use_llvm", "Uses LLVM/LLD for compilation") orelse false) {
+        exe.use_llvm = false;
+        exe.use_lld = false;
+    }
+
     exe.root_module.addImport("clap", b.dependency("clap", .{}).module("clap"));
 
     const run_cmd = b.addRunArtifact(exe);

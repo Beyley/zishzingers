@@ -11,10 +11,9 @@ pub const TreeElementType = enum {
     from_import,
     class,
     field,
-    type_name,
     expression,
     function,
-    function_parameter,
+    function_parameters,
 };
 
 const FromImportWanted = union(enum) {
@@ -83,22 +82,24 @@ pub const Node = union(TreeElementType) {
     pub const Field = struct {
         modifiers: MMTypes.Modifiers,
         name: []const u8,
-        type: *TypeName,
+        type: ?[]const u8,
         default_value: ?*Expression,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            return writer.print("field{{ name = {s}, type = {s}, default_value = {?}, modifiers: {} }}", .{ value.name, value.type.name, value.default_value, value.modifiers });
+            return writer.print("field{{ name = {s}, type = {?s}, default_value = {?}, modifiers: {} }}", .{ value.name, value.type, value.default_value, value.modifiers });
         }
     };
 
-    pub const TypeName = struct {
-        name: []const u8,
-    };
-
     pub const Function = struct {
-        return_type: *TypeName,
-        parameters: []const *FunctionParameter,
+        return_type: []const u8,
+        parameters: *FunctionParameters,
         body: []const Node,
+        name: []const u8,
+        modifiers: MMTypes.Modifiers,
+
+        pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            return writer.print("function{{ return_type = {s}, modifiers = {}, parameters = {}, name = {s} }}", .{ value.return_type, value.modifiers, value.parameters, value.name });
+        }
     };
 
     pub const Expression = union(enum) {
@@ -128,9 +129,23 @@ pub const Node = union(TreeElementType) {
         }
     };
 
-    pub const FunctionParameter = struct {
-        name: []const u8,
-        type: *TypeName,
+    pub const FunctionParameters = struct {
+        pub const Parameter = struct {
+            name: []const u8,
+            type: []const u8,
+        };
+
+        parameters: []const Parameter,
+
+        pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            try writer.writeAll("[ ");
+
+            for (value.parameters) |parameter| {
+                try writer.print("{s}: {s}", .{ parameter.name, parameter.type });
+            }
+
+            try writer.writeAll(" ]");
+        }
     };
 
     using: *Using,
@@ -138,10 +153,9 @@ pub const Node = union(TreeElementType) {
     from_import: *FromImport,
     class: *Class,
     field: *Field,
-    type_name: *TypeName,
     expression: *Expression,
     function: *Function,
-    function_parameter: *FunctionParameter,
+    function_parameters: *FunctionParameters,
 };
 
 pub const Tree = struct {
@@ -287,7 +301,12 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
         const next = iter.peek() orelse std.debug.panic("unexpected EOF when parsing declaration", .{});
 
         //If the next keyword is a function, then we are consuming a function
-        if (hashKeyword(next) == comptime hashKeyword("fn")) {}
+        if (hashKeyword(next) == comptime hashKeyword("fn")) {
+            //Get rid of the fn
+            consumeArbitraryLexeme(iter, "fn");
+
+            std.debug.print("{}\n", .{(try consumeFunction(tree.allocator, iter, modifiers)).*});
+        }
         // Else, we are consuming a field
         else {
             std.debug.print("{}\n", .{(try consumeField(tree.allocator, iter, modifiers)).*});
@@ -305,31 +324,22 @@ fn consumeField(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modi
 
     const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing field name", .{});
 
-    var field_type: ?*Node.TypeName = if (consumeArbitraryLexemeIfAvailable(iter, ":")) blk: {
-        break :blk try consumeTypeName(allocator, iter);
+    const field_type: ?[]const u8 = if (consumeArbitraryLexemeIfAvailable(iter, ":")) blk: {
+        break :blk consumeTypeName(iter);
     } else null;
 
     const default_value: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "=")) blk: {
         break :blk try consumeExpression(allocator, iter);
     } else null;
 
-    if (field_type == null) {
-        if (default_value) |curr_default_value| {
-            if (curr_default_value.* != .s32_literal)
-                @panic("TODO");
-
-            const type_node = try allocator.create(Node.TypeName);
-            type_node.* = .{ .name = "s32" };
-            field_type = type_node;
-        } else {
-            std.debug.panic("field has no type or default value, panicking.", .{});
-        }
+    if (field_type == null and default_value == null) {
+        std.debug.panic("Field has no type and no default value", .{});
     }
 
     node.* = .{
         .modifiers = modifiers,
         .name = name,
-        .type = field_type.?,
+        .type = field_type,
         .default_value = default_value,
     };
 
@@ -362,21 +372,65 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
     return node;
 }
 
-fn consumeTypeName(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !*Node.TypeName {
-    const node = try allocator.create(Node.TypeName);
+fn consumeTypeName(iter: *SliceIterator(Lexeme)) []const u8 {
+    return iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{});
+}
+
+fn consumeFunctionParameters(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !*Node.FunctionParameters {
+    const node = try allocator.create(Node.FunctionParameters);
     errdefer allocator.destroy(node);
 
+    consumeArbitraryLexeme(iter, "(");
+
+    var parameters = std.ArrayListUnmanaged(Node.FunctionParameters.Parameter){};
+    defer parameters.deinit(allocator);
+
+    while (true) {
+        const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing function definition parameters", .{});
+
+        // We have reached the end of the parameters
+        if (name[0] == ')')
+            break;
+
+        consumeArbitraryLexeme(iter, ":");
+        const param_type = consumeTypeName(iter);
+
+        try parameters.append(allocator, .{ .name = name, .type = param_type });
+    }
+
     node.* = .{
-        .name = iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{}),
+        .parameters = try parameters.toOwnedSlice(allocator),
     };
 
     return node;
 }
 
 fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modifiers: MMTypes.Modifiers) !*Node.Function {
-    _ = modifiers; // autofix
-    _ = allocator; // autofix
-    _ = iter; // autofix
+    const node = try allocator.create(Node.Function);
+    errdefer allocator.destroy(node);
+
+    const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing function name", .{});
+
+    const parameters = try consumeFunctionParameters(allocator, iter);
+
+    const return_type = blk: {
+        if (std.mem.eql(u8, iter.peek() orelse std.debug.panic("EOF", .{}), "->")) {
+            consumeArbitraryLexeme(iter, "->");
+            break :blk iter.next() orelse std.debug.panic("EOF", .{});
+        }
+
+        break :blk "void";
+    };
+
+    node.* = .{
+        .modifiers = modifiers,
+        .body = &.{},
+        .parameters = parameters,
+        .name = name,
+        .return_type = return_type,
+    };
+
+    return node;
 }
 
 fn consumeModifiers(iter: *SliceIterator(Lexeme)) MMTypes.Modifiers {
@@ -548,7 +602,12 @@ pub const Lexemeizer = struct {
     source: []const u8,
     pos: usize = 0,
 
-    const single_char_lexemes: []const u8 = "()[]{}!*,:;+.'";
+    const single_char_lexemes: []const u8 = "()[]{}!*,:;+.'<>+-";
+    const special_double_lexemes: []const u16 = &.{
+        @intCast(hashKeyword("->")),
+        @intCast(hashKeyword(">>")),
+        @intCast(hashKeyword("<<")),
+    };
 
     pub fn next(self: *Lexemeizer) !?Lexeme {
         const iter = self.source[self.pos..];
@@ -556,10 +615,10 @@ pub const Lexemeizer = struct {
         var lexeme_start: ?usize = null;
         var i: usize = 0;
         while (i < iter.len) {
-            const c = iter[i];
+            const char = iter[i];
 
             // If we hit a comment,
-            if (c == '#') {
+            if (char == '#') {
                 // Skip characters until we hit a newline
                 while (iter[i] != '\n') {
                     i += 1;
@@ -573,7 +632,7 @@ pub const Lexemeizer = struct {
             }
 
             //If we havent started a lexeme and we are at whitespace, do nothing
-            if (lexeme_start == null and std.ascii.isWhitespace(c)) {
+            if (lexeme_start == null and std.ascii.isWhitespace(char)) {
                 i += 1;
                 continue;
             }
@@ -585,7 +644,7 @@ pub const Lexemeizer = struct {
             }
 
             //If this is the start of a lexeme and we hit a ' (the start of a string)
-            if (just_started_lexeme and c == '\'') {
+            if (just_started_lexeme and char == '\'') {
                 //Increment to the next char
                 i += 1;
 
@@ -602,7 +661,14 @@ pub const Lexemeizer = struct {
             }
 
             //If we hit an always single char lexeme, break out immediately
-            if (std.mem.indexOf(u8, single_char_lexemes, &.{c}) != null) {
+            if (std.mem.indexOf(u8, single_char_lexemes, &.{char}) != null) {
+                if (i < iter.len - 1) {
+                    if (std.mem.indexOf(u16, special_double_lexemes, &.{@intCast(hashKeyword(iter[i .. i + 2]))}) != null) {
+                        i += 2;
+                        break;
+                    }
+                }
+
                 // If we just started the lexeme (aka this *is* the single char lexeme), mark to go to the next char
                 if (just_started_lexeme)
                     i += 1;
@@ -611,7 +677,7 @@ pub const Lexemeizer = struct {
             }
 
             //If we've hit whitespace, this is the end of a lexeme
-            if (std.ascii.isWhitespace(c)) {
+            if (std.ascii.isWhitespace(char)) {
                 break;
             }
 
