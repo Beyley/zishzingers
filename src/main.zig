@@ -187,7 +187,27 @@ pub fn main() !void {
             defer allocator.free(lexemes);
 
             const tokens = try Parser.parse(allocator, lexemes);
-            defer tokens.arena.deinit();
+            defer tokens.deinit();
+
+            for (tokens.root_elements.items) |item| {
+                switch (item) {
+                    .class => |class| {
+                        std.debug.print("{}\n", .{class.*});
+
+                        for (class.fields) |field| {
+                            std.debug.print("field {}\n", .{field.*});
+                        }
+
+                        for (class.functions) |function| {
+                            std.debug.print("function {}\n", .{function.*});
+                            std.debug.print("function body {}\n", .{function.body});
+                        }
+                    },
+                    inline else => |ptr| {
+                        std.debug.print("{}\n", .{ptr.*});
+                    },
+                }
+            }
         },
     }
 }

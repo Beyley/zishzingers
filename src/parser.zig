@@ -16,6 +16,7 @@ pub const NodeType = enum {
     function_parameters,
     variable_declaration,
     return_statement,
+    if_statement,
 };
 
 const FromImportWanted = union(enum) {
@@ -95,7 +96,7 @@ pub const Node = union(NodeType) {
     pub const Function = struct {
         return_type: []const u8,
         parameters: *FunctionParameters,
-        body: []const Node,
+        body: *Expression,
         name: []const u8,
         modifiers: MMTypes.Modifiers,
 
@@ -133,6 +134,11 @@ pub const Node = union(NodeType) {
             destination: *Expression,
             value: *Expression,
         },
+        block: []const Node,
+        bitwise_and: struct {
+            lefthand: *Expression,
+            righthand: *Expression,
+        },
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return switch (value) {
@@ -151,6 +157,8 @@ pub const Node = union(NodeType) {
                 .function_call => |literal| writer.print("expression{{ .function_call = .{{ .name = {s}, .parameters = {any} }} }}", .{ literal.name, literal.parameters }),
                 .member_function_call => |literal| writer.print("expression{{ .member_function_call = .{{ .source = {}, .name = {s}, .parameters = {any} }} }}", .{ literal.source, literal.name, literal.parameters }),
                 .assignment => |literal| writer.print("expression{{ .assignment = .{{ .destination = {}, .value = .{} }} }}", .{ literal.destination, literal.value }),
+                .block => |literal| writer.print("expression{{ .block = {{ .body = {any} }} }}", .{literal}),
+                .bitwise_and => |literal| writer.print("expression{{ .bitwise_and = {{ .lefthand = {}, .lefthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
             };
         }
     };
@@ -185,7 +193,17 @@ pub const Node = union(NodeType) {
     };
 
     pub const ReturnStatement = struct {
-        expression: *Expression,
+        expression: ?*Expression,
+    };
+
+    pub const IfStatement = struct {
+        condition: *Expression,
+        body: *Expression,
+        else_body: ?*Expression,
+
+        pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            return writer.print("if_statement{{ condition = {}, body = {}, else_body = {?} }}", .{ value.condition, value.body, value.else_body });
+        }
     };
 
     using: *Using,
@@ -198,12 +216,17 @@ pub const Node = union(NodeType) {
     function_parameters: *FunctionParameters,
     variable_declaration: *VariableDeclaration,
     return_statement: *ReturnStatement,
+    if_statement: *IfStatement,
 };
 
 pub const Tree = struct {
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
     root_elements: std.ArrayListUnmanaged(Node),
+
+    pub fn deinit(self: Tree) void {
+        self.arena.deinit();
+    }
 };
 
 const Lexeme = []const u8;
@@ -228,7 +251,7 @@ pub fn SliceIterator(comptime T: type) type {
         }
 
         pub fn peek(self: Self) ?T {
-            if (self.pos >= self.slice.len - 1) {
+            if (self.pos >= self.slice.len) {
                 return null;
             }
 
@@ -236,7 +259,7 @@ pub fn SliceIterator(comptime T: type) type {
         }
 
         pub fn peekAt(self: Self, at: usize) ?T {
-            if (self.pos + at >= self.slice.len - 1) {
+            if (self.pos + at >= self.slice.len) {
                 return null;
             }
 
@@ -296,14 +319,6 @@ fn consumeTopLevel(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
             hashKeyword("from") => try consumeFromImportStatement(tree, iter),
             hashKeyword("class") => try consumeClassStatement(tree, iter),
             else => {
-                for (tree.root_elements.items) |item| {
-                    switch (item) {
-                        inline else => |ptr| {
-                            std.debug.print("{}\n", .{ptr.*});
-                        },
-                    }
-                }
-
                 std.debug.panic("Unexpected top level lexeme \"{s}\"", .{lexeme});
             },
         }
@@ -321,34 +336,36 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     //Unreachable since we error out right above if theres EOF
     const class_name = iter.next() orelse unreachable;
 
-    node.* = .{
-        .class_name = class_name,
-        .base_class = null,
-        .functions = undefined,
-        .fields = undefined,
-    };
-
     //Consume the scope start if available, if not, parse the class property
-    if (!consumeArbitraryLexemeIfAvailable(iter, "{")) {
+    const base_class: ?[]const u8 = if (!consumeArbitraryLexemeIfAvailable(iter, "{")) blk: {
         const property = iter.next() orelse std.debug.panic("unexpected EOF when parsing class properties", .{});
         switch (hashKeyword(property)) {
             hashKeyword("extends") => {
                 const base_class = iter.next() orelse std.debug.panic("unexpected EOF when reading base class name", .{});
 
-                node.base_class = base_class;
+                //Consume the scope start
+                consumeArbitraryLexeme(iter, "{");
+
+                break :blk base_class;
             },
             else => std.debug.panic("Unknown class property {s}", .{property}),
         }
+    } else null;
 
-        //Consume the scope start
-        consumeArbitraryLexeme(iter, "{");
-    }
+    var functions = std.ArrayList(*Node.Function).init(tree.allocator);
+    defer functions.deinit();
+    var fields = std.ArrayList(*Node.Field).init(tree.allocator);
+    defer fields.deinit();
 
     while (true) {
         const lexeme = iter.peek() orelse std.debug.panic("unexpected EOF when parsing class body", .{});
 
+        // std.debug.print("vv {s}\n", .{lexeme});
+
         //If we hit a `}`, we have reached the end of scope
         if (lexeme[0] == '}') {
+            consumeArbitraryLexeme(iter, "}");
+
             break;
         }
 
@@ -361,15 +378,20 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
             //Get rid of the fn
             consumeArbitraryLexeme(iter, "fn");
 
-            std.debug.print("bb {}\n", .{(try consumeFunction(tree.allocator, iter, modifiers)).*});
+            try functions.append(try consumeFunction(tree.allocator, iter, modifiers));
         }
         // Else, we are consuming a field
         else {
-            std.debug.print("aa {}\n", .{(try consumeField(tree.allocator, iter, modifiers)).*});
+            try fields.append(try consumeField(tree.allocator, iter, modifiers));
         }
     }
 
-    consumeArbitraryLexeme(iter, "}");
+    node.* = .{
+        .class_name = class_name,
+        .base_class = base_class,
+        .functions = try functions.toOwnedSlice(),
+        .fields = try fields.toOwnedSlice(),
+    };
 
     try tree.root_elements.append(tree.allocator, .{ .class = node });
 }
@@ -406,6 +428,78 @@ fn consumeField(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modi
 
 const Error = std.mem.Allocator.Error || std.fmt.ParseIntError;
 
+fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    const body_node = try allocator.create(Node.Expression);
+    errdefer allocator.destroy(body_node);
+
+    var body = std.ArrayList(Node).init(allocator);
+    defer body.deinit();
+
+    // std.debug.print("nn {s}\n", .{iter.peek() orelse unreachable});
+
+    const is_block = consumeArbitraryLexemeIfAvailable(iter, "{");
+
+    while (true) {
+        const next = iter.peek() orelse std.debug.panic("unexpected EOF when parsing function body", .{});
+
+        if (is_block and next[0] == '}') {
+            consumeArbitraryLexeme(iter, "}");
+            break;
+        }
+
+        const was_keyword: bool = if (maybeHashKeyword(next)) |maybe_keyword| blk: {
+            switch (maybe_keyword) {
+                hashKeyword("let") => {
+                    const variable_declaration = try consumeVariableDeclaration(allocator, iter);
+
+                    // std.debug.print("cc {}\n", .{variable_declaration});
+
+                    try body.append(variable_declaration);
+                    break :blk true;
+                },
+                hashKeyword("return") => {
+                    const return_statement = try consumeReturnStatement(allocator, iter);
+
+                    // std.debug.print("ee {}\n", .{return_statement});
+
+                    try body.append(return_statement);
+                    break :blk true;
+                },
+                hashKeyword("if") => {
+                    const if_statement = try consumeIfStatement(allocator, iter);
+
+                    // std.debug.print("ff {}\n", .{if_statement});
+
+                    try body.append(if_statement);
+                    break :blk true;
+                },
+                else => {
+                    break :blk false;
+                },
+            }
+        } else false;
+
+        //If it was not parsed as a special keyword, then its an expression, and we need to parse it as one
+        if (!was_keyword) {
+            const node: Node = .{ .expression = try consumeExpression(allocator, iter) };
+            consumeSemicolon(iter);
+
+            // std.debug.print("dd {}\n", .{node});
+
+            try body.append(node);
+        }
+
+        //If we are not parsing a block, we are already done
+        if (!is_block) {
+            break;
+        }
+    }
+
+    body_node.* = .{ .block = try body.toOwnedSlice() };
+
+    return body_node;
+}
+
 fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
     const node = try allocator.create(Node.Expression);
     errdefer allocator.destroy(node);
@@ -419,7 +513,9 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
             isNumber = false;
     }
 
-    node.* = if (isNumber) blk: {
+    node.* = if (first[0] == '!') blk: {
+        break :blk .{ .negate = try consumeExpression(allocator, iter) };
+    } else if (isNumber) blk: {
         const s64 = try std.fmt.parseInt(i64, first, 0);
 
         // If its within the range of an i32, then make this be a s32 literal instead of an s64 literal,
@@ -484,7 +580,7 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
                 }
             }
 
-            if (std.mem.eql(u8, first[0..2], "L'")) {
+            if (first.len >= 2 and std.mem.eql(u8, first[0..2], "L'")) {
                 break :blk .{ .wide_string_literal = unwrapStringLiteral(first[1..]) };
             }
 
@@ -497,25 +593,49 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
     };
 
     if (iter.peek()) |next| {
-        // If the next char is `=`, then we know this is an assignment,
-        // where the current value in `node` is the source for the assignment
-        if (next[0] == '=') {
-            //consume the =
-            _ = iter.next();
+        if (maybeHashKeyword(next)) |keyword| {
+            switch (keyword) {
+                // If the next char is `=`, then we know this is an assignment,
+                // where the current value in `node` is the source for the assignment
+                hashKeyword("=") => {
+                    //consume the =
+                    _ = iter.next();
 
-            const value = try consumeExpression(allocator, iter);
+                    const value = try consumeExpression(allocator, iter);
 
-            const destination = try allocator.create(Node.Expression);
-            errdefer allocator.free(destination);
+                    const destination = try allocator.create(Node.Expression);
+                    errdefer allocator.free(destination);
 
-            destination.* = node.*;
+                    destination.* = node.*;
 
-            node.* = Node.Expression{
-                .assignment = .{
-                    .destination = destination,
-                    .value = value,
+                    node.* = Node.Expression{
+                        .assignment = .{
+                            .destination = destination,
+                            .value = value,
+                        },
+                    };
                 },
-            };
+                hashKeyword("&") => {
+                    //consume the &
+                    _ = iter.next();
+
+                    const righthand = try consumeExpression(allocator, iter);
+
+                    const lefthand = try allocator.create(Node.Expression);
+                    errdefer allocator.free(lefthand);
+
+                    //Copy the current expression into the left hand side
+                    lefthand.* = node.*;
+
+                    node.* = Node.Expression{
+                        .bitwise_and = .{
+                            .lefthand = lefthand,
+                            .righthand = righthand,
+                        },
+                    };
+                },
+                else => {},
+            }
         }
     } else @panic("EOF");
 
@@ -599,7 +719,7 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
         break :blk "void";
     };
 
-    const body = try consumeFunctionBody(allocator, iter);
+    const body = try consumeBlockExpression(allocator, iter);
 
     node.* = .{
         .modifiers = modifiers,
@@ -612,56 +732,31 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
     return node;
 }
 
-fn consumeFunctionBody(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) ![]const Node {
-    var body = std.ArrayList(Node).init(allocator);
-    defer body.deinit();
+fn consumeIfStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
+    const node = try allocator.create(Node.IfStatement);
+    errdefer allocator.destroy(node);
 
-    consumeArbitraryLexeme(iter, "{");
-    while (true) {
-        const next = iter.peek() orelse std.debug.panic("unexpected EOF when parsing function body", .{});
+    consumeArbitraryLexeme(iter, "if");
 
-        if (next[0] == '}') {
-            _ = iter.next();
-            break;
-        }
+    consumeArbitraryLexeme(iter, "(");
+    const condition = try consumeExpression(allocator, iter);
+    consumeArbitraryLexeme(iter, ")");
 
-        const was_keyword: bool = if (maybeHashKeyword(next)) |maybe_keyword| blk: {
-            switch (maybe_keyword) {
-                hashKeyword("let") => {
-                    const variable_declaration = try consumeVariableDeclaration(allocator, iter);
+    const body = try consumeBlockExpression(allocator, iter);
 
-                    std.debug.print("cc {}\n", .{variable_declaration});
+    const else_body: ?*Node.Expression = if (std.mem.eql(u8, "else", iter.peek() orelse @panic("EOF"))) blk: {
+        consumeArbitraryLexeme(iter, "else");
 
-                    try body.append(variable_declaration);
-                    break :blk true;
-                },
-                hashKeyword("return") => {
-                    const return_statement = try consumeReturnStatement(allocator, iter);
+        break :blk try consumeBlockExpression(allocator, iter);
+    } else null;
 
-                    std.debug.print("ee {}\n", .{return_statement});
+    node.* = .{
+        .condition = condition,
+        .body = body,
+        .else_body = else_body,
+    };
 
-                    try body.append(return_statement);
-                    break :blk true;
-                },
-                hashKeyword("if") => @panic("if: TODO"),
-                else => {
-                    break :blk false;
-                },
-            }
-        } else false;
-
-        //If it was not parsed as a special keyword, then its an expression, and we need to parse it as one
-        if (!was_keyword) {
-            const node: Node = .{ .expression = try consumeExpression(allocator, iter) };
-            consumeSemicolon(iter);
-
-            std.debug.print("dd {}\n", .{node});
-
-            try body.append(node);
-        }
-    }
-
-    return try body.toOwnedSlice();
+    return .{ .if_statement = node };
 }
 
 fn consumeReturnStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
@@ -670,9 +765,14 @@ fn consumeReturnStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
 
     consumeArbitraryLexeme(iter, "return");
 
-    const expression = try consumeExpression(allocator, iter);
+    //If the next lexeme is not a semicolon, then theres an expression after, parse it
+    const expression: ?*Node.Expression = if (!consumeArbitraryLexemeIfAvailable(iter, ";")) blk: {
+        const expression = try consumeExpression(allocator, iter);
 
-    consumeSemicolon(iter);
+        consumeSemicolon(iter);
+
+        break :blk expression;
+    } else null;
 
     node.* = .{ .expression = expression };
 
@@ -854,6 +954,8 @@ fn consumeSemicolon(iter: *SliceIterator(Lexeme)) void {
 }
 
 fn consumeArbitraryLexeme(iter: *SliceIterator(Lexeme), intended: []const u8) void {
+    // std.debug.print("consuming {s}\n", .{intended});
+
     if (iter.next()) |next| {
         if (!std.mem.eql(u8, next, intended)) {
             std.debug.panic("unexpected lexeme {s}, expected {s}", .{ next, intended });
