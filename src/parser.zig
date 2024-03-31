@@ -571,6 +571,8 @@ fn consumeFunctionParameters(allocator: std.mem.Allocator, iter: *SliceIterator(
         const param_type = consumeTypeName(iter);
 
         try parameters.append(allocator, .{ .name = name, .type = param_type });
+
+        _ = consumeArbitraryLexemeIfAvailable(iter, ",");
     }
 
     node.* = .{
