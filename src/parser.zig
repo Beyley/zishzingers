@@ -115,6 +115,12 @@ pub const Node = union(NodeType) {
             source: *Expression,
             field: []const u8,
         },
+        member_function_call: struct {
+            source: *Expression,
+            name: []const u8,
+            parameters: []const *Expression,
+        },
+        class_name: []const u8,
         variable: []const u8,
         this: void,
         negate: *Expression,
@@ -132,11 +138,13 @@ pub const Node = union(NodeType) {
                 .bool_literal => |literal| writer.print("expression{{ .bool_literal = {} }}", .{literal}),
                 .ascii_string_literal => |literal| writer.print("expression{{ .ascii_string_literal = {s} }}", .{literal}),
                 .wide_string_literal => |literal| writer.print("expression{{ .wide_string_literal = {s} }}", .{literal}),
+                .class_name => |literal| writer.print("expression{{ .class_name = {s} }}", .{literal}),
                 .field_access => |literal| writer.print("expression{{ .field_access = .{{ .source = {}, .field = {s} }} }}", .{ literal.source, literal.field }),
                 .variable => |literal| writer.print("expression{{ .variable = {s} }}", .{literal}),
                 .this => writer.print("expression{{ .this }}", .{}),
                 .negate => |literal| writer.print("expression{{ .negate = {} }}", .{literal}),
                 .function_call => |literal| writer.print("expression{{ .function_call = .{{ .name = {s}, .parameters = {any} }} }}", .{ literal.name, literal.parameters }),
+                .member_function_call => |literal| writer.print("expression{{ .member_function_call = .{{ .source = {}, .name = {s}, .parameters = {any} }} }}", .{ literal.source, literal.name, literal.parameters }),
             };
         }
     };
@@ -325,8 +333,6 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
         consumeArbitraryLexeme(iter, "{");
     }
 
-    //TODO: parse class scope body
-
     while (true) {
         const lexeme = iter.peek() orelse std.debug.panic("unexpected EOF when parsing class body", .{});
 
@@ -344,7 +350,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
             //Get rid of the fn
             consumeArbitraryLexeme(iter, "fn");
 
-            std.debug.print("aa {}\n", .{(try consumeFunction(tree.allocator, iter, modifiers)).*});
+            std.debug.print("bb {}\n", .{(try consumeFunction(tree.allocator, iter, modifiers)).*});
         }
         // Else, we are consuming a field
         else {
@@ -429,6 +435,14 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
                     hashKeyword("false") => break :blk .{ .bool_literal = false },
                     else => {},
                 }
+            }
+
+            if (std.mem.eql(u8, first[0..2], "L'")) {
+                break :blk .{ .wide_string_literal = unwrapStringLiteral(first[1..]) };
+            }
+
+            if (first[0] == '\'') {
+                break :blk .{ .ascii_string_literal = unwrapStringLiteral(first[1..]) };
             }
 
             break :blk .{ .variable = first };
@@ -540,12 +554,17 @@ fn consumeFunctionBody(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme
         const was_keyword: bool = if (maybeHashKeyword(next)) |maybe_keyword| blk: {
             switch (maybe_keyword) {
                 hashKeyword("let") => {
-                    try body.append(try consumeVariableDeclaration(allocator, iter));
+                    const variable_declaration = try consumeVariableDeclaration(allocator, iter);
+
+                    std.debug.print("cc {}\n", .{variable_declaration});
+
+                    try body.append(variable_declaration);
                     break :blk true;
                 },
                 hashKeyword("return") => {
                     break :blk true;
                 },
+                hashKeyword("if") => @panic("if: TODO"),
                 else => {
                     break :blk false;
                 },
@@ -553,7 +572,14 @@ fn consumeFunctionBody(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme
         } else false;
 
         //If it was not parsed as a special keyword, then its an expression, and we need to parse it as one
-        if (!was_keyword) {}
+        if (!was_keyword) {
+            const node: Node = .{ .expression = try consumeExpression(allocator, iter) };
+            consumeSemicolon(iter);
+
+            std.debug.print("dd {}\n", .{node});
+
+            try body.append(node);
+        }
     }
 
     return try body.toOwnedSlice();
@@ -759,6 +785,9 @@ fn consumeArbitraryLexemeIfAvailable(iter: *SliceIterator(Lexeme), intended: []c
 }
 
 fn unwrapStringLiteral(literal: []const u8) []const u8 {
+    if (literal[0] != '\'' or literal[literal.len - 1] != '\'')
+        std.debug.panic("bad string \"{s}\"", .{literal});
+
     return literal[1 .. literal.len - 1];
 }
 
@@ -808,10 +837,15 @@ pub const Lexemeizer = struct {
                 lexeme_start = i;
             }
 
+            const is_long_string = just_started_lexeme and char == 'L' and iter[i + 1] == '\'';
+
             //If this is the start of a lexeme and we hit a ' (the start of a string)
-            if (just_started_lexeme and char == '\'') {
+            if ((just_started_lexeme and char == '\'') or is_long_string) {
                 //Increment to the next char
                 i += 1;
+
+                if (is_long_string)
+                    i += 1;
 
                 //Skip over all non ' characters
                 while (iter[i] != '\'') {
