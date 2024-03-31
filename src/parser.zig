@@ -15,6 +15,7 @@ pub const NodeType = enum {
     function,
     function_parameters,
     variable_declaration,
+    return_statement,
 };
 
 const FromImportWanted = union(enum) {
@@ -183,6 +184,10 @@ pub const Node = union(NodeType) {
         }
     };
 
+    pub const ReturnStatement = struct {
+        expression: *Expression,
+    };
+
     using: *Using,
     import: *Import,
     from_import: *FromImport,
@@ -192,6 +197,7 @@ pub const Node = union(NodeType) {
     function: *Function,
     function_parameters: *FunctionParameters,
     variable_declaration: *VariableDeclaration,
+    return_statement: *ReturnStatement,
 };
 
 pub const Tree = struct {
@@ -628,6 +634,11 @@ fn consumeFunctionBody(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme
                     break :blk true;
                 },
                 hashKeyword("return") => {
+                    const return_statement = try consumeReturnStatement(allocator, iter);
+
+                    std.debug.print("ee {}\n", .{return_statement});
+
+                    try body.append(return_statement);
                     break :blk true;
                 },
                 hashKeyword("if") => @panic("if: TODO"),
@@ -649,6 +660,21 @@ fn consumeFunctionBody(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme
     }
 
     return try body.toOwnedSlice();
+}
+
+fn consumeReturnStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
+    const node = try allocator.create(Node.ReturnStatement);
+    errdefer allocator.destroy(node);
+
+    consumeArbitraryLexeme(iter, "return");
+
+    const expression = try consumeExpression(allocator, iter);
+
+    consumeSemicolon(iter);
+
+    node.* = .{ .expression = expression };
+
+    return .{ .return_statement = node };
 }
 
 fn consumeVariableDeclaration(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
