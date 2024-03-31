@@ -187,7 +187,7 @@ pub fn main() !void {
             defer allocator.free(lexemes);
 
             const tokens = try Parser.parse(allocator, lexemes);
-            _ = tokens; // autofix
+            defer tokens.arena.deinit();
         },
     }
 }
