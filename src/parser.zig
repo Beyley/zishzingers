@@ -128,6 +128,10 @@ pub const Node = union(NodeType) {
             name: []const u8,
             parameters: []const *Expression,
         },
+        assignment: struct {
+            destination: *Expression,
+            value: *Expression,
+        },
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return switch (value) {
@@ -145,6 +149,7 @@ pub const Node = union(NodeType) {
                 .negate => |literal| writer.print("expression{{ .negate = {} }}", .{literal}),
                 .function_call => |literal| writer.print("expression{{ .function_call = .{{ .name = {s}, .parameters = {any} }} }}", .{ literal.name, literal.parameters }),
                 .member_function_call => |literal| writer.print("expression{{ .member_function_call = .{{ .source = {}, .name = {s}, .parameters = {any} }} }}", .{ literal.source, literal.name, literal.parameters }),
+                .assignment => |literal| writer.print("expression{{ .assignment = .{{ .destination = {}, .value = .{} }} }}", .{ literal.destination, literal.value }),
             };
         }
     };
@@ -421,6 +426,7 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
     } else blk: {
         const next = iter.peek() orelse @panic("EOF");
 
+        // We are parsing a function
         if (next[0] == '(') {
             break :blk .{
                 .function_call = .{
@@ -428,7 +434,42 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
                     .parameters = try consumeFunctionCallParameters(allocator, iter),
                 },
             };
-        } else {
+        }
+        // We are parsing a field access/member call
+        else if (next[0] == '.') {
+            const source = try allocator.create(Node.Expression);
+            errdefer allocator.destroy(source);
+
+            //If the source of the access is `this`, then we want to special case that and emit the `this` expression
+            source.* = if (std.mem.eql(u8, first, "this"))
+                .{ .this = {} }
+            else
+                .{ .variable = first };
+
+            consumeArbitraryLexeme(iter, ".");
+
+            const name = iter.next() orelse @panic("field name EOF");
+
+            //If this member call, parse as that, else parse as field access
+            if ((iter.peek() orelse @panic("EOF"))[0] == '(') {
+                const parameters = try consumeFunctionCallParameters(allocator, iter);
+
+                break :blk .{
+                    .member_function_call = .{
+                        .name = name,
+                        .parameters = parameters,
+                        .source = source,
+                    },
+                };
+            } else break :blk .{
+                .field_access = .{
+                    .source = source,
+                    .field = name,
+                },
+            };
+        }
+        // We are parsing some other misc expression, like a string literal or boolean literal
+        else {
             if (maybeHashKeyword(first)) |keyword| {
                 switch (keyword) {
                     hashKeyword("true") => break :blk .{ .bool_literal = true },
@@ -448,6 +489,31 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
             break :blk .{ .variable = first };
         }
     };
+
+    if (iter.peek()) |next| {
+        // If the next char is `=`, then we know this is an assignment,
+        // where the current value in `node` is the source for the assignment
+        if (next[0] == '=') {
+            //consume the =
+            _ = iter.next();
+
+            const value = try consumeExpression(allocator, iter);
+
+            const destination = try allocator.create(Node.Expression);
+            errdefer allocator.free(destination);
+
+            destination.* = node.*;
+
+            node.* = Node.Expression{
+                .assignment = .{
+                    .destination = destination,
+                    .value = value,
+                },
+            };
+        }
+    } else @panic("EOF");
+
+    // std.debug.print("zz {}\n", .{node.*});
 
     return node;
 }
