@@ -1397,3 +1397,29 @@ pub const CompressionFlags = packed struct(u8) {
     compressed_matrices: bool,
     _padding: u5 = undefined,
 };
+
+pub const FileDB = struct {
+    pub const HashLookupMap = std.AutoHashMap([std.crypto.hash.Sha1.digest_length]u8, MMTypes.FileDB.Entry);
+    pub const GuidLookupMap = std.AutoHashMap(u32, MMTypes.FileDB.Entry);
+
+    allocator: std.heap.ArenaAllocator,
+    hash_lookup: HashLookupMap,
+    guid_lookup: GuidLookupMap,
+
+    pub const Type = enum {
+        pre_lbp3,
+        lbp3,
+        vita,
+        unknown,
+    };
+
+    pub const Entry = struct {
+        path: []const u8,
+        timestamp: i32,
+        size: u32,
+    };
+
+    pub fn deinit(self: FileDB) void {
+        self.allocator.deinit();
+    }
+};

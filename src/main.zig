@@ -15,6 +15,7 @@ const no_command_error =
     \\
     \\    disasm      Disassembles a script file into a human readable format.
     \\    compile     Compiles an A# source file into a script.
+    \\    dump_map    Dumps the contents of an LBP map file.
     \\
     \\
 ;
@@ -22,6 +23,7 @@ const no_command_error =
 const Subcommand = enum {
     disasm,
     compile,
+    dump_map,
 };
 
 pub fn main() !void {
@@ -208,6 +210,55 @@ pub fn main() !void {
                     },
                 }
             }
+        },
+        .dump_map => {
+            const params = comptime clap.parseParamsComptime(
+                \\-h, --help                       Display this help and exit.
+                \\<str>                            The MAP file
+                \\
+            );
+
+            var diag = clap.Diagnostic{};
+            var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &iter, .{
+                .diagnostic = &diag,
+                .allocator = gpa.allocator(),
+            }) catch |err| {
+                // Report useful error and exit
+                diag.report(std.io.getStdErr().writer(), err) catch {};
+                return err;
+            };
+            defer res.deinit();
+
+            //If no arguments are passed or the user requested the help menu, display the help menu
+            if (res.args.help != 0 or res.positionals.len == 0) {
+                try clap.help(stderr, clap.Help, &params, .{});
+
+                return;
+            }
+
+            const map_file = try std.fs.cwd().openFile(res.positionals[0], .{});
+            defer map_file.close();
+
+            const MMStream = Stream.MMStream(std.io.StreamSource);
+
+            var stream = MMStream{
+                .stream = std.io.StreamSource{ .file = map_file },
+                // nonsense compression files, since its not important for MAP files
+                .compression_flags = .{
+                    .compressed_integers = false,
+                    .compressed_matrices = false,
+                    .compressed_vectors = false,
+                },
+                // nonsense revision, since its not important for MAP files
+                .revision = .{
+                    .branch_id = 0,
+                    .branch_revision = 0,
+                    .head = 0,
+                },
+            };
+
+            const file_db = try stream.readFileDB(allocator);
+            defer file_db.deinit();
         },
     }
 }

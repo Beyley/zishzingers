@@ -668,6 +668,72 @@ pub fn MMStream(comptime Stream: type) type {
                 try self.writeInt(u8, 0);
             }
         }
+
+        pub fn readFileDB(self: *Self, child_allocator: std.mem.Allocator) !MMTypes.FileDB {
+            var arena = std.heap.ArenaAllocator.init(child_allocator);
+            errdefer arena.deinit();
+
+            const allocator = arena.allocator();
+
+            const header = try self.readInt(i32);
+
+            std.debug.print("MAP Header {d}\n", .{header});
+
+            const db_type: MMTypes.FileDB.Type = switch (header) {
+                256 => .pre_lbp3,
+                21496064 => .lbp3,
+                936 => .vita,
+                else => .unknown,
+            };
+
+            const count = try self.readInt(u32);
+
+            std.debug.print("MAP file count {d}\n", .{count});
+            std.debug.print("MAP type {s}\n", .{@tagName(db_type)});
+
+            var entries = std.ArrayList(MMTypes.FileDB.Entry).init(allocator);
+            defer entries.deinit();
+
+            var hash_lookup = MMTypes.FileDB.HashLookupMap.init(allocator);
+            defer hash_lookup.deinit();
+            var guid_lookup = MMTypes.FileDB.GuidLookupMap.init(allocator);
+            defer guid_lookup.deinit();
+
+            for (0..count) |_| {
+                //Read the path, length is i16 on LBP3, i32 on LBP1/2/Vita
+                const path = try allocator.alloc(u8, if (db_type == .lbp3) try self.readInt(u16) else try self.readInt(u32));
+                _ = try self.readBytes(path);
+
+                //Skip 4 bytes on non lbp3
+                if (db_type != .lbp3)
+                    _ = try self.readInt(i32);
+
+                const timestamp = try self.readInt(i32);
+
+                const size = try self.readInt(u32);
+
+                const hash = try self.readSha1();
+                const guid = try self.readInt(u32);
+
+                if (std.mem.endsWith(u8, path, ".ff"))
+                    std.debug.print("path {s}\n", .{path});
+
+                const entry: MMTypes.FileDB.Entry = .{
+                    .path = path,
+                    .timestamp = timestamp,
+                    .size = size,
+                };
+
+                try hash_lookup.put(hash, entry);
+                try guid_lookup.put(guid, entry);
+            }
+
+            return .{
+                .hash_lookup = hash_lookup,
+                .guid_lookup = guid_lookup,
+                .allocator = arena,
+            };
+        }
     };
 }
 
