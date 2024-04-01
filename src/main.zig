@@ -13,9 +13,9 @@ const no_command_error =
     \\
     \\Commands:
     \\
-    \\    disasm      Disassembles a script file into a human readable format.
-    \\    compile     Compiles an A# source file into a script.
-    \\    dump_map    Dumps the contents of an LBP map file.
+    \\    disasm              Disassembles a script file into a human readable format.
+    \\    compile             Compiles an A# source file into a script.
+    \\    generate_library    Generates a library of stubs from a MAP and a extracted folder.
     \\
     \\
 ;
@@ -23,7 +23,7 @@ const no_command_error =
 const Subcommand = enum {
     disasm,
     compile,
-    dump_map,
+    generate_library,
 };
 
 pub fn main() !void {
@@ -211,10 +211,12 @@ pub fn main() !void {
                 }
             }
         },
-        .dump_map => {
+        .generate_library => {
             const params = comptime clap.parseParamsComptime(
-                \\-h, --help                       Display this help and exit.
-                \\<str>                            The MAP file
+                \\-h, --help           Display this help and exit.
+                \\-m, --map     <str>  The MAP file to use. Required
+                \\-f, --folder  <str>  The game data folder to use. Required
+                \\-o, --output  <str>  The output folder of the library. Required
                 \\
             );
 
@@ -230,13 +232,24 @@ pub fn main() !void {
             defer res.deinit();
 
             //If no arguments are passed or the user requested the help menu, display the help menu
-            if (res.args.help != 0 or res.positionals.len == 0) {
+            if (res.args.help != 0 or res.args.map == null or res.args.folder == null or res.args.output == null) {
                 try clap.help(stderr, clap.Help, &params, .{});
 
                 return;
             }
 
-            const map_file = try std.fs.cwd().openFile(res.positionals[0], .{});
+            var output_dir = std.fs.cwd().openDir(res.args.output.?, .{}) catch |err| blk: {
+                if (err == error.FileNotFound) {
+                    try std.fs.cwd().makeDir(res.args.output.?);
+
+                    break :blk try std.fs.cwd().openDir(res.args.output.?, .{});
+                }
+
+                return err;
+            };
+            defer output_dir.close();
+
+            const map_file = try std.fs.cwd().openFile(res.args.map.?, .{});
             defer map_file.close();
 
             const MMStream = Stream.MMStream(std.io.StreamSource);
@@ -262,7 +275,10 @@ pub fn main() !void {
 
             var iter = file_db.guid_lookup.iterator();
             while (iter.next()) |entry| {
-                try stdout.print("{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
+                if (!std.mem.endsWith(u8, entry.value_ptr.path, ".ff"))
+                    continue;
+
+                std.debug.print("handling {s}\n", .{entry.value_ptr.path});
             }
         },
     }

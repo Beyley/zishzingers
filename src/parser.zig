@@ -73,6 +73,7 @@ pub const Node = union(NodeType) {
     pub const Class = struct {
         class_name: []const u8,
         base_class: ?[]const u8,
+        guid: ?*Expression,
 
         fields: []const *Field,
         functions: []const *Function,
@@ -110,6 +111,7 @@ pub const Node = union(NodeType) {
         s64_literal: i64,
         f32_literal: f32,
         f64_literal: f32,
+        guid_literal: u32,
         bool_literal: bool,
         ascii_string_literal: []const u8,
         wide_string_literal: []const u8,
@@ -146,6 +148,7 @@ pub const Node = union(NodeType) {
                 .s64_literal => |literal| writer.print("expression{{ .s64_literal = {d} }}", .{literal}),
                 .f32_literal => |literal| writer.print("expression{{ .f32_literal = {d} }}", .{literal}),
                 .f64_literal => |literal| writer.print("expression{{ .f64_literal = {d} }}", .{literal}),
+                .guid_literal => |literal| writer.print("expression{{ .guid_literal = {d} }}", .{literal}),
                 .bool_literal => |literal| writer.print("expression{{ .bool_literal = {} }}", .{literal}),
                 .ascii_string_literal => |literal| writer.print("expression{{ .ascii_string_literal = {s} }}", .{literal}),
                 .wide_string_literal => |literal| writer.print("expression{{ .wide_string_literal = {s} }}", .{literal}),
@@ -336,6 +339,16 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     //Unreachable since we error out right above if theres EOF
     const class_name = iter.next() orelse unreachable;
 
+    const guid: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "(")) blk: {
+        const expression = try consumeExpression(tree.allocator, iter);
+        if (expression.* != .guid_literal)
+            @panic("aint a guid, buddy");
+
+        consumeArbitraryLexeme(iter, ")");
+
+        break :blk expression;
+    } else null;
+
     //Consume the scope start if available, if not, parse the class property
     const base_class: ?[]const u8 = if (!consumeArbitraryLexemeIfAvailable(iter, "{")) blk: {
         const property = iter.next() orelse std.debug.panic("unexpected EOF when parsing class properties", .{});
@@ -391,6 +404,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
         .base_class = base_class,
         .functions = try functions.toOwnedSlice(),
         .fields = try fields.toOwnedSlice(),
+        .guid = guid,
     };
 
     try tree.root_elements.append(tree.allocator, .{ .class = node });
@@ -500,24 +514,25 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
     return body_node;
 }
 
+fn isInt(comptime T: type, str: []const u8) !?T {
+    return std.fmt.parseInt(T, str, 0) catch |err| {
+        if (err == error.InvalidCharacter) {
+            return null;
+        }
+
+        return err;
+    };
+}
+
 fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
     const node = try allocator.create(Node.Expression);
     errdefer allocator.destroy(node);
 
     const first = iter.next() orelse @panic("eof");
 
-    var isNumber = true;
-    for (first) |c| {
-        //TODO: hex literals
-        if (!std.ascii.isDigit(c))
-            isNumber = false;
-    }
-
     node.* = if (first[0] == '!') blk: {
         break :blk .{ .negate = try consumeExpression(allocator, iter) };
-    } else if (isNumber) blk: {
-        const s64 = try std.fmt.parseInt(i64, first, 0);
-
+    } else if (try isInt(i64, first)) |s64| blk: {
         // If its within the range of an i32, then make this be a s32 literal instead of an s64 literal,
         // since s32 will coerce to s64 in the type resolution stage
         if (s64 >= std.math.minInt(i32) and s64 <= std.math.maxInt(i32)) {
@@ -572,6 +587,13 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
         }
         // We are parsing some other misc expression, like a string literal or boolean literal
         else {
+            //We *may* be parsing a GUID literal
+            if (first[0] == 'g') {
+                if (try isInt(u32, first[1..])) |guid| {
+                    break :blk .{ .guid_literal = guid };
+                }
+            }
+
             if (maybeHashKeyword(first)) |keyword| {
                 switch (keyword) {
                     hashKeyword("true") => break :blk .{ .bool_literal = true },
