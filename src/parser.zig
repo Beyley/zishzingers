@@ -79,7 +79,7 @@ pub const Node = union(NodeType) {
         functions: []const *Function,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            return writer.print("class{{ class_name = {s}, base_class: {?s} }}", .{ value.class_name, value.base_class });
+            return writer.print("class{{ class_name = {s}, base_class = {?s}, guid = {?} }}", .{ value.class_name, value.base_class, value.guid });
         }
     };
 
@@ -97,7 +97,7 @@ pub const Node = union(NodeType) {
     pub const Function = struct {
         return_type: []const u8,
         parameters: *FunctionParameters,
-        body: *Expression,
+        body: ?*Expression,
         name: []const u8,
         modifiers: MMTypes.Modifiers,
 
@@ -741,7 +741,10 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
         break :blk "void";
     };
 
-    const body = try consumeBlockExpression(allocator, iter);
+    const body: ?*Node.Expression = if (!consumeArbitraryLexemeIfAvailable(iter, ";"))
+        try consumeBlockExpression(allocator, iter)
+    else
+        null;
 
     node.* = .{
         .modifiers = modifiers,

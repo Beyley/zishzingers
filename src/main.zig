@@ -202,7 +202,7 @@ pub fn main() !void {
 
                         for (class.functions) |function| {
                             std.debug.print("function {}\n", .{function.*});
-                            std.debug.print("function body {}\n", .{function.body});
+                            std.debug.print("function body {?}\n", .{function.body});
                         }
                     },
                     inline else => |ptr| {
