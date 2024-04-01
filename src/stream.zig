@@ -677,8 +677,6 @@ pub fn MMStream(comptime Stream: type) type {
 
             const header = try self.readInt(i32);
 
-            std.debug.print("MAP Header {d}\n", .{header});
-
             const db_type: MMTypes.FileDB.Type = switch (header) {
                 256 => .pre_lbp3,
                 21496064 => .lbp3,
@@ -688,16 +686,13 @@ pub fn MMStream(comptime Stream: type) type {
 
             const count = try self.readInt(u32);
 
-            std.debug.print("MAP file count {d}\n", .{count});
-            std.debug.print("MAP type {s}\n", .{@tagName(db_type)});
-
             var entries = std.ArrayList(MMTypes.FileDB.Entry).init(allocator);
             defer entries.deinit();
 
             var hash_lookup = MMTypes.FileDB.HashLookupMap.init(allocator);
-            defer hash_lookup.deinit();
+            errdefer hash_lookup.deinit();
             var guid_lookup = MMTypes.FileDB.GuidLookupMap.init(allocator);
-            defer guid_lookup.deinit();
+            errdefer guid_lookup.deinit();
 
             for (0..count) |_| {
                 //Read the path, length is i16 on LBP3, i32 on LBP1/2/Vita
@@ -714,9 +709,6 @@ pub fn MMStream(comptime Stream: type) type {
 
                 const hash = try self.readSha1();
                 const guid = try self.readInt(u32);
-
-                if (std.mem.endsWith(u8, path, ".ff"))
-                    std.debug.print("path {s}\n", .{path});
 
                 const entry: MMTypes.FileDB.Entry = .{
                     .path = path,

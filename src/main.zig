@@ -40,10 +40,10 @@ pub fn main() !void {
 
     const allocator = gpa.allocator();
 
-    var iter = try std.process.ArgIterator.initWithAllocator(allocator);
-    _ = iter.next(); //skip exe name
+    var arg_iter = try std.process.ArgIterator.initWithAllocator(allocator);
+    _ = arg_iter.next(); //skip exe name
 
-    const command_str = iter.next() orelse {
+    const command_str = arg_iter.next() orelse {
         try stderr.print(no_command_error, .{});
 
         return error.MissingCommandArgument;
@@ -66,7 +66,7 @@ pub fn main() !void {
             );
 
             var diag = clap.Diagnostic{};
-            var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &iter, .{
+            var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &arg_iter, .{
                 .diagnostic = &diag,
                 .allocator = gpa.allocator(),
             }) catch |err| {
@@ -153,7 +153,7 @@ pub fn main() !void {
             );
 
             var diag = clap.Diagnostic{};
-            var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &iter, .{
+            var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &arg_iter, .{
                 .diagnostic = &diag,
                 .allocator = gpa.allocator(),
             }) catch |err| {
@@ -219,7 +219,7 @@ pub fn main() !void {
             );
 
             var diag = clap.Diagnostic{};
-            var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &iter, .{
+            var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &arg_iter, .{
                 .diagnostic = &diag,
                 .allocator = gpa.allocator(),
             }) catch |err| {
@@ -259,6 +259,11 @@ pub fn main() !void {
 
             const file_db = try stream.readFileDB(allocator);
             defer file_db.deinit();
+
+            var iter = file_db.guid_lookup.iterator();
+            while (iter.next()) |entry| {
+                try stdout.print("{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
+            }
         },
     }
 }
