@@ -46,6 +46,78 @@ pub const Script = struct {
     }
 };
 
+/// Demangles a function name
+pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std.mem.Allocator) ![]const u8 {
+    const sep_index = std.mem.indexOf(u8, orig, "__").?;
+
+    const name = orig[0..sep_index];
+
+    if (!extract_args)
+        return try allocator.dupe(u8, name);
+
+    const args_str = orig[sep_index + 2 ..];
+
+    var demangled = std.ArrayList(u8).init(allocator);
+    defer demangled.deinit();
+
+    try demangled.appendSlice(name);
+    try demangled.appendSlice("(");
+
+    var i: usize = 0;
+    while (i < args_str.len) : (i += 1) {
+        if (i > 0) try demangled.appendSlice(", ");
+
+        const c = args_str[i];
+        if (c == 'Q') {
+            var digit_count: usize = 0;
+
+            //count the amount of numeric chars
+            for (args_str[i + 1 ..]) |d| {
+                if (std.ascii.isDigit(d))
+                    digit_count += 1
+                else
+                    break;
+            }
+
+            const count = try std.fmt.parseInt(usize, args_str[i + 1 .. i + digit_count + 1], 10);
+
+            const type_name = args_str[i + 1 + digit_count .. i + 1 + digit_count + count];
+
+            try demangled.appendSlice(type_name);
+
+            //Skip the whole parameter
+            i += digit_count + count;
+            continue;
+        }
+
+        const fish_type = fishTypeFromMangledId(c);
+
+        try demangled.appendSlice(@tagName(fish_type));
+    }
+
+    try demangled.appendSlice(")");
+
+    return demangled.toOwnedSlice();
+}
+
+fn fishTypeFromMangledId(id: u8) MMTypes.FishType {
+    return switch (id) {
+        'v' => .void,
+        'b' => .bool,
+        'w' => .char,
+        'i' => .s32,
+        'f' => .f32,
+        'p' => .v2,
+        'q' => .v3,
+        'r' => .v4,
+        'm' => .m44,
+        'g' => .guid,
+        'j' => .s64,
+        'd' => .f64,
+        else => std.debug.panic("Unknown mangling ID {c}", .{id}),
+    };
+}
+
 pub const NopClass = packed struct(u48) {
     _unused: u48 = undefined,
 };
@@ -1104,15 +1176,22 @@ pub const FunctionDefinition = struct {
     stack_size: u32,
 };
 
-const Function = struct {
-    modifiers: u32,
+pub const Function = struct {
+    modifiers: Modifiers,
     type_reference: ResolvableTypeReference,
     name: ResolvableString,
     arguments: []const Argument,
-    bytecode: []const u64,
+    bytecode: []const Bytecode,
     line_numbers: []const u16,
     local_variables: []const LocalVariable,
     stack_size: u32,
+
+    pub fn deinit(self: Function, allocator: std.mem.Allocator) void {
+        allocator.free(self.arguments);
+        allocator.free(self.bytecode);
+        allocator.free(self.line_numbers);
+        allocator.free(self.local_variables);
+    }
 };
 
 pub const LocalVariable = struct {
@@ -1152,16 +1231,20 @@ pub const Modifiers = packed struct(u32) {
     _unused: u19 = undefined,
 
     pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-        try writer.print("Modifiers{{ ", .{});
+        var first = true;
+
         inline for (@typeInfo(Modifiers).Struct.fields) |field| {
             if (comptime std.mem.eql(u8, "_unused", field.name))
                 continue;
 
             if (@field(value, field.name)) {
-                try writer.print("{s}, ", .{field.name});
+                if (!first)
+                    try writer.writeByte(' ');
+
+                try writer.print("{s}", .{field.name});
+                first = false;
             }
         }
-        try writer.print(" }}", .{});
     }
 };
 
@@ -1365,6 +1448,12 @@ pub const MachineType = enum(u8) {
     f64 = 0xd,
 };
 
+/// Also known as BuiltInType
+///
+/// A special type builtin to the compiler, this seems to have no effect on runtime.
+/// These types represent all the types builtin to the compiler,
+/// which do not require another file/script to be imported.
+/// When the field/parameter type is a non-builtin type, this type is set to `void`
 pub const FishType = enum(u8) {
     void = 0x0,
     bool = 0x1,
@@ -1378,6 +1467,69 @@ pub const FishType = enum(u8) {
     guid = 0x9,
     s64 = 0xa,
     f64 = 0xb,
+
+    pub fn scriptName(self: FishType) []const u8 {
+        return switch (self) {
+            .void => "void",
+            .bool => "bool",
+            .char => "char",
+            .s32 => "s32",
+            .f32 => "f32",
+            .v2 => "vec2",
+            .v3 => "vec3",
+            .v4 => "vec4",
+            .m44 => "m44",
+            .guid => "guid",
+            .s64 => "s64",
+            .f64 => "f64",
+        };
+    }
+
+    pub fn fromName(name: []const u8) ?FishType {
+        if (std.mem.eql(u8, name, "void"))
+            return .void
+        else if (std.mem.eql(u8, name, "bool"))
+            return .bool
+        else if (std.mem.eql(u8, name, "char"))
+            return .char
+        else if (std.mem.eql(u8, name, "s32"))
+            return .s32
+        else if (std.mem.eql(u8, name, "f32"))
+            return .f32
+        else if (std.mem.eql(u8, name, "vec2"))
+            return .v2
+        else if (std.mem.eql(u8, name, "vec3"))
+            return .v3
+        else if (std.mem.eql(u8, name, "vec4"))
+            return .v4
+        else if (std.mem.eql(u8, name, "m44"))
+            return .m44
+        else if (std.mem.eql(u8, name, "guid"))
+            return .guid
+        else if (std.mem.eql(u8, name, "s64"))
+            return .s64
+        else if (std.mem.eql(u8, name, "f64"))
+            return .f64;
+    }
+
+    pub fn guessFromMachineType(machine_type: MachineType) FishType {
+        return switch (machine_type) {
+            .void => .void,
+            .bool => .bool,
+            .char => .char,
+            .s32 => .s32,
+            .f32 => .f32,
+            .v4 => .v4,
+            .m44 => .m44,
+            .deprecated => .void,
+            .raw_ptr => .void,
+            .ref_ptr => .void,
+            .safe_ptr => .void,
+            .object_ref => .void,
+            .s64 => .s64,
+            .f64 => .f64,
+        };
+    }
 };
 
 pub const ResourceIdentifier = union(enum(u8)) {

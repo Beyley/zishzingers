@@ -7,6 +7,7 @@ const Debug = @import("debug.zig");
 const Resource = @import("resource.zig");
 const ArrayListStreamSource = @import("ArrayListStreamSource.zig");
 const Parser = @import("parser.zig");
+const Stubinator = @import("stubinator.zig");
 
 const no_command_error =
     \\No command specified.
@@ -213,10 +214,12 @@ pub fn main() !void {
         },
         .generate_library => {
             const params = comptime clap.parseParamsComptime(
-                \\-h, --help           Display this help and exit.
-                \\-m, --map     <str>  The MAP file to use. Required
-                \\-f, --folder  <str>  The game data folder to use. Required
-                \\-o, --output  <str>  The output folder of the library. Required
+                \\-h, --help             Display this help and exit.
+                \\-m, --map       <str>  The MAP file to use. Required
+                \\-f, --folder    <str>  The game data folder to use. Required
+                \\-o, --output    <str>  The output folder of the library. Required
+                \\-s, --namespace <str>  The namespace to put the generated files in.
+                \\-n, --name      <str>  The name of the library
                 \\
             );
 
@@ -232,7 +235,12 @@ pub fn main() !void {
             defer res.deinit();
 
             //If no arguments are passed or the user requested the help menu, display the help menu
-            if (res.args.help != 0 or res.args.map == null or res.args.folder == null or res.args.output == null) {
+            if (res.args.help != 0 or
+                res.args.map == null or
+                res.args.folder == null or
+                res.args.name == null or
+                res.args.output == null)
+            {
                 try clap.help(stderr, clap.Help, &params, .{});
 
                 return;
@@ -248,6 +256,18 @@ pub fn main() !void {
                 return err;
             };
             defer output_dir.close();
+
+            //If a namespace is specified, create that dir
+            if (res.args.namespace) |namespace| {
+                //Make the path for the namespace
+                output_dir.makeDir(namespace) catch |err| {
+                    if (err != error.PathAlreadyExists)
+                        return err;
+                };
+            }
+
+            var game_data_dir = try std.fs.cwd().openDir(res.args.folder.?, .{});
+            defer game_data_dir.close();
 
             const map_file = try std.fs.cwd().openFile(res.args.map.?, .{});
             defer map_file.close();
@@ -273,12 +293,58 @@ pub fn main() !void {
             const file_db = try stream.readFileDB(allocator);
             defer file_db.deinit();
 
+            var scripts = std.AutoHashMap(u32, MMTypes.Script).init(allocator);
+            defer {
+                var iter = scripts.iterator();
+                while (iter.next()) |entry| {
+                    entry.value_ptr.deinit(allocator);
+                }
+
+                scripts.deinit();
+            }
+
             var iter = file_db.guid_lookup.iterator();
             while (iter.next()) |entry| {
                 if (!std.mem.endsWith(u8, entry.value_ptr.path, ".ff"))
                     continue;
 
-                std.debug.print("handling {s}\n", .{entry.value_ptr.path});
+                std.debug.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
+                // try stdout.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
+
+                const file_data = try game_data_dir.readFileAlloc(allocator, entry.value_ptr.path, std.math.maxInt(usize));
+                defer allocator.free(file_data);
+
+                var resource = try Resource.readResource(file_data, allocator);
+                defer resource.deinit();
+
+                const script = try resource.stream.readScript(allocator);
+                errdefer script.deinit(allocator);
+
+                try scripts.put(entry.key_ptr.*, script);
+            }
+
+            var script_iter = scripts.iterator();
+            while (script_iter.next()) |entry| {
+                const db_entry = file_db.guid_lookup.get(entry.key_ptr.*).?;
+
+                const out_name = if (res.args.namespace) |namespace|
+                    try std.fmt.allocPrint(allocator, "{s}/{s}.as", .{ namespace, std.fs.path.stem(db_entry.path) })
+                else
+                    try std.fmt.allocPrint(allocator, "{s}.as", .{std.fs.path.stem(db_entry.path)});
+                defer allocator.free(out_name);
+                const out_file = try output_dir.createFile(out_name, .{});
+                defer out_file.close();
+
+                try Stubinator.generateStubs(
+                    out_file.writer(),
+                    allocator,
+                    entry.value_ptr.*,
+                    entry.key_ptr.*,
+                    file_db.guid_lookup,
+                    scripts,
+                    res.args.namespace,
+                    res.args.name.?,
+                );
             }
         },
     }

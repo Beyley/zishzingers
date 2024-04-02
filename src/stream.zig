@@ -105,17 +105,77 @@ pub fn MMStream(comptime Stream: type) type {
                     const property_definitions = try self.readArray(MMTypes.PropertyDefinition, allocator, null, ScriptReadType);
                     errdefer allocator.free(property_definitions);
 
-                    if (self.revision.head < 0x1ec) @panic("Unimplemented reading of revision < 0x1ec");
+                    const functions, const shared_arguments, const shared_bytecode, const shared_line_numbers, const shared_local_variables =
+                        if (self.revision.head < 0x1ec)
+                    blk: {
+                        const functions = try self.readArray(MMTypes.Function, allocator, null, ScriptReadType);
+                        defer {
+                            for (functions) |function| {
+                                function.deinit(allocator);
+                            }
 
-                    const functions = try self.readArray(MMTypes.FunctionDefinition, allocator, null, ScriptReadType);
+                            allocator.free(functions);
+                        }
+
+                        const function_definitions = try allocator.alloc(MMTypes.FunctionDefinition, functions.len);
+                        errdefer allocator.free(functions);
+                        var shared_arguments = std.ArrayList(MMTypes.Argument).init(allocator);
+                        defer shared_arguments.deinit();
+                        var shared_bytecode = std.ArrayList(MMTypes.Bytecode).init(allocator);
+                        defer shared_bytecode.deinit();
+                        var shared_line_numbers = std.ArrayList(u16).init(allocator);
+                        defer shared_line_numbers.deinit();
+                        var shared_local_variables = std.ArrayList(MMTypes.LocalVariable).init(allocator);
+                        defer shared_local_variables.deinit();
+
+                        for (functions, 0..) |function, i| {
+                            function_definitions[i] = MMTypes.FunctionDefinition{
+                                .name = function.name,
+                                .modifiers = function.modifiers,
+                                .stack_size = function.stack_size,
+                                .type_reference = function.type_reference,
+                                .arguments = .{ .begin = @intCast(shared_arguments.items.len), .end = @intCast(shared_arguments.items.len + function.arguments.len) },
+                                .bytecode = .{ .begin = @intCast(shared_bytecode.items.len), .end = @intCast(shared_bytecode.items.len + function.bytecode.len) },
+                                .line_numbers = .{ .begin = @intCast(shared_line_numbers.items.len), .end = @intCast(shared_line_numbers.items.len + function.line_numbers.len) },
+                                .local_variables = .{ .begin = @intCast(shared_local_variables.items.len), .end = @intCast(shared_local_variables.items.len + function.local_variables.len) },
+                            };
+                            try shared_arguments.appendSlice(function.arguments);
+                            try shared_bytecode.appendSlice(function.bytecode);
+                            try shared_line_numbers.appendSlice(function.line_numbers);
+                            try shared_local_variables.appendSlice(function.local_variables);
+                        }
+
+                        break :blk .{
+                            function_definitions,
+                            try shared_arguments.toOwnedSlice(),
+                            try shared_bytecode.toOwnedSlice(),
+                            try shared_line_numbers.toOwnedSlice(),
+                            try shared_local_variables.toOwnedSlice(),
+                        };
+                    } else blk: {
+                        const functions = try self.readArray(MMTypes.FunctionDefinition, allocator, null, ScriptReadType);
+                        errdefer allocator.free(functions);
+                        const shared_arguments = try self.readArray(MMTypes.Argument, allocator, null, ScriptReadType);
+                        errdefer allocator.free(shared_arguments);
+                        const shared_bytecode = try self.readArray(MMTypes.Bytecode, allocator, null, ScriptReadType);
+                        errdefer allocator.free(shared_bytecode);
+                        const shared_line_numbers = try self.readArray(u16, allocator, null, ScriptReadType);
+                        errdefer allocator.free(shared_line_numbers);
+                        const shared_local_variables = try self.readArray(MMTypes.LocalVariable, allocator, null, ScriptReadType);
+                        errdefer allocator.free(shared_local_variables);
+
+                        break :blk .{
+                            functions,
+                            shared_arguments,
+                            shared_bytecode,
+                            shared_line_numbers,
+                            shared_local_variables,
+                        };
+                    };
                     errdefer allocator.free(functions);
-                    const shared_arguments = try self.readArray(MMTypes.Argument, allocator, null, ScriptReadType);
                     errdefer allocator.free(shared_arguments);
-                    const shared_bytecode = try self.readArray(MMTypes.Bytecode, allocator, null, ScriptReadType);
                     errdefer allocator.free(shared_bytecode);
-                    const shared_line_numbers = try self.readArray(u16, allocator, null, ScriptReadType);
                     errdefer allocator.free(shared_line_numbers);
-                    const shared_local_variables = try self.readArray(MMTypes.LocalVariable, allocator, null, ScriptReadType);
                     errdefer allocator.free(shared_local_variables);
 
                     // In revision 0x3d9, range ends were made to be relative, not absolute, this is probably to make save storage on large scripts
@@ -238,7 +298,7 @@ pub fn MMStream(comptime Stream: type) type {
         }
 
         pub fn readResource(self: *Self, skip_flags: bool) !?MMTypes.ResourceIdentifier {
-            const hash: u8, const guid: u8 = if (self.revision.head <= 0x18b) .{ 2, 1 } else .{ 1, 2 };
+            const hash: u8, const guid: u8 = if (self.revision.head <= 0x191) .{ 2, 1 } else .{ 1, 2 };
 
             const flags: u32 = if (self.revision.head > 0x22e and !skip_flags) try self.readInt(u32) else 0;
             _ = flags; // idk what flags does, seems to just be ignored
@@ -329,6 +389,16 @@ pub fn MMStream(comptime Stream: type) type {
                         .type_reference = try self.readInt(u32),
                         .name = try self.readInt(u32),
                         .offset = try self.readInt(u32),
+                    },
+                    MMTypes.Function => .{
+                        .modifiers = @bitCast(try self.readInt(u32)),
+                        .type_reference = try self.readInt(u32),
+                        .name = try self.readInt(u32),
+                        .arguments = try self.readArray(MMTypes.Argument, allocator, null, ScriptReadType),
+                        .bytecode = try self.readArray(MMTypes.Bytecode, allocator, null, ScriptReadType),
+                        .line_numbers = try self.readArray(u16, allocator, null, ScriptReadType),
+                        .local_variables = try self.readArray(MMTypes.LocalVariable, allocator, null, ScriptReadType),
+                        .stack_size = try self.readInt(u32),
                     },
                     else => @compileError("Unknown type " ++ @typeName(T)),
                 };
@@ -726,77 +796,5 @@ pub fn MMStream(comptime Stream: type) type {
                 .allocator = arena,
             };
         }
-    };
-}
-
-/// Demangles a function name
-pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std.mem.Allocator) ![]const u8 {
-    const sep_index = std.mem.indexOf(u8, orig, "__").?;
-
-    const name = orig[0..sep_index];
-
-    if (!extract_args)
-        return try allocator.dupe(u8, name);
-
-    const args_str = orig[sep_index + 2 ..];
-
-    var demangled = std.ArrayList(u8).init(allocator);
-    defer demangled.deinit();
-
-    try demangled.appendSlice(name);
-    try demangled.appendSlice("(");
-
-    var i: usize = 0;
-    while (i < args_str.len) : (i += 1) {
-        if (i > 0) try demangled.appendSlice(", ");
-
-        const c = args_str[i];
-        if (c == 'Q') {
-            var digit_count: usize = 0;
-
-            //count the amount of numeric chars
-            for (args_str[i + 1 ..]) |d| {
-                if (std.ascii.isDigit(d))
-                    digit_count += 1
-                else
-                    break;
-            }
-
-            const count = try std.fmt.parseInt(usize, args_str[i + 1 .. i + digit_count + 1], 10);
-
-            const type_name = args_str[i + 1 + digit_count .. i + 1 + digit_count + count];
-
-            try demangled.appendSlice(type_name);
-
-            //Skip the whole parameter
-            i += digit_count + count;
-            continue;
-        }
-
-        const fish_type = fishTypeFromMangledId(c);
-
-        try demangled.appendSlice(@tagName(fish_type));
-    }
-
-    try demangled.appendSlice(")");
-
-    return demangled.toOwnedSlice();
-}
-
-fn fishTypeFromMangledId(id: u8) MMTypes.FishType {
-    return switch (id) {
-        'v' => .void,
-        'b' => .bool,
-        'w' => .char,
-        'i' => .s32,
-        'f' => .f32,
-        'p' => .v2,
-        'q' => .v3,
-        'r' => .v4,
-        'm' => .m44,
-        'g' => .guid,
-        'j' => .s64,
-        'd' => .f64,
-        else => std.debug.panic("Unknown mangling ID {c}", .{id}),
     };
 }

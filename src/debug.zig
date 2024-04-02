@@ -51,6 +51,16 @@ pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
             }
         }
 
+        if (function.local_variables.len() > 0) {
+            try std.fmt.format(writer, "   - Local Variables\n", .{});
+            for (function.local_variables.slice(script.local_variables)) |local_variable| {
+                try std.fmt.format(writer, "      - Name: {s}\n", .{script.a_string_table.strings[local_variable.name]});
+                try std.fmt.format(writer, "      - Offset: {d}\n", .{local_variable.offset});
+                try std.fmt.format(writer, "      - Modifiers: {d}\n", .{local_variable.modifiers});
+                try std.fmt.format(writer, "      - Type: {*}\n", .{&script.type_references[local_variable.type_reference]});
+            }
+        }
+
         if (function.bytecode.len() > 0) {
             try std.fmt.format(writer, "   - Bytecode\n", .{});
 
