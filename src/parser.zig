@@ -11,8 +11,10 @@ pub const NodeType = enum {
     from_import,
     class,
     field,
+    property,
     expression,
     function,
+    constructor,
     function_parameters,
     variable_declaration,
     return_statement,
@@ -76,11 +78,19 @@ pub const Node = union(NodeType) {
         guid: ?*Expression,
 
         fields: []const *Field,
+        properties: []const *Property,
         functions: []const *Function,
+        constructor: ?*const Constructor,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return writer.print("class{{ class_name = {s}, base_class = {?s}, guid = {?} }}", .{ value.class_name, value.base_class, value.guid });
         }
+    };
+
+    pub const Constructor = struct {
+        body: ?*const Node.Expression,
+        parameters: *const FunctionParameters,
+        modifiers: MMTypes.Modifiers,
     };
 
     pub const Field = struct {
@@ -92,6 +102,20 @@ pub const Node = union(NodeType) {
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return writer.print("field{{ name = {s}, type = {?s}, default_value = {?}, modifiers: {} }}", .{ value.name, value.type, value.default_value, value.modifiers });
         }
+    };
+
+    pub const Property = struct {
+        pub const FunctionState = union(enum) {
+            missing: void,
+            forward_declaration: void,
+            expression: *Node.Expression,
+        };
+
+        set_body: FunctionState,
+        get_body: FunctionState,
+        type: []const u8,
+        name: []const u8,
+        modifiers: MMTypes.Modifiers,
     };
 
     pub const Function = struct {
@@ -214,8 +238,10 @@ pub const Node = union(NodeType) {
     from_import: *FromImport,
     class: *Class,
     field: *Field,
+    property: *Property,
     expression: *Expression,
     function: *Function,
+    constructor: *Constructor,
     function_parameters: *FunctionParameters,
     variable_declaration: *VariableDeclaration,
     return_statement: *ReturnStatement,
@@ -369,6 +395,10 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     defer functions.deinit();
     var fields = std.ArrayList(*Node.Field).init(tree.allocator);
     defer fields.deinit();
+    var properties = std.ArrayList(*Node.Property).init(tree.allocator);
+    defer properties.deinit();
+
+    var constructor: ?*Node.Constructor = null;
 
     while (true) {
         const lexeme = iter.peek() orelse std.debug.panic("unexpected EOF when parsing class body", .{});
@@ -386,58 +416,155 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
 
         const next = iter.peek() orelse std.debug.panic("unexpected EOF when parsing declaration", .{});
 
+        const next_keyword = maybeHashKeyword(next);
+
         //If the next keyword is a function, then we are consuming a function
-        if (hashKeyword(next) == comptime hashKeyword("fn")) {
+        if (next_keyword == comptime hashKeyword("fn")) {
             //Get rid of the fn
             consumeArbitraryLexeme(iter, "fn");
 
             try functions.append(try consumeFunction(tree.allocator, iter, modifiers));
         }
-        // Else, we are consuming a field
-        else {
-            try fields.append(try consumeField(tree.allocator, iter, modifiers));
+        // Else, we are consuming a field, property, or constructor
+        else blk: {
+            if (iter.peekAt(1)) |ahead| {
+                if (ahead[0] == '(') {
+                    if (constructor != null) @panic("multiple constructors");
+
+                    constructor = try consumeConstructor(tree.allocator, iter, class_name, modifiers);
+
+                    //Since we parsed it as a contructor, break out as we dont want to accidentally parse a property aswell
+                    break :blk;
+                }
+            }
+
+            switch (try consumeFieldOrProperty(tree.allocator, iter, modifiers)) {
+                .field => |field| try fields.append(field),
+                .property => |property| try properties.append(property),
+            }
         }
     }
 
     node.* = .{
+        .constructor = constructor,
         .class_name = class_name,
         .base_class = base_class,
         .functions = try functions.toOwnedSlice(),
         .fields = try fields.toOwnedSlice(),
+        .properties = try properties.toOwnedSlice(),
         .guid = guid,
     };
 
     try tree.root_elements.append(tree.allocator, .{ .class = node });
 }
 
-fn consumeField(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modifiers: MMTypes.Modifiers) !*Node.Field {
-    const node = try allocator.create(Node.Field);
+fn consumeConstructor(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), class_name: []const u8, modifiers: MMTypes.Modifiers) !*Node.Constructor {
+    const node = try allocator.create(Node.Constructor);
     errdefer allocator.destroy(node);
 
-    const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing field name", .{});
+    const name = iter.next() orelse @panic("eof");
 
-    const field_type: ?[]const u8 = if (consumeArbitraryLexemeIfAvailable(iter, ":")) blk: {
-        break :blk consumeTypeName(iter);
-    } else null;
+    std.debug.assert(std.mem.eql(u8, name, class_name));
 
-    const default_value: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "=")) blk: {
-        break :blk try consumeExpression(allocator, iter);
-    } else null;
+    const parameters = try consumeFunctionParameters(allocator, iter);
 
-    if (field_type == null and default_value == null) {
-        std.debug.panic("Field has no type and no default value", .{});
-    }
+    const body: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, ";"))
+        null
+    else
+        try consumeBlockExpression(allocator, iter);
 
     node.* = .{
         .modifiers = modifiers,
-        .name = name,
-        .type = field_type,
-        .default_value = default_value,
+        .parameters = parameters,
+        .body = body,
     };
 
-    consumeSemicolon(iter);
-
     return node;
+}
+
+fn consumeFieldOrProperty(
+    allocator: std.mem.Allocator,
+    iter: *SliceIterator(Lexeme),
+    modifiers: MMTypes.Modifiers,
+) !union(enum) {
+    field: *Node.Field,
+    property: *Node.Property,
+} {
+    const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing field name", .{});
+
+    const field_type: ?[]const u8 = if (consumeArbitraryLexemeIfAvailable(iter, ":"))
+        consumeTypeName(iter)
+    else
+        null;
+
+    if (consumeArbitraryLexemeIfAvailable(iter, "{")) {
+        if (field_type == null) {
+            std.debug.panic("Properties must specify type", .{});
+        }
+
+        const node = try allocator.create(Node.Property);
+        errdefer allocator.destroy(node);
+
+        const get_body, const set_body = blk: {
+            var get_body: Node.Property.FunctionState = .missing;
+            var set_body: Node.Property.FunctionState = .missing;
+
+            while (true) {
+                const next = iter.next() orelse @panic("EOF");
+                switch (hashKeyword(next)) {
+                    hashKeyword("get") => {
+                        if (consumeArbitraryLexemeIfAvailable(iter, ";")) {
+                            get_body = .forward_declaration;
+                        } else {
+                            get_body = .{ .expression = try consumeBlockExpression(allocator, iter) };
+                        }
+                    },
+                    hashKeyword("set") => {
+                        if (consumeArbitraryLexemeIfAvailable(iter, ";")) {
+                            set_body = .forward_declaration;
+                        } else {
+                            set_body = .{ .expression = try consumeBlockExpression(allocator, iter) };
+                        }
+                    },
+                    hashKeyword("}") => break :blk .{ get_body, set_body },
+                    else => std.debug.panic("what are you doing {s}", .{next}),
+                }
+            }
+        };
+
+        node.* = .{
+            .name = name,
+            .type = field_type.?,
+            .modifiers = modifiers,
+            .get_body = get_body,
+            .set_body = set_body,
+        };
+
+        return .{ .property = node };
+    } else {
+        const default_value: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "="))
+            try consumeExpression(allocator, iter)
+        else
+            null;
+
+        if (field_type == null and default_value == null) {
+            std.debug.panic("Field {s} has no type and no default value", .{name});
+        }
+
+        const node = try allocator.create(Node.Field);
+        errdefer allocator.destroy(node);
+
+        node.* = .{
+            .modifiers = modifiers,
+            .name = name,
+            .type = field_type,
+            .default_value = default_value,
+        };
+
+        consumeSemicolon(iter);
+
+        return .{ .field = node };
+    }
 }
 
 const Error = std.mem.Allocator.Error || std.fmt.ParseIntError;

@@ -1195,7 +1195,7 @@ pub const Function = struct {
 };
 
 pub const LocalVariable = struct {
-    modifiers: u32,
+    modifiers: Modifiers,
     type_reference: ResolvableTypeReference,
     name: ResolvableString,
     offset: u32,
@@ -1207,7 +1207,7 @@ pub const Argument = struct {
 };
 
 pub const PropertyDefinition = struct {
-    modifiers: u32,
+    modifiers: Modifiers,
     type_reference: ResolvableTypeReference,
     name: ResolvableString,
     get_function: ResolvableFunction,

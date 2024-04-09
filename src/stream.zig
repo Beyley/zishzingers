@@ -352,7 +352,7 @@ pub fn MMStream(comptime Stream: type) type {
                         .name = try self.readInt(u32),
                     },
                     MMTypes.PropertyDefinition => .{
-                        .modifiers = try self.readInt(ScriptReadType),
+                        .modifiers = @bitCast(@as(u32, try self.readInt(ScriptReadType))),
                         .type_reference = try self.readInt(u32),
                         .name = try self.readInt(u32),
                         .get_function = try self.readInt(u32),
@@ -385,7 +385,7 @@ pub fn MMStream(comptime Stream: type) type {
                         .offset = try self.readInt(u32),
                     },
                     MMTypes.LocalVariable => .{
-                        .modifiers = try self.readInt(ScriptReadType),
+                        .modifiers = @bitCast(@as(u32, try self.readInt(ScriptReadType))),
                         .type_reference = try self.readInt(u32),
                         .name = try self.readInt(u32),
                         .offset = try self.readInt(u32),

@@ -39,9 +39,9 @@ pub fn generateStubs(
             continue;
 
         if (namespace != null)
-            try writer.print("import '{s}:{s}'", .{ namespace.?, referenced_script.value_ptr.* })
+            try writer.print("import '{s}:{s}';", .{ namespace.?, referenced_script.value_ptr.* })
         else
-            try writer.print("import '{s}'", .{referenced_script.value_ptr.*});
+            try writer.print("import '{s}';", .{referenced_script.value_ptr.*});
 
         try writer.writeByte('\n');
     }
@@ -55,56 +55,82 @@ pub fn generateStubs(
     try writer.writeByte('\n');
 
     try writer.writeAll("{\n");
+
     for (script.field_definitions) |field| {
         try writer.print("    {} {s}: ", .{
             field.modifiers,
             script.a_string_table.strings[field.name],
         });
 
-        try formatType(writer, script_lookup, script, script.type_references[field.type_reference]);
+        try formatType(
+            writer,
+            script_lookup,
+            script,
+            script.type_references[field.type_reference],
+        );
 
         try writer.writeAll(";\n");
     }
 
     try writer.writeAll("\n");
 
-    for (script.functions) |function| {
+    for (script.property_definitions) |property| {
+        try writer.print("    {} {s}: ", .{
+            property.modifiers,
+            script.a_string_table.strings[property.name],
+        });
+
+        try formatType(
+            writer,
+            script_lookup,
+            script,
+            script.type_references[property.type_reference],
+        );
+
+        try writer.writeAll(" {\n");
+
+        if (property.get_function != 0xFFFFFFFF) {
+            try writer.writeAll("        get;\n");
+        }
+
+        if (property.set_function != 0xFFFFFFFF) {
+            try writer.writeAll("        set;\n");
+        }
+
+        try writer.writeAll("    }\n");
+    }
+
+    try writer.writeAll("\n");
+
+    func: for (script.functions, 0..) |function, func_idx| {
+        //Search for any properties that use this function, if they do, skip this func
+        for (script.property_definitions) |property|
+            if (property.get_function == func_idx or property.set_function == func_idx)
+                continue :func;
+
         const demangled_name = try MMTypes.demangleFunctionName(script.a_string_table.strings[function.name], false, allocator);
         defer allocator.free(demangled_name);
 
+        //Skip init functions
+        if (std.mem.eql(u8, demangled_name, ".init")) {
+            continue;
+        }
+
+        if (std.mem.eql(u8, demangled_name, ".ctor")) {
+            try writer.print("    {} {s}", .{ function.modifiers, script.class_name });
+            try writer.writeByte('(');
+            try formatParameters(writer, script_lookup, function, script);
+            try writer.writeAll(");\n");
+            continue;
+        }
+
+        if (demangled_name[0] == '.') {
+            std.debug.panic("Bad special-cased func {s}, needs special handling above.", .{demangled_name});
+        }
+
         try writer.print("    {} fn {s}", .{ function.modifiers, demangled_name });
         try writer.writeByte('(');
-        for (function.arguments.slice(script.arguments), 0..) |argument, i| {
-            // Try to resolve a name for this argument using the local variables,
-            // since arguments themselves dont actually store the names.
-            // This is generally safe since the original compiler isnt really good at re-using registers
-            const name: ?[]const u8 = blk: {
-                for (function.local_variables.slice(script.local_variables)) |local_variable| {
-                    if (local_variable.offset == argument.offset) {
-                        if (local_variable.name != 0xFFFFFFFF) {
-                            break :blk script.a_string_table.strings[local_variable.name];
-                        }
-                    }
-                }
-
-                break :blk null;
-            };
-
-            if (i > 0)
-                try writer.writeAll(", ");
-
-            if (name) |resolved_name|
-                try writer.print("{s}: ", .{resolved_name})
-            else
-                try writer.print("arg{d}: ", .{i});
-
-            try formatType(
-                writer,
-                script_lookup,
-                script,
-                script.type_references[argument.type_reference],
-            );
-        }
+        try formatParameters(writer, script_lookup, function, script);
         try writer.writeAll(") -> ");
         try formatType(
             writer,
@@ -115,6 +141,45 @@ pub fn generateStubs(
         try writer.writeAll(";\n");
     }
     try writer.writeAll("}\n");
+}
+
+fn formatParameters(
+    writer: anytype,
+    script_lookup: std.AutoHashMap(u32, MMTypes.Script),
+    function: MMTypes.FunctionDefinition,
+    script: MMTypes.Script,
+) !void {
+    for (function.arguments.slice(script.arguments), 0..) |argument, i| {
+        // Try to resolve a name for this argument using the local variables,
+        // since arguments themselves dont actually store the names.
+        // This is generally safe since the original compiler isnt really good at re-using registers
+        const name: ?[]const u8 = blk: {
+            for (function.local_variables.slice(script.local_variables)) |local_variable| {
+                if (local_variable.offset == argument.offset) {
+                    if (local_variable.name != 0xFFFFFFFF) {
+                        break :blk script.a_string_table.strings[local_variable.name];
+                    }
+                }
+            }
+
+            break :blk null;
+        };
+
+        if (i > 0)
+            try writer.writeAll(", ");
+
+        if (name) |resolved_name|
+            try writer.print("{s}: ", .{resolved_name})
+        else
+            try writer.print("arg{d}: ", .{i});
+
+        try formatType(
+            writer,
+            script_lookup,
+            script,
+            script.type_references[argument.type_reference],
+        );
+    }
 }
 
 fn formatType(writer: anytype, script_lookup: std.AutoHashMap(u32, MMTypes.Script), script: MMTypes.Script, type_reference: MMTypes.TypeReference) !void {

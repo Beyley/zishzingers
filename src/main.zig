@@ -205,6 +205,8 @@ pub fn main() !void {
                             std.debug.print("function {}\n", .{function.*});
                             std.debug.print("function body {?}\n", .{function.body});
                         }
+
+                        std.debug.print("{?}\n", .{class.constructor});
                     },
                     inline else => |ptr| {
                         std.debug.print("{}\n", .{ptr.*});
