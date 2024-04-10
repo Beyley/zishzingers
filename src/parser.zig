@@ -45,14 +45,19 @@ const FromImportWanted = union(enum) {
     }
 };
 
-pub const ParsedType = struct {
-    name: []const u8,
-    dimension_count: u8,
+pub const Type = union(enum) {
+    pub const ParsedType = struct {
+        name: []const u8,
+        dimension_count: u8,
 
-    pub const Void: ParsedType = .{
-        .name = "void",
-        .dimension_count = 0,
+        pub const Void: Type = .{ .parsed = .{
+            .name = "void",
+            .dimension_count = 0,
+        } };
     };
+
+    parsed: ParsedType,
+    unknown: void,
 };
 
 pub const Node = union(NodeType) {
@@ -106,7 +111,7 @@ pub const Node = union(NodeType) {
     pub const Field = struct {
         modifiers: MMTypes.Modifiers,
         name: []const u8,
-        type: ?ParsedType,
+        type: Type,
         default_value: ?*Expression,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -123,13 +128,13 @@ pub const Node = union(NodeType) {
 
         set_body: FunctionState,
         get_body: FunctionState,
-        type: ParsedType,
+        type: Type,
         name: []const u8,
         modifiers: MMTypes.Modifiers,
     };
 
     pub const Function = struct {
-        return_type: ParsedType,
+        return_type: Type,
         parameters: *FunctionParameters,
         body: ?*Expression,
         name: []const u8,
@@ -140,70 +145,79 @@ pub const Node = union(NodeType) {
         }
     };
 
-    pub const Expression = union(enum) {
-        s32_literal: i32,
-        s64_literal: i64,
-        f32_literal: f32,
-        f64_literal: f32,
-        guid_literal: u32,
-        bool_literal: bool,
-        ascii_string_literal: []const u8,
-        wide_string_literal: []const u8,
-        field_access: struct {
-            source: *Expression,
-            field: []const u8,
-        },
-        member_function_call: struct {
-            source: *Expression,
-            name: []const u8,
-            parameters: []const *Expression,
-        },
-        class_name: []const u8,
-        variable: []const u8,
-        this: void,
-        negate: *Expression,
-        function_call: struct {
-            name: []const u8,
-            parameters: []const *Expression,
-        },
-        assignment: struct {
-            destination: *Expression,
-            value: *Expression,
-        },
-        block: []const Node,
-        bitwise_and: struct {
-            lefthand: *Expression,
-            righthand: *Expression,
-        },
+    pub const Expression = struct {
+        pub const ExpressionContents = union(enum) {
+            s32_literal: i32,
+            s64_literal: i64,
+            f32_literal: f32,
+            f64_literal: f32,
+            guid_literal: u32,
+            bool_literal: bool,
+            ascii_string_literal: []const u8,
+            wide_string_literal: []const u8,
+            field_access: struct {
+                source: *Expression,
+                field: []const u8,
+            },
+            member_function_call: struct {
+                source: *Expression,
+                name: []const u8,
+                parameters: []const *Expression,
+            },
+            class_name: []const u8,
+            variable: []const u8,
+            this: void,
+            negate: *Expression,
+            function_call: struct {
+                name: []const u8,
+                parameters: []const *Expression,
+            },
+            assignment: struct {
+                destination: *Expression,
+                value: *Expression,
+            },
+            block: []const Node,
+            bitwise_and: struct {
+                lefthand: *Expression,
+                righthand: *Expression,
+            },
+
+            pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+                return switch (value) {
+                    .s32_literal => |literal| writer.print("expression_contents{{ .s32_literal = {d} }}", .{literal}),
+                    .s64_literal => |literal| writer.print("expression_contents{{ .s64_literal = {d} }}", .{literal}),
+                    .f32_literal => |literal| writer.print("expression_contents{{ .f32_literal = {d} }}", .{literal}),
+                    .f64_literal => |literal| writer.print("expression_contents{{ .f64_literal = {d} }}", .{literal}),
+                    .guid_literal => |literal| writer.print("expression_contents{{ .guid_literal = {d} }}", .{literal}),
+                    .bool_literal => |literal| writer.print("expression_contents{{ .bool_literal = {} }}", .{literal}),
+                    .ascii_string_literal => |literal| writer.print("expression_contents{{ .ascii_string_literal = {s} }}", .{literal}),
+                    .wide_string_literal => |literal| writer.print("expression_contents{{ .wide_string_literal = {s} }}", .{literal}),
+                    .class_name => |literal| writer.print("expression_contents{{ .class_name = {s} }}", .{literal}),
+                    .field_access => |literal| writer.print("expression_contents{{ .field_access = .{{ .source = {}, .field = {s} }} }}", .{ literal.source, literal.field }),
+                    .variable => |literal| writer.print("expression_contents{{ .variable = {s} }}", .{literal}),
+                    .this => writer.print("expression_contents{{ .this }}", .{}),
+                    .negate => |literal| writer.print("expression_contents{{ .negate = {} }}", .{literal}),
+                    .function_call => |literal| writer.print("expression_contents{{ .function_call = .{{ .name = {s}, .parameters = {any} }} }}", .{ literal.name, literal.parameters }),
+                    .member_function_call => |literal| writer.print("expression_contents{{ .member_function_call = .{{ .source = {}, .name = {s}, .parameters = {any} }} }}", .{ literal.source, literal.name, literal.parameters }),
+                    .assignment => |literal| writer.print("expression_contents{{ .assignment = .{{ .destination = {}, .value = .{} }} }}", .{ literal.destination, literal.value }),
+                    .block => |literal| writer.print("expression_contents{{ .block = {{ .body = {any} }} }}", .{literal}),
+                    .bitwise_and => |literal| writer.print("expression_contents{{ .bitwise_and = {{ .lefthand = {}, .lefthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
+                };
+            }
+        };
+
+        contents: ExpressionContents,
+        type: Type,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            return switch (value) {
-                .s32_literal => |literal| writer.print("expression{{ .s32_literal = {d} }}", .{literal}),
-                .s64_literal => |literal| writer.print("expression{{ .s64_literal = {d} }}", .{literal}),
-                .f32_literal => |literal| writer.print("expression{{ .f32_literal = {d} }}", .{literal}),
-                .f64_literal => |literal| writer.print("expression{{ .f64_literal = {d} }}", .{literal}),
-                .guid_literal => |literal| writer.print("expression{{ .guid_literal = {d} }}", .{literal}),
-                .bool_literal => |literal| writer.print("expression{{ .bool_literal = {} }}", .{literal}),
-                .ascii_string_literal => |literal| writer.print("expression{{ .ascii_string_literal = {s} }}", .{literal}),
-                .wide_string_literal => |literal| writer.print("expression{{ .wide_string_literal = {s} }}", .{literal}),
-                .class_name => |literal| writer.print("expression{{ .class_name = {s} }}", .{literal}),
-                .field_access => |literal| writer.print("expression{{ .field_access = .{{ .source = {}, .field = {s} }} }}", .{ literal.source, literal.field }),
-                .variable => |literal| writer.print("expression{{ .variable = {s} }}", .{literal}),
-                .this => writer.print("expression{{ .this }}", .{}),
-                .negate => |literal| writer.print("expression{{ .negate = {} }}", .{literal}),
-                .function_call => |literal| writer.print("expression{{ .function_call = .{{ .name = {s}, .parameters = {any} }} }}", .{ literal.name, literal.parameters }),
-                .member_function_call => |literal| writer.print("expression{{ .member_function_call = .{{ .source = {}, .name = {s}, .parameters = {any} }} }}", .{ literal.source, literal.name, literal.parameters }),
-                .assignment => |literal| writer.print("expression{{ .assignment = .{{ .destination = {}, .value = .{} }} }}", .{ literal.destination, literal.value }),
-                .block => |literal| writer.print("expression{{ .block = {{ .body = {any} }} }}", .{literal}),
-                .bitwise_and => |literal| writer.print("expression{{ .bitwise_and = {{ .lefthand = {}, .lefthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
-            };
+            return writer.print("expression{{.contents = {}, .type = {}}}", .{ value.contents, value.type });
         }
     };
 
     pub const FunctionParameters = struct {
         pub const Parameter = struct {
             name: []const u8,
-            type: ParsedType,
+            type: Type,
         };
 
         parameters: []const Parameter,
@@ -221,7 +235,7 @@ pub const Node = union(NodeType) {
 
     pub const VariableDeclaration = struct {
         name: []const u8,
-        type: ?ParsedType,
+        type: Type,
         value: ?*Expression,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -377,7 +391,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
 
     const guid: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "(")) blk: {
         const expression = try consumeExpression(tree.allocator, iter);
-        if (expression.* != .guid_literal)
+        if (expression.contents != .guid_literal)
             @panic("aint a guid, buddy");
 
         consumeArbitraryLexeme(iter, ")");
@@ -501,13 +515,13 @@ fn consumeFieldOrProperty(
 } {
     const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing field name", .{});
 
-    const field_type: ?ParsedType = if (consumeArbitraryLexemeIfAvailable(iter, ":"))
+    const field_type: Type = if (consumeArbitraryLexemeIfAvailable(iter, ":"))
         consumeTypeName(iter)
     else
-        null;
+        .unknown;
 
     if (consumeArbitraryLexemeIfAvailable(iter, "{")) {
-        if (field_type == null) {
+        if (field_type == .unknown) {
             std.debug.panic("Properties must specify type", .{});
         }
 
@@ -543,7 +557,7 @@ fn consumeFieldOrProperty(
 
         node.* = .{
             .name = name,
-            .type = field_type.?,
+            .type = field_type,
             .modifiers = modifiers,
             .get_body = get_body,
             .set_body = set_body,
@@ -556,7 +570,7 @@ fn consumeFieldOrProperty(
         else
             null;
 
-        if (field_type == null and default_value == null) {
+        if (field_type == .unknown and default_value == null) {
             std.debug.panic("Field {s} has no type and no default value", .{name});
         }
 
@@ -645,7 +659,7 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
         }
     }
 
-    body_node.* = .{ .block = try body.toOwnedSlice() };
+    body_node.* = .{ .contents = .{ .block = try body.toOwnedSlice() }, .type = .unknown };
 
     return body_node;
 }
@@ -666,88 +680,94 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
 
     const first = iter.next() orelse @panic("eof");
 
-    node.* = if (first[0] == '!') blk: {
-        break :blk .{ .negate = try consumeExpression(allocator, iter) };
-    } else if (try isInt(i64, first)) |s64| blk: {
-        // If its within the range of an i32, then make this be a s32 literal instead of an s64 literal,
-        // since s32 will coerce to s64 in the type resolution stage
-        if (s64 >= std.math.minInt(i32) and s64 <= std.math.maxInt(i32)) {
-            break :blk .{ .s32_literal = @intCast(s64) };
-        } else {
-            break :blk .{ .s64_literal = s64 };
-        }
-    } else blk: {
-        const next = iter.peek() orelse @panic("EOF");
+    node.* = .{
+        .contents = if (first[0] == '!') blk: {
+            break :blk .{ .negate = try consumeExpression(allocator, iter) };
+        } else if (try isInt(i64, first)) |s64| blk: {
+            // If its within the range of an i32, then make this be a s32 literal instead of an s64 literal,
+            // since s32 will coerce to s64 in the type resolution stage
+            if (s64 >= std.math.minInt(i32) and s64 <= std.math.maxInt(i32)) {
+                break :blk .{ .s32_literal = @intCast(s64) };
+            } else {
+                break :blk .{ .s64_literal = s64 };
+            }
+        } else blk: {
+            const next = iter.peek() orelse @panic("EOF");
 
-        // We are parsing a function
-        if (next[0] == '(') {
-            break :blk .{
-                .function_call = .{
-                    .name = first,
-                    .parameters = try consumeFunctionCallParameters(allocator, iter),
-                },
-            };
-        }
-        // We are parsing a field access/member call
-        else if (next[0] == '.') {
-            const source = try allocator.create(Node.Expression);
-            errdefer allocator.destroy(source);
-
-            //If the source of the access is `this`, then we want to special case that and emit the `this` expression
-            source.* = if (std.mem.eql(u8, first, "this"))
-                .{ .this = {} }
-            else
-                .{ .variable = first };
-
-            consumeArbitraryLexeme(iter, ".");
-
-            const name = iter.next() orelse @panic("field name EOF");
-
-            //If this member call, parse as that, else parse as field access
-            if ((iter.peek() orelse @panic("EOF"))[0] == '(') {
-                const parameters = try consumeFunctionCallParameters(allocator, iter);
-
+            // We are parsing a function
+            if (next[0] == '(') {
                 break :blk .{
-                    .member_function_call = .{
-                        .name = name,
-                        .parameters = parameters,
-                        .source = source,
+                    .function_call = .{
+                        .name = first,
+                        .parameters = try consumeFunctionCallParameters(allocator, iter),
                     },
                 };
-            } else break :blk .{
-                .field_access = .{
-                    .source = source,
-                    .field = name,
-                },
-            };
-        }
-        // We are parsing some other misc expression, like a string literal or boolean literal
-        else {
-            //We *may* be parsing a GUID literal
-            if (first[0] == 'g') {
-                if (try isInt(u32, first[1..])) |guid| {
-                    break :blk .{ .guid_literal = guid };
+            }
+            // We are parsing a field access/member call
+            else if (next[0] == '.') {
+                const source = try allocator.create(Node.Expression);
+                errdefer allocator.destroy(source);
+
+                //If the source of the access is `this`, then we want to special case that and emit the `this` expression
+                source.* = .{
+                    .contents = if (std.mem.eql(u8, first, "this"))
+                        .this
+                    else
+                        .{ .variable = first },
+                    .type = .unknown,
+                };
+
+                consumeArbitraryLexeme(iter, ".");
+
+                const name = iter.next() orelse @panic("field name EOF");
+
+                //If this member call, parse as that, else parse as field access
+                if ((iter.peek() orelse @panic("EOF"))[0] == '(') {
+                    const parameters = try consumeFunctionCallParameters(allocator, iter);
+
+                    break :blk .{
+                        .member_function_call = .{
+                            .name = name,
+                            .parameters = parameters,
+                            .source = source,
+                        },
+                    };
+                } else break :blk .{
+                    .field_access = .{
+                        .source = source,
+                        .field = name,
+                    },
+                };
+            }
+            // We are parsing some other misc expression, like a string literal or boolean literal
+            else {
+                //We *may* be parsing a GUID literal
+                if (first[0] == 'g') {
+                    if (try isInt(u32, first[1..])) |guid| {
+                        break :blk .{ .guid_literal = guid };
+                    }
                 }
-            }
 
-            if (maybeHashKeyword(first)) |keyword| {
-                switch (keyword) {
-                    hashKeyword("true") => break :blk .{ .bool_literal = true },
-                    hashKeyword("false") => break :blk .{ .bool_literal = false },
-                    else => {},
+                if (maybeHashKeyword(first)) |keyword| {
+                    switch (keyword) {
+                        hashKeyword("true") => break :blk .{ .bool_literal = true },
+                        hashKeyword("false") => break :blk .{ .bool_literal = false },
+                        else => {},
+                    }
                 }
-            }
 
-            if (first.len >= 2 and std.mem.eql(u8, first[0..2], "L'")) {
-                break :blk .{ .wide_string_literal = unwrapStringLiteral(first[1..]) };
-            }
+                if (first.len >= 2 and std.mem.eql(u8, first[0..2], "L'")) {
+                    break :blk .{ .wide_string_literal = unwrapStringLiteral(first[1..]) };
+                }
 
-            if (first[0] == '\'') {
-                break :blk .{ .ascii_string_literal = unwrapStringLiteral(first[1..]) };
-            }
+                if (first[0] == '\'') {
+                    break :blk .{ .ascii_string_literal = unwrapStringLiteral(first[1..]) };
+                }
 
-            break :blk .{ .variable = first };
-        }
+                break :blk .{ .variable = first };
+            }
+        },
+        .type = .unknown,
     };
 
     if (iter.peek()) |next| {
@@ -766,11 +786,14 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
 
                     destination.* = node.*;
 
-                    node.* = Node.Expression{
-                        .assignment = .{
-                            .destination = destination,
-                            .value = value,
+                    node.* = .{
+                        .contents = .{
+                            .assignment = .{
+                                .destination = destination,
+                                .value = value,
+                            },
                         },
+                        .type = .unknown,
                     };
                 },
                 hashKeyword("&") => {
@@ -785,11 +808,14 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
                     //Copy the current expression into the left hand side
                     lefthand.* = node.*;
 
-                    node.* = Node.Expression{
-                        .bitwise_and = .{
-                            .lefthand = lefthand,
-                            .righthand = righthand,
+                    node.* = .{
+                        .contents = .{
+                            .bitwise_and = .{
+                                .lefthand = lefthand,
+                                .righthand = righthand,
+                            },
                         },
+                        .type = .unknown,
                     };
                 },
                 else => {},
@@ -825,7 +851,7 @@ fn consumeFunctionCallParameters(allocator: std.mem.Allocator, iter: *SliceItera
     return parameters.toOwnedSlice();
 }
 
-fn consumeTypeName(iter: *SliceIterator(Lexeme)) ParsedType {
+fn consumeTypeName(iter: *SliceIterator(Lexeme)) Type {
     const name = iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{});
 
     var dimension_count: u8 = 0;
@@ -842,7 +868,7 @@ fn consumeTypeName(iter: *SliceIterator(Lexeme)) ParsedType {
         }
     }
 
-    return .{ .name = name, .dimension_count = dimension_count };
+    return .{ .parsed = .{ .name = name, .dimension_count = dimension_count } };
 }
 
 fn consumeFunctionParameters(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !*Node.FunctionParameters {
@@ -890,7 +916,7 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
             break :blk consumeTypeName(iter);
         }
 
-        break :blk ParsedType.Void;
+        break :blk Type.ParsedType.Void;
     };
 
     const body: ?*Node.Expression = if (!consumeArbitraryLexemeIfAvailable(iter, ";"))
@@ -964,12 +990,12 @@ fn consumeVariableDeclaration(allocator: std.mem.Allocator, iter: *SliceIterator
 
     const name = iter.next() orelse std.debug.panic("unexpected EOF", .{});
 
-    const variable_type: ?ParsedType = blk: {
+    const variable_type: Type = blk: {
         if (consumeArbitraryLexemeIfAvailable(iter, ":")) {
             break :blk consumeTypeName(iter);
         }
 
-        break :blk null;
+        break :blk .unknown;
     };
 
     const value: ?*Node.Expression = blk: {
@@ -980,7 +1006,7 @@ fn consumeVariableDeclaration(allocator: std.mem.Allocator, iter: *SliceIterator
         break :blk null;
     };
 
-    if (value == null and variable_type == null) {
+    if (value == null and variable_type == .unknown) {
         std.debug.panic("variable has no expression or type, what?", .{});
     }
 
