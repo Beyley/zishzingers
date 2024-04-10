@@ -1367,18 +1367,22 @@ pub const SerializationMethod = enum(u8) {
 
 fn GenerateResourceType(items: anytype) type {
     comptime {
-        var enum_fields: [items.len]std.builtin.Type.EnumField = undefined;
+        const enum_fields = blk: {
+            var enum_fields: [items.len]std.builtin.Type.EnumField = undefined;
 
-        for (items, &enum_fields) |item, *field| {
-            const name = item[0];
-            // const header = item[1];
-            const value = item[2];
+            for (items, &enum_fields) |item, *field| {
+                const name = item[0];
+                // const header = item[1];
+                const value = item[2];
 
-            field.* = .{
-                .name = name,
-                .value = value,
-            };
-        }
+                field.* = .{
+                    .name = name,
+                    .value = value,
+                };
+            }
+
+            break :blk enum_fields;
+        };
 
         return struct {
             pub const ResourceType = @Type(std.builtin.Type{
