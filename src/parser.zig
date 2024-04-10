@@ -45,6 +45,16 @@ const FromImportWanted = union(enum) {
     }
 };
 
+pub const ParsedType = struct {
+    name: []const u8,
+    dimension_count: u8,
+
+    pub const Void: ParsedType = .{
+        .name = "void",
+        .dimension_count = 0,
+    };
+};
+
 pub const Node = union(NodeType) {
     pub const Using = struct {
         type: UsingType,
@@ -80,7 +90,7 @@ pub const Node = union(NodeType) {
         fields: []const *Field,
         properties: []const *Property,
         functions: []const *Function,
-        constructor: ?*const Constructor,
+        constructors: ?[]const *const Constructor,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return writer.print("class{{ class_name = {s}, base_class = {?s}, guid = {?} }}", .{ value.class_name, value.base_class, value.guid });
@@ -96,11 +106,11 @@ pub const Node = union(NodeType) {
     pub const Field = struct {
         modifiers: MMTypes.Modifiers,
         name: []const u8,
-        type: ?[]const u8,
+        type: ?ParsedType,
         default_value: ?*Expression,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            return writer.print("field{{ name = {s}, type = {?s}, default_value = {?}, modifiers: {} }}", .{ value.name, value.type, value.default_value, value.modifiers });
+            return writer.print("field{{ name = {s}, type = {?}, default_value = {?}, modifiers: {} }}", .{ value.name, value.type, value.default_value, value.modifiers });
         }
     };
 
@@ -113,20 +123,20 @@ pub const Node = union(NodeType) {
 
         set_body: FunctionState,
         get_body: FunctionState,
-        type: []const u8,
+        type: ParsedType,
         name: []const u8,
         modifiers: MMTypes.Modifiers,
     };
 
     pub const Function = struct {
-        return_type: []const u8,
+        return_type: ParsedType,
         parameters: *FunctionParameters,
         body: ?*Expression,
         name: []const u8,
         modifiers: MMTypes.Modifiers,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            return writer.print("function{{ return_type = {s}, modifiers = {}, parameters = {}, name = {s} }}", .{ value.return_type, value.modifiers, value.parameters, value.name });
+            return writer.print("function{{ return_type = {}, modifiers = {}, parameters = {}, name = {s} }}", .{ value.return_type, value.modifiers, value.parameters, value.name });
         }
     };
 
@@ -193,7 +203,7 @@ pub const Node = union(NodeType) {
     pub const FunctionParameters = struct {
         pub const Parameter = struct {
             name: []const u8,
-            type: []const u8,
+            type: ParsedType,
         };
 
         parameters: []const Parameter,
@@ -202,7 +212,7 @@ pub const Node = union(NodeType) {
             try writer.writeAll("[ ");
 
             for (value.parameters) |parameter| {
-                try writer.print("{s}: {s}", .{ parameter.name, parameter.type });
+                try writer.print("{s}: {}", .{ parameter.name, parameter.type });
             }
 
             try writer.writeAll(" ]");
@@ -211,11 +221,11 @@ pub const Node = union(NodeType) {
 
     pub const VariableDeclaration = struct {
         name: []const u8,
-        type: ?[]const u8,
+        type: ?ParsedType,
         value: ?*Expression,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            return writer.print("variable_declaration{{ name = {s}, type = {?s}, value = {?} }}", .{ value.name, value.type, value.value });
+            return writer.print("variable_declaration{{ name = {s}, type = {?}, value = {?} }}", .{ value.name, value.type, value.value });
         }
     };
 
@@ -398,7 +408,8 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     var properties = std.ArrayList(*Node.Property).init(tree.allocator);
     defer properties.deinit();
 
-    var constructor: ?*Node.Constructor = null;
+    var constructors = std.ArrayList(*Node.Constructor).init(tree.allocator);
+    defer constructors.deinit();
 
     while (true) {
         const lexeme = iter.peek() orelse std.debug.panic("unexpected EOF when parsing class body", .{});
@@ -429,9 +440,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
         else blk: {
             if (iter.peekAt(1)) |ahead| {
                 if (ahead[0] == '(') {
-                    if (constructor != null) @panic("multiple constructors");
-
-                    constructor = try consumeConstructor(tree.allocator, iter, class_name, modifiers);
+                    try constructors.append(try consumeConstructor(tree.allocator, iter, class_name, modifiers));
 
                     //Since we parsed it as a contructor, break out as we dont want to accidentally parse a property aswell
                     break :blk;
@@ -446,7 +455,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     }
 
     node.* = .{
-        .constructor = constructor,
+        .constructors = try constructors.toOwnedSlice(),
         .class_name = class_name,
         .base_class = base_class,
         .functions = try functions.toOwnedSlice(),
@@ -492,7 +501,7 @@ fn consumeFieldOrProperty(
 } {
     const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing field name", .{});
 
-    const field_type: ?[]const u8 = if (consumeArbitraryLexemeIfAvailable(iter, ":"))
+    const field_type: ?ParsedType = if (consumeArbitraryLexemeIfAvailable(iter, ":"))
         consumeTypeName(iter)
     else
         null;
@@ -816,8 +825,24 @@ fn consumeFunctionCallParameters(allocator: std.mem.Allocator, iter: *SliceItera
     return parameters.toOwnedSlice();
 }
 
-fn consumeTypeName(iter: *SliceIterator(Lexeme)) []const u8 {
-    return iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{});
+fn consumeTypeName(iter: *SliceIterator(Lexeme)) ParsedType {
+    const name = iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{});
+
+    var dimension_count: u8 = 0;
+
+    blk: while (maybeHashKeyword(iter.peek() orelse @panic("EOF"))) |keyword| {
+        switch (keyword) {
+            hashKeyword("[") => {
+                consumeArbitraryLexeme(iter, "[");
+                consumeArbitraryLexeme(iter, "]");
+
+                dimension_count += 1;
+            },
+            else => break :blk,
+        }
+    }
+
+    return .{ .name = name, .dimension_count = dimension_count };
 }
 
 fn consumeFunctionParameters(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !*Node.FunctionParameters {
@@ -862,10 +887,10 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
     const return_type = blk: {
         if (std.mem.eql(u8, iter.peek() orelse std.debug.panic("EOF", .{}), "->")) {
             consumeArbitraryLexeme(iter, "->");
-            break :blk iter.next() orelse std.debug.panic("EOF", .{});
+            break :blk consumeTypeName(iter);
         }
 
-        break :blk "void";
+        break :blk ParsedType.Void;
     };
 
     const body: ?*Node.Expression = if (!consumeArbitraryLexemeIfAvailable(iter, ";"))
@@ -939,9 +964,9 @@ fn consumeVariableDeclaration(allocator: std.mem.Allocator, iter: *SliceIterator
 
     const name = iter.next() orelse std.debug.panic("unexpected EOF", .{});
 
-    const variable_type: ?[]const u8 = blk: {
+    const variable_type: ?ParsedType = blk: {
         if (consumeArbitraryLexemeIfAvailable(iter, ":")) {
-            break :blk iter.next() orelse std.debug.panic("unexpected EOF", .{});
+            break :blk consumeTypeName(iter);
         }
 
         break :blk null;
