@@ -171,46 +171,49 @@ pub fn main() !void {
                 return;
             }
 
-            const source_code: []const u8 = try std.fs.cwd().readFileAlloc(allocator, res.positionals[0], std.math.maxInt(usize));
-            defer allocator.free(source_code);
+            for (res.positionals) |source_file| {
+                std.debug.print("{s}\n", .{source_file});
+                const source_code: []const u8 = try std.fs.cwd().readFileAlloc(allocator, source_file, std.math.maxInt(usize));
+                defer allocator.free(source_code);
 
-            //Get all the lexemes into a single big array
-            const lexemes = blk: {
-                var lexemes = std.ArrayList([]const u8).init(allocator);
-                defer lexemes.deinit();
+                //Get all the lexemes into a single big array
+                const lexemes = blk: {
+                    var lexemes = std.ArrayList([]const u8).init(allocator);
+                    defer lexemes.deinit();
 
-                var lexizer = Parser.Lexemeizer{ .source = source_code };
+                    var lexizer = Parser.Lexemeizer{ .source = source_code };
 
-                while (try lexizer.next()) |lexeme| {
-                    try lexemes.append(lexeme);
-                }
+                    while (try lexizer.next()) |lexeme| {
+                        try lexemes.append(lexeme);
+                    }
 
-                break :blk try lexemes.toOwnedSlice();
-            };
-            defer allocator.free(lexemes);
+                    break :blk try lexemes.toOwnedSlice();
+                };
+                defer allocator.free(lexemes);
 
-            const tokens = try Parser.parse(allocator, lexemes);
-            defer tokens.deinit();
+                const tokens = try Parser.parse(allocator, lexemes);
+                defer tokens.deinit();
 
-            for (tokens.root_elements.items) |item| {
-                switch (item) {
-                    .class => |class| {
-                        std.debug.print("{}\n", .{class.*});
+                for (tokens.root_elements.items) |item| {
+                    switch (item) {
+                        .class => |class| {
+                            std.debug.print("{}\n", .{class.*});
 
-                        for (class.fields) |field| {
-                            std.debug.print("field {}\n", .{field.*});
-                        }
+                            for (class.fields) |field| {
+                                std.debug.print("field {}\n", .{field.*});
+                            }
 
-                        for (class.functions) |function| {
-                            std.debug.print("function {}\n", .{function.*});
-                            std.debug.print("function body {?}\n", .{function.body});
-                        }
+                            for (class.functions) |function| {
+                                std.debug.print("function {}\n", .{function.*});
+                                std.debug.print("function body {?}\n", .{function.body});
+                            }
 
-                        std.debug.print("{?}\n", .{class.constructor});
-                    },
-                    inline else => |ptr| {
-                        std.debug.print("{}\n", .{ptr.*});
-                    },
+                            std.debug.print("{?any}\n", .{class.constructors});
+                        },
+                        inline else => |ptr| {
+                            std.debug.print("{}\n", .{ptr.*});
+                        },
+                    }
                 }
             }
         },
