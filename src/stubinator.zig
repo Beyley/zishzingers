@@ -7,7 +7,6 @@ pub fn generateStubs(
     allocator: std.mem.Allocator,
     script: MMTypes.Script,
     script_guid: u32,
-    asset_lookup: MMTypes.FileDB.GuidLookupMap,
     script_lookup: std.AutoHashMap(u32, MMTypes.Script),
     namespace: ?[]const u8,
     library: []const u8,
@@ -20,13 +19,13 @@ pub fn generateStubs(
     defer script_references.deinit();
 
     if (script.super_class_script) |super_script| {
-        try script_references.put(super_script.guid, std.fs.path.stem(asset_lookup.get(super_script.guid).?.path));
+        try script_references.put(super_script.guid, script_lookup.get(super_script.guid).?.class_name);
     }
 
     for (script.type_references) |type_references| {
         if (type_references.script) |referenced_script| {
             switch (referenced_script) {
-                .guid => |reference_guid| try script_references.put(reference_guid, std.fs.path.stem(asset_lookup.get(reference_guid).?.path)),
+                .guid => |reference_guid| try script_references.put(reference_guid, script_lookup.get(reference_guid).?.class_name),
                 .hash => std.debug.panic("Unable to resolve reference to hashed script.", .{}),
             }
         }
@@ -38,12 +37,14 @@ pub fn generateStubs(
         if (referenced_script.key_ptr.* == script_guid)
             continue;
 
-        if (namespace != null)
-            try writer.print("import '{s}:{s}';", .{ namespace.?, referenced_script.value_ptr.* })
-        else
-            try writer.print("import '{s}';", .{referenced_script.value_ptr.*});
-
-        try writer.writeByte('\n');
+        try writer.writeAll("import '");
+        if (namespace) |script_namespace| {
+            try writer.print("{s}:", .{script_namespace});
+        }
+        for (referenced_script.value_ptr.*) |c| {
+            try writer.writeByte(std.ascii.toLower(c));
+        }
+        try writer.writeAll("';\n");
     }
 
     try writer.writeByte('\n');

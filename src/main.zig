@@ -8,6 +8,7 @@ const Resource = @import("resource.zig");
 const ArrayListStreamSource = @import("ArrayListStreamSource.zig");
 const Parser = @import("parser.zig");
 const Stubinator = @import("stubinator.zig");
+const Resolvinator = @import("resolvinator.zig");
 
 const no_command_error =
     \\No command specified.
@@ -149,6 +150,7 @@ pub fn main() !void {
             const params = comptime clap.parseParamsComptime(
                 \\-h, --help                       Display this help and exit.
                 \\-o, --out-file <str>             The output path for the compilation, defaults to "inputname.ff"
+                \\-l, --library <str>...           A library to import, with the syntax `name:path`
                 \\<str>                            The source file
                 \\
             );
@@ -171,6 +173,23 @@ pub fn main() !void {
                 return;
             }
 
+            var defined_libraries = Resolvinator.Libraries.init(allocator);
+            defer {
+                var iter = defined_libraries.valueIterator();
+                while (iter.next()) |dir|
+                    dir.close();
+
+                defined_libraries.deinit();
+            }
+
+            for (res.args.library) |library| {
+                var iter = std.mem.split(u8, library, ":");
+                const name = iter.next() orelse @panic("no library name specified");
+                const path = iter.next() orelse @panic("no library path specified");
+
+                try defined_libraries.put(name, try std.fs.cwd().openDir(path, .{}));
+            }
+
             for (res.positionals) |source_file| {
                 std.debug.print("{s}\n", .{source_file});
                 const source_code: []const u8 = try std.fs.cwd().readFileAlloc(allocator, source_file, std.math.maxInt(usize));
@@ -191,30 +210,36 @@ pub fn main() !void {
                 };
                 defer allocator.free(lexemes);
 
-                const tokens = try Parser.parse(allocator, lexemes);
-                defer tokens.deinit();
+                var arena = std.heap.ArenaAllocator.init(allocator);
+                defer arena.deinit();
 
-                for (tokens.root_elements.items) |item| {
-                    switch (item) {
-                        .class => |class| {
-                            std.debug.print("{}\n", .{class.*});
+                const ast_allocator = arena.allocator();
 
-                            for (class.fields) |field| {
-                                std.debug.print("field {}\n", .{field.*});
-                            }
+                const ast = try Parser.parse(ast_allocator, lexemes);
 
-                            for (class.functions) |function| {
-                                std.debug.print("function {}\n", .{function.*});
-                                std.debug.print("function body {?}\n", .{function.body});
-                            }
+                try Resolvinator.resolve(ast, defined_libraries);
 
-                            std.debug.print("{?any}\n", .{class.constructors});
-                        },
-                        inline else => |ptr| {
-                            std.debug.print("{}\n", .{ptr.*});
-                        },
-                    }
-                }
+                // for (ast.root_elements.items) |item| {
+                //     switch (item) {
+                //         .class => |class| {
+                //             std.debug.print("{}\n", .{class.*});
+
+                //             for (class.fields) |field| {
+                //                 std.debug.print("field {}\n", .{field.*});
+                //             }
+
+                //             for (class.functions) |function| {
+                //                 std.debug.print("function {}\n", .{function.*});
+                //                 std.debug.print("function body {?}\n", .{function.body});
+                //             }
+
+                //             std.debug.print("{?any}\n", .{class.constructors});
+                //         },
+                //         inline else => |ptr| {
+                //             std.debug.print("{}\n", .{ptr.*});
+                //         },
+                //     }
+                // }
             }
         },
         .generate_library => {
@@ -330,12 +355,13 @@ pub fn main() !void {
 
             var script_iter = scripts.iterator();
             while (script_iter.next()) |entry| {
-                const db_entry = file_db.guid_lookup.get(entry.key_ptr.*).?;
+                const lower_class_name = try std.ascii.allocLowerString(allocator, entry.value_ptr.class_name);
+                defer allocator.free(lower_class_name);
 
                 const out_name = if (res.args.namespace) |namespace|
-                    try std.fmt.allocPrint(allocator, "{s}/{s}.as", .{ namespace, std.fs.path.stem(db_entry.path) })
+                    try std.fmt.allocPrint(allocator, "{s}/{s}.as", .{ namespace, lower_class_name })
                 else
-                    try std.fmt.allocPrint(allocator, "{s}.as", .{std.fs.path.stem(db_entry.path)});
+                    try std.fmt.allocPrint(allocator, "{s}.as", .{lower_class_name});
                 defer allocator.free(out_name);
                 const out_file = try output_dir.createFile(out_name, .{});
                 defer out_file.close();
@@ -345,7 +371,6 @@ pub fn main() !void {
                     allocator,
                     entry.value_ptr.*,
                     entry.key_ptr.*,
-                    file_db.guid_lookup,
                     scripts,
                     res.args.namespace,
                     res.args.name.?,

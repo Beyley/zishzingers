@@ -58,6 +58,7 @@ pub const Type = union(enum) {
 
     parsed: ParsedType,
     unknown: void,
+    resolved: MMTypes.TypeReference,
 };
 
 pub const Node = union(NodeType) {
@@ -273,13 +274,8 @@ pub const Node = union(NodeType) {
 };
 
 pub const Tree = struct {
-    arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
     root_elements: std.ArrayListUnmanaged(Node),
-
-    pub fn deinit(self: Tree) void {
-        self.arena.deinit();
-    }
 };
 
 const Lexeme = []const u8;
@@ -329,14 +325,12 @@ pub fn SliceIterator(comptime T: type) type {
     };
 }
 
-pub fn parse(allocator: std.mem.Allocator, lexemes: []const Lexeme) !Tree {
+///Parses a script, caller has to free the resulting `Tree` object
+pub fn parse(allocator: std.mem.Allocator, lexemes: []const Lexeme) Error!Tree {
     var tree: Tree = .{
-        .arena = std.heap.ArenaAllocator.init(allocator),
-        .allocator = undefined,
+        .allocator = allocator,
         .root_elements = .{},
     };
-    tree.allocator = tree.arena.allocator();
-    errdefer tree.arena.deinit();
 
     var lexeme_iter = SliceIterator(Lexeme){
         .pos = 0,
@@ -590,7 +584,7 @@ fn consumeFieldOrProperty(
     }
 }
 
-const Error = std.mem.Allocator.Error || std.fmt.ParseIntError;
+pub const Error = std.mem.Allocator.Error || std.fmt.ParseIntError;
 
 fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
     const body_node = try allocator.create(Node.Expression);
@@ -1088,7 +1082,7 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
                     const curr = iter.next() orelse std.debug.panic("unexpected EOF in multi import block", .{});
 
                     //Append the new import
-                    try wanted_imports.append(tree.allocator, curr);
+                    try wanted_imports.append(tree.allocator, unwrapStringLiteral(curr));
 
                     const next = iter.peek() orelse std.debug.panic("unexpected EOF in multi import block", .{});
 
@@ -1124,7 +1118,7 @@ fn consumeImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     errdefer tree.allocator.destroy(node);
 
     node.* = .{
-        .target = iter.next() orelse std.debug.panic("unexpected EOF after import statement", .{}),
+        .target = unwrapStringLiteral(iter.next() orelse std.debug.panic("unexpected EOF after import statement", .{})),
     };
 
     try tree.root_elements.append(tree.allocator, .{ .import = node });
