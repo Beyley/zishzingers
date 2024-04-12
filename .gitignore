@@ -6,3 +6,4 @@ deploy_std/
 basic.as
 fwd.as
 tweakegg.cod
+*.disasm
