@@ -151,6 +151,8 @@ pub fn main() !void {
                 \\-h, --help                       Display this help and exit.
                 \\-o, --out-file <str>             The output path for the compilation, defaults to "inputname.ff"
                 \\-l, --library <str>...           A library to import, with the syntax `name:path`
+                \\-i, --identifier <u32>           The GUID of the script being compiled, 
+                \\                                 this overrides the GUID specified in the file.
                 \\<str>                            The source file
                 \\
             );
@@ -172,6 +174,11 @@ pub fn main() !void {
 
                 return;
             }
+
+            const script_identifier: ?MMTypes.ResourceIdentifier = if (res.args.identifier) |identifier|
+                .{ .guid = identifier }
+            else
+                null;
 
             var defined_libraries = Resolvinator.Libraries.init(allocator);
             defer {
@@ -217,7 +224,20 @@ pub fn main() !void {
 
                 const ast = try Parser.parse(ast_allocator, lexemes);
 
-                try Resolvinator.resolve(ast, defined_libraries);
+                var a_string_table = Resolvinator.AStringTable.init(allocator);
+                defer a_string_table.deinit();
+
+                try Resolvinator.resolve(
+                    ast,
+                    defined_libraries,
+                    &a_string_table,
+                    script_identifier,
+                );
+
+                const string_table_keys = a_string_table.keys();
+                for (string_table_keys, 0..) |str, i| {
+                    std.debug.print("string {d}: {s}\n", .{ i, str });
+                }
 
                 // for (ast.root_elements.items) |item| {
                 //     switch (item) {

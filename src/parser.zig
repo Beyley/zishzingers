@@ -50,10 +50,15 @@ pub const Type = union(enum) {
         name: []const u8,
         dimension_count: u8,
 
-        pub const Void: Type = .{ .parsed = .{
+        pub const Void: ParsedType = .{
             .name = "void",
             .dimension_count = 0,
-        } };
+        };
+
+        pub const S32: ParsedType = .{
+            .name = "s32",
+            .dimension_count = 0,
+        };
     };
 
     parsed: ParsedType,
@@ -91,7 +96,7 @@ pub const Node = union(NodeType) {
     pub const Class = struct {
         class_name: []const u8,
         base_class: ?[]const u8,
-        guid: ?*Expression,
+        identifier: ?*Expression,
 
         fields: []const *Field,
         properties: []const *Property,
@@ -99,7 +104,7 @@ pub const Node = union(NodeType) {
         constructors: ?[]const *const Constructor,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            return writer.print("class{{ class_name = {s}, base_class = {?s}, guid = {?} }}", .{ value.class_name, value.base_class, value.guid });
+            return writer.print("class{{ class_name = {s}, base_class = {?s}, guid = {?} }}", .{ value.class_name, value.base_class, value.identifier });
         }
     };
 
@@ -383,7 +388,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     //Unreachable since we error out right above if theres EOF
     const class_name = iter.next() orelse unreachable;
 
-    const guid: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "(")) blk: {
+    const identifier: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "(")) blk: {
         const expression = try consumeExpression(tree.allocator, iter);
         if (expression.contents != .guid_literal)
             @panic("aint a guid, buddy");
@@ -469,7 +474,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
         .functions = try functions.toOwnedSlice(),
         .fields = try fields.toOwnedSlice(),
         .properties = try properties.toOwnedSlice(),
-        .guid = guid,
+        .identifier = identifier,
     };
 
     try tree.root_elements.append(tree.allocator, .{ .class = node });
@@ -904,13 +909,13 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
 
     const parameters = try consumeFunctionParameters(allocator, iter);
 
-    const return_type = blk: {
+    const return_type: Type = blk: {
         if (std.mem.eql(u8, iter.peek() orelse std.debug.panic("EOF", .{}), "->")) {
             consumeArbitraryLexeme(iter, "->");
             break :blk consumeTypeName(iter);
         }
 
-        break :blk Type.ParsedType.Void;
+        break :blk .{ .parsed = Type.ParsedType.Void };
     };
 
     const body: ?*Node.Expression = if (!consumeArbitraryLexemeIfAvailable(iter, ";"))

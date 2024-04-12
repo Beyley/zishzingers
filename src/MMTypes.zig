@@ -107,9 +107,9 @@ fn fishTypeFromMangledId(id: u8) MMTypes.FishType {
         'w' => .char,
         'i' => .s32,
         'f' => .f32,
-        'p' => .v2,
-        'q' => .v3,
-        'r' => .v4,
+        'p' => .vec2,
+        'q' => .vec3,
+        'r' => .vec4,
         'm' => .m44,
         'g' => .guid,
         'j' => .s64,
@@ -1271,6 +1271,22 @@ pub const TypeReference = struct {
     array_base_machine_type: MachineType,
     script: ?ResourceIdentifier,
     type_name: ResolvableString,
+
+    pub fn eql(self: TypeReference, other: TypeReference) bool {
+        if ((self.script == null and other.script != null) or (self.script != null and other.script == null))
+            return false;
+
+        if (self.script) |self_script|
+            if (other.script) |other_script|
+                if (!self_script.eql(other_script))
+                    return false;
+
+        return self.machine_type == other.machine_type and
+            self.fish_type == other.fish_type and
+            self.dimension_count == other.dimension_count and
+            self.array_base_machine_type == other.array_base_machine_type and
+            self.type_name == other.type_name;
+    }
 };
 
 pub const Revision = struct {
@@ -1464,57 +1480,13 @@ pub const FishType = enum(u8) {
     char = 0x2,
     s32 = 0x3,
     f32 = 0x4,
-    v2 = 0x5,
-    v3 = 0x6,
-    v4 = 0x7,
+    vec2 = 0x5,
+    vec3 = 0x6,
+    vec4 = 0x7,
     m44 = 0x8,
     guid = 0x9,
     s64 = 0xa,
     f64 = 0xb,
-
-    pub fn scriptName(self: FishType) []const u8 {
-        return switch (self) {
-            .void => "void",
-            .bool => "bool",
-            .char => "char",
-            .s32 => "s32",
-            .f32 => "f32",
-            .v2 => "vec2",
-            .v3 => "vec3",
-            .v4 => "vec4",
-            .m44 => "m44",
-            .guid => "guid",
-            .s64 => "s64",
-            .f64 => "f64",
-        };
-    }
-
-    pub fn fromName(name: []const u8) ?FishType {
-        if (std.mem.eql(u8, name, "void"))
-            return .void
-        else if (std.mem.eql(u8, name, "bool"))
-            return .bool
-        else if (std.mem.eql(u8, name, "char"))
-            return .char
-        else if (std.mem.eql(u8, name, "s32"))
-            return .s32
-        else if (std.mem.eql(u8, name, "f32"))
-            return .f32
-        else if (std.mem.eql(u8, name, "vec2"))
-            return .v2
-        else if (std.mem.eql(u8, name, "vec3"))
-            return .v3
-        else if (std.mem.eql(u8, name, "vec4"))
-            return .v4
-        else if (std.mem.eql(u8, name, "m44"))
-            return .m44
-        else if (std.mem.eql(u8, name, "guid"))
-            return .guid
-        else if (std.mem.eql(u8, name, "s64"))
-            return .s64
-        else if (std.mem.eql(u8, name, "f64"))
-            return .f64;
-    }
 
     pub fn guessFromMachineType(machine_type: MachineType) FishType {
         return switch (machine_type) {
@@ -1523,7 +1495,7 @@ pub const FishType = enum(u8) {
             .char => .char,
             .s32 => .s32,
             .f32 => .f32,
-            .v4 => .v4,
+            .v4 => .vec4,
             .m44 => .m44,
             .deprecated => .void,
             .raw_ptr => .void,
@@ -1534,11 +1506,38 @@ pub const FishType = enum(u8) {
             .f64 => .f64,
         };
     }
+
+    pub fn toMachineType(self: FishType) MachineType {
+        return switch (self) {
+            .void => .void,
+            .bool => .bool,
+            .char => .char,
+            .s32 => .s32,
+            .f32 => .f32,
+            .vec2 => .v4,
+            .vec3 => .v4,
+            .vec4 => .v4,
+            .m44 => .m44,
+            .guid => .s32,
+            .s64 => .s64,
+            .f64 => .s64,
+        };
+    }
 };
 
 pub const ResourceIdentifier = union(enum(u8)) {
     guid: u32 = 2,
     hash: [std.crypto.hash.Sha1.digest_length]u8 = 1,
+
+    pub fn eql(self: ResourceIdentifier, other: ResourceIdentifier) bool {
+        if (std.meta.activeTag(self) != std.meta.activeTag(other))
+            return false;
+
+        return switch (self) {
+            .guid => self.guid == other.guid,
+            .hash => std.mem.eql(u8, &self.hash, &other.hash),
+        };
+    }
 };
 
 pub const ResourceDescriptor = struct {

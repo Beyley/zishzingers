@@ -196,7 +196,7 @@ fn formatType(writer: anytype, script_lookup: std.AutoHashMap(u32, MMTypes.Scrip
                 if (guessed_fish_type == .void)
                     std.debug.panic("bad array of type {s}", .{@tagName(type_reference.array_base_machine_type)});
 
-                try writer.writeAll(guessed_fish_type.scriptName());
+                try writer.writeAll(@tagName(guessed_fish_type));
             },
         }
         for (0..type_reference.dimension_count) |_| {
@@ -230,5 +230,5 @@ fn typeBaseName(script_lookup: std.AutoHashMap(u32, MMTypes.Script), script: MMT
         return script.a_string_table.strings[type_reference.type_name];
     }
 
-    return type_reference.fish_type.scriptName();
+    return @tagName(type_reference.fish_type);
 }

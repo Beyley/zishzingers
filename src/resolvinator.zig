@@ -12,21 +12,23 @@ pub const ParsedScript = struct {
     class_name: []const u8,
     imported_types: ImportedTypes,
     imported_libraries: Libraries,
+    resource_identifier: MMTypes.ResourceIdentifier,
+    is_thing: bool,
 };
 
 pub const ParsedScriptTable = std.StringHashMap(*ParsedScript);
 
 pub const Error = std.mem.Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError || Parser.Error;
 
-fn getScriptClassName(tree: Parser.Tree) ?[]const u8 {
+fn getScriptClassNode(tree: Parser.Tree) *Parser.Node.Class {
     for (tree.root_elements.items) |node| {
         switch (node) {
-            .class => |class| return class.class_name,
+            .class => |class| return class,
             else => {},
         }
     }
 
-    return null;
+    @panic("wathtsh");
 }
 
 fn collectImportedTypes(class_name: []const u8, defined_libraries: Libraries, script_table: *ParsedScriptTable) Error!void {
@@ -73,10 +75,10 @@ fn collectImportedTypes(class_name: []const u8, defined_libraries: Libraries, sc
 
                     const ast = try Parser.parse(script.ast.allocator, lexemes);
 
-                    if (script_table.get(getScriptClassName(ast) orelse @panic("thsa")) == null)
-                        try recursivelyResolveScript(ast, defined_libraries, script_table);
+                    if (script_table.get(getScriptClassNode(ast).class_name) == null)
+                        try recursivelyResolveScript(ast, defined_libraries, script_table, null);
 
-                    try script.imported_types.put(getScriptClassName(ast) orelse @panic("thsanye"), {});
+                    try script.imported_types.put(getScriptClassNode(ast).class_name, {});
 
                     found = true;
                 }
@@ -102,13 +104,23 @@ fn collectImportedLibraries(script: *ParsedScript, defined_libraries: Libraries)
     }
 }
 
-fn recursivelyResolveScript(tree: Parser.Tree, defined_libraries: Libraries, script_table: *ParsedScriptTable) Error!void {
+fn recursivelyResolveScript(tree: Parser.Tree, defined_libraries: Libraries, script_table: *ParsedScriptTable, script_identifier: ?MMTypes.ResourceIdentifier) Error!void {
+    const class = getScriptClassNode(tree);
+
     const script = try tree.allocator.create(ParsedScript);
     script.* = ParsedScript{
         .ast = tree,
-        .class_name = getScriptClassName(tree) orelse @panic("thsane"),
+        .class_name = getScriptClassNode(tree).class_name,
         .imported_libraries = Libraries.init(tree.allocator),
         .imported_types = ParsedScript.ImportedTypes.init(tree.allocator),
+        //Get the identifier for this script, whether it be passed in as a parameter or pulled from the class details
+        .resource_identifier = script_identifier orelse switch ((class.identifier orelse @panic("you need to specify a identifier somewhere")).contents) {
+            .guid_literal => |guid_literal| .{
+                .guid = guid_literal,
+            },
+            else => @panic("TODO"),
+        },
+        .is_thing = undefined,
     };
     try script_table.putNoClobber(script.class_name, script);
 
@@ -119,11 +131,182 @@ fn recursivelyResolveScript(tree: Parser.Tree, defined_libraries: Libraries, scr
 
     //Collect all the script types which are imported
     try collectImportedTypes(script.class_name, defined_libraries, script_table);
+
+    script.is_thing = isScriptThing(script, script_table);
+
+    std.debug.print("script {s} is {} thing/notthing\n", .{ script.class_name, script.is_thing });
 }
 
-pub fn resolve(tree: Parser.Tree, defined_libraries: Libraries) Error!void {
+///Figures out if a script extends Thing, checks the full inheritance chain
+fn isScriptThing(script: *const ParsedScript, script_table: *const ParsedScriptTable) bool {
+    if (std.mem.eql(u8, script.class_name, "Thing"))
+        return true;
+
+    const class = getScriptClassNode(script.ast);
+
+    if (class.base_class) |base_class| {
+        return isScriptThing(script_table.get(base_class).?, script_table);
+    } else {
+        // This class is not Thing, and extends no other classes, therefor it cannot be a Thing
+        return false;
+    }
+}
+
+pub const AStringTable = std.StringArrayHashMap(void);
+
+pub fn resolve(
+    tree: Parser.Tree,
+    defined_libraries: Libraries,
+    a_string_table: *AStringTable,
+    script_identifier: ?MMTypes.ResourceIdentifier,
+) Error!void {
     var script_table = ParsedScriptTable.init(tree.allocator);
     defer script_table.deinit();
 
-    try recursivelyResolveScript(tree, defined_libraries, &script_table);
+    try recursivelyResolveScript(tree, defined_libraries, &script_table, script_identifier);
+
+    //Get the class of the script
+    const class = getScriptClassNode(tree);
+
+    const script = script_table.get(class.class_name) orelse unreachable;
+
+    std.debug.print("type resolving {s}\n", .{script.class_name});
+
+    for (class.fields) |field| {
+        try resolveField(field, script, &script_table, a_string_table);
+    }
+}
+
+fn resolveExpression(
+    expression: *Parser.Node.Expression,
+    target_type: ?Parser.Type,
+    script: *ParsedScript,
+    script_table: *ParsedScriptTable,
+    a_string_table: *AStringTable,
+) !void {
+
+    //If this expression has already been resolved, do nothing
+    if (expression.type == .resolved)
+        return;
+
+    switch (expression.contents) {
+        .s32_literal => {
+            expression.type = .{
+                .resolved = try resolveParsedType(
+                    Parser.Type.ParsedType.S32,
+                    script,
+                    script_table,
+                    a_string_table,
+                ),
+            };
+        },
+        else => |contents| std.debug.panic("TODO: resolution of expression type {s}\n", .{@tagName(contents)}),
+    }
+
+    if (target_type) |target_parsed_type| {
+        std.debug.assert(target_parsed_type.resolved.eql(expression.type.resolved));
+    }
+}
+
+fn resolveParsedType(
+    parsed_type: Parser.Type.ParsedType,
+    script: *ParsedScript,
+    script_table: *ParsedScriptTable,
+    a_string_table: *AStringTable,
+) !MMTypes.TypeReference {
+    if (std.meta.stringToEnum(MMTypes.FishType, parsed_type.name)) |fish_type| {
+        return if (parsed_type.dimension_count > 0)
+            MMTypes.TypeReference{
+                .array_base_machine_type = fish_type.toMachineType(),
+                .dimension_count = parsed_type.dimension_count,
+                .fish_type = .void,
+                .machine_type = .object_ref,
+                //null
+                .type_name = 0xFFFFFFFF,
+                .script = null,
+            }
+        else
+            MMTypes.TypeReference{
+                .array_base_machine_type = .void,
+                .dimension_count = 0,
+                .fish_type = fish_type,
+                .machine_type = fish_type.toMachineType(),
+                //null
+                .type_name = 0xFFFFFFFF,
+                .script = null,
+            };
+    } else {
+        var iter = script.imported_types.keyIterator();
+        while (iter.next()) |imported_type| {
+            if (std.mem.eql(u8, parsed_type.name, imported_type.*)) {
+                const referenced_script = script_table.get(imported_type.*).?;
+
+                //Get the idx of the name of this script, or put into the string table
+                const name_idx = try a_string_table.getOrPut(imported_type.*);
+
+                return if (parsed_type.dimension_count > 0)
+                    MMTypes.TypeReference{
+                        .array_base_machine_type = if (referenced_script.is_thing) .safe_ptr else .object_ref,
+                        .dimension_count = parsed_type.dimension_count,
+                        .fish_type = .void,
+                        .machine_type = .object_ref,
+                        .type_name = @intCast(name_idx.index),
+                        .script = referenced_script.resource_identifier,
+                    }
+                else
+                    MMTypes.TypeReference{
+                        .array_base_machine_type = .void,
+                        .dimension_count = 0,
+                        .fish_type = .void,
+                        .machine_type = if (referenced_script.is_thing) .safe_ptr else .object_ref,
+                        .type_name = @intCast(name_idx.index),
+                        .script = referenced_script.resource_identifier,
+                    };
+            }
+        }
+
+        @panic("no script found.");
+    }
+}
+
+fn resolveField(
+    field: *Parser.Node.Field,
+    script: *ParsedScript,
+    script_table: *ParsedScriptTable,
+    a_string_table: *AStringTable,
+) !void {
+    std.debug.print("type resolving field {s}\n", .{field.name});
+
+    switch (field.type) {
+        .parsed => |parsed_type| {
+            field.type = .{
+                .resolved = try resolveParsedType(
+                    parsed_type,
+                    script,
+                    script_table,
+                    a_string_table,
+                ),
+            };
+        },
+        .unknown => {
+            if (field.default_value) |default_value| {
+                //Resolve the type of the default value, with no specific target type in mind
+                try resolveExpression(
+                    default_value,
+                    null,
+                    script,
+                    script_table,
+                    a_string_table,
+                );
+
+                //Set the type of the field to the resolved default value type
+                field.type = default_value.type;
+            } else unreachable;
+        },
+        else => unreachable,
+    }
+
+    std.debug.print("resolved as {}\n", .{field.type});
+
+    std.debug.assert(field.type == .resolved);
 }
