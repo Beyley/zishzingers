@@ -1,8 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const MMTypes = @This();
-
 pub const Script = struct {
     up_to_date_script: ?ResourceIdentifier,
     class_name: []const u8,
@@ -100,7 +98,7 @@ pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std
     return demangled.toOwnedSlice();
 }
 
-fn fishTypeFromMangledId(id: u8) MMTypes.FishType {
+fn fishTypeFromMangledId(id: u8) FishType {
     return switch (id) {
         'v' => .void,
         'b' => .bool,
@@ -1541,7 +1539,7 @@ pub const ResourceIdentifier = union(enum(u8)) {
 };
 
 pub const ResourceDescriptor = struct {
-    type: MMTypes.ResourceType,
+    type: ResourceType,
     ident: ResourceIdentifier,
     flags: u32,
 };
@@ -1554,8 +1552,8 @@ pub const CompressionFlags = packed struct(u8) {
 };
 
 pub const FileDB = struct {
-    pub const HashLookupMap = std.AutoHashMap([std.crypto.hash.Sha1.digest_length]u8, MMTypes.FileDB.Entry);
-    pub const GuidLookupMap = std.AutoHashMap(u32, MMTypes.FileDB.Entry);
+    pub const HashLookupMap = std.AutoHashMap([std.crypto.hash.Sha1.digest_length]u8, FileDB.Entry);
+    pub const GuidLookupMap = std.AutoHashMap(u32, FileDB.Entry);
 
     allocator: std.heap.ArenaAllocator,
     hash_lookup: HashLookupMap,
