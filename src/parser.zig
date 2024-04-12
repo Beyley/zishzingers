@@ -226,7 +226,7 @@ pub const Node = union(NodeType) {
             type: Type,
         };
 
-        parameters: []const Parameter,
+        parameters: []Parameter,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             try writer.writeAll("[ ");

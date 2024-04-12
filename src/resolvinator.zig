@@ -175,6 +175,48 @@ pub fn resolve(
     for (class.fields) |field| {
         try resolveField(field, script, &script_table, a_string_table);
     }
+
+    for (class.functions) |function| {
+        try resolveFunction(function, script, &script_table, a_string_table);
+    }
+}
+
+fn resolveFunction(
+    function: *Parser.Node.Function,
+    script: *ParsedScript,
+    script_table: *ParsedScriptTable,
+    a_string_table: *AStringTable,
+) !void {
+    function.return_type = .{
+        .resolved = try resolveParsedType(
+            function.return_type.parsed,
+            script,
+            script_table,
+            a_string_table,
+        ),
+    };
+
+    std.debug.print("resolved function return type as {}\n", .{function.return_type.resolved});
+
+    for (function.parameters.parameters) |*parameter| {
+        parameter.type = .{
+            .resolved = try resolveParsedType(
+                parameter.type.parsed,
+                script,
+                script_table,
+                a_string_table,
+            ),
+        };
+
+        std.debug.print("resolved function parameter {s} as {}\n", .{ parameter.name, parameter.type.resolved });
+    }
+
+    //TODO: once i parse the `=>` syntax for function bodies, this `null` for target type needs to be made correct!!!
+    //      should i make function_body a special expression type? im not sure yet.
+    //      maybe this could be as simple as "if block, target type == void, if not block, target type is the function return type" that should work
+    try resolveExpression(function.body.?, null, script, script_table, a_string_table);
+
+    std.debug.print("resolved function {s}\n", .{function.name});
 }
 
 fn resolveExpression(
@@ -184,7 +226,6 @@ fn resolveExpression(
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
 ) !void {
-
     //If this expression has already been resolved, do nothing
     if (expression.type == .resolved)
         return;
@@ -200,7 +241,64 @@ fn resolveExpression(
                 ),
             };
         },
-        else => |contents| std.debug.panic("TODO: resolution of expression type {s}\n", .{@tagName(contents)}),
+        .block => |block| {
+            expression.type = .{
+                .resolved = try resolveParsedType(
+                    Parser.Type.ParsedType.Void,
+                    script,
+                    script_table,
+                    a_string_table,
+                ),
+            };
+
+            //Resolve the contents
+            for (block) |node| {
+                switch (node) {
+                    .variable_declaration => |variable_declaration| {
+                        if (variable_declaration.type == .unknown) {
+                            //If the type of the variable declaration is unspecified, we need to resolve the value expression first
+                            if (variable_declaration.value) |value| {
+                                try resolveExpression(
+                                    value,
+                                    null,
+                                    script,
+                                    script_table,
+                                    a_string_table,
+                                );
+
+                                //Then we can use the type of the value expression for the type of the variable declaration
+                                variable_declaration.type = variable_declaration.value.?.type;
+                            }
+                            //This should be an impossible scenario, the parser gets mad about this
+                            else unreachable;
+                        } else {
+                            //Resolve the variable declaration type
+                            variable_declaration.type = .{
+                                .resolved = try resolveParsedType(
+                                    variable_declaration.type.parsed,
+                                    script,
+                                    script_table,
+                                    a_string_table,
+                                ),
+                            };
+
+                            //If the variable declaration has a value set, resolve the value expression to the type of the variable
+                            if (variable_declaration.value) |value| {
+                                try resolveExpression(
+                                    value,
+                                    variable_declaration.type,
+                                    script,
+                                    script_table,
+                                    a_string_table,
+                                );
+                            }
+                        }
+                    },
+                    else => |node_type| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(node_type)}),
+                }
+            }
+        },
+        else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }
 
     if (target_type) |target_parsed_type| {
