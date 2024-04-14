@@ -278,6 +278,8 @@ fn resolveFunctionHead(
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
 ) Error!void {
+    std.debug.print("resolving function head {s}\n", .{function.name});
+
     if (function.return_type != .resolved)
         function.return_type = .{
             .resolved = try resolveParsedType(
@@ -339,14 +341,14 @@ fn resolveExpression(
     a_string_table: *AStringTable,
     function_variable_stack: ?*FunctionVariableStackInfo,
 ) Error!void {
-    //At the end of this resolution, make sure the type got resolved to the target type
-    defer if (target_type) |target_parsed_type|
-        if (!target_parsed_type.resolved.eql(expression.type.resolved))
-            std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression.type.resolved });
-
     //If this expression has already been resolved, do nothing
-    if (expression.type == .resolved)
+    if (expression.type == .resolved) {
+        if (target_type) |target_parsed_type|
+            if (!target_parsed_type.resolved.eql(expression.type.resolved))
+                std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression.type.resolved });
+
         return;
+    }
 
     std.debug.print("resolving {}\n", .{expression.contents});
 
@@ -403,6 +405,37 @@ fn resolveExpression(
                 a_string_table,
             ) };
         },
+        .member_function_call => |member_function_call| {
+            //Resolve the source expression
+            try resolveExpression(
+                member_function_call.source,
+                null,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            const function = try findMemberFunction(member_function_call.name, member_function_call.source, script, script_table, a_string_table);
+
+            const function_parameters_to_check = if (function.special_cased)
+                function.found_function.parameters.parameters[1..]
+            else
+                function.found_function.parameters.parameters;
+
+            for (function_parameters_to_check, member_function_call.parameters) |function_parameter, call_parameter| {
+                try resolveExpression(
+                    call_parameter,
+                    function_parameter.type,
+                    script,
+                    script_table,
+                    a_string_table,
+                    function_variable_stack,
+                );
+            }
+
+            expression.type = function.found_function.return_type;
+        },
         .field_access => |field_access| {
             //Resolve the source expression
             try resolveExpression(
@@ -428,7 +461,12 @@ fn resolveExpression(
                             continue;
 
                         // Type resolve the field
-                        try resolveField(field, source_script, script_table, a_string_table);
+                        try resolveField(
+                            field,
+                            source_script,
+                            script_table,
+                            a_string_table,
+                        );
 
                         //Break out now that we have the field
                         break :field_resolution field;
@@ -614,6 +652,106 @@ fn resolveExpression(
         },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }
+
+    //TODO: implicit type coercions
+
+    if (target_type) |target_parsed_type|
+        if (!target_parsed_type.resolved.eql(expression.type.resolved))
+            std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression.type.resolved });
+}
+
+fn findMemberFunction(
+    name: []const u8,
+    source_expression: *Parser.Node.Expression,
+    script: *ParsedScript,
+    script_table: *ParsedScriptTable,
+    a_string_table: *AStringTable,
+) !struct {
+    found_function: *Parser.Node.Function,
+    special_cased: bool,
+} {
+    switch (source_expression.type.resolved.machine_type) {
+        .object_ref, .safe_ptr => {
+            const source_class_name = a_string_table.keys()[source_expression.type.resolved.type_name];
+
+            //Recursively go through all the parent classes, and try to find a matching function
+            var source_script = script_table.get(source_class_name).?;
+            var class = getScriptClassNode(source_script.ast);
+            while (true) {
+                for (class.functions) |function| {
+                    //If the function name is wrong, continue
+                    if (!std.mem.eql(u8, function.name, name))
+                        continue;
+
+                    // Type resolve the function
+                    try resolveFunctionHead(
+                        function,
+                        source_script,
+                        script_table,
+                        a_string_table,
+                    );
+
+                    // You usually cant call static functions as member functions, aside from the case of
+                    if (function.modifiers.static) {
+                        //The first parameter being the class being used as the source can be called with this syntax
+                        //since these are special cased to be callable as member functions
+                        if (function.parameters.parameters.len > 0) blk: {
+                            const first_parameter = function.parameters.parameters[0];
+
+                            //If the first parameter is not an object ref or safe ptr, then its definitely not special cased
+                            if (first_parameter.type.resolved.machine_type != .safe_ptr and
+                                first_parameter.type.resolved.machine_type != .object_ref)
+                                break :blk;
+
+                            //If its a safe_ptr or object_ref, the type name should always be known
+                            std.debug.assert(first_parameter.type.resolved.type_name != 0xFFFFFFFF);
+
+                            const type_name = a_string_table.keys()[first_parameter.type.resolved.type_name];
+
+                            // If the calling script derives the parameter's script, then this *can* be a member function, allow through
+                            if (scriptDerivesOtherScript(
+                                script,
+                                script_table.get(type_name).?,
+                                script_table,
+                            )) return .{ .found_function = function, .special_cased = true };
+                        }
+
+                        std.debug.panic("you cant member call a static function {s}, sorry bub", .{function.name});
+                    }
+
+                    return .{ .found_function = function, .special_cased = false };
+                }
+
+                source_script = script_table.get(class.base_class orelse break).?;
+                class = getScriptClassNode(source_script.ast);
+            }
+
+            //TODO: this should be a proper compile error, not `unreachable`
+            unreachable;
+        },
+        else => |machine_type| std.debug.panic(
+            "you cannot do field access on a variable with machine type {s}. must be object_ref or safe_ptr",
+            .{@tagName(machine_type)},
+        ),
+    }
+}
+
+fn scriptDerivesOtherScript(script: *ParsedScript, other: *ParsedScript, script_table: *ParsedScriptTable) bool {
+    if (std.mem.eql(u8, script.class_name, other.class_name))
+        return true;
+
+    var class = getScriptClassNode(script.ast);
+    while (true) {
+        if (class.base_class == null)
+            break;
+
+        if (std.mem.eql(u8, class.base_class.?, other.class_name))
+            return true;
+
+        class = getScriptClassNode(script_table.get(class.base_class.?).?.ast);
+    }
+
+    return false;
 }
 
 fn resolveParsedType(
@@ -657,7 +795,7 @@ fn resolveParsedType(
             }
         }
 
-        @panic("no script found.");
+        std.debug.panic("no script {s} found in import table for script {s}", .{ parsed_type.name, script.class_name });
     }
 }
 
