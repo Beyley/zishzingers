@@ -19,7 +19,7 @@ pub fn generateStubs(
     defer script_references.deinit();
 
     if (script.super_class_script) |super_script| {
-        try script_references.put(super_script.guid, script_lookup.get(super_script.guid).?.class_name);
+        try script_references.putNoClobber(super_script.guid, script_lookup.get(super_script.guid).?.class_name);
     }
 
     for (script.type_references) |type_references| {

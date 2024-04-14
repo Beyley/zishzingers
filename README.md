@@ -28,6 +28,12 @@ Compiles an A# file into an LBP script file.
 # TODO: usage instructions
 ```
 
+#### Differences from Aidan's compiler
+
+- s32 literals cannot exceed the size of an s32, in Aidan's compiler, s32 literals may be too big for an s32, as long as they fit in a u32, in this case, it is bitcast back to an s32, this is weird, so im not doing this, use a hex literal.
+
+TODO: move this to the langref once i write it
+
 ## Special Thanks
 
 *Massive* shoutouts to [Aidan](https://github.com/ennuo) for the constant help with my reverse engineering efforts, this project would not have been possible if it not for the work they did on [toolkit](https://github.com/ennuo/toolkit) (which I referenced for resource serialization) and craftworld.js (which I referenced for the FF file structure and instruction class types).

@@ -21,10 +21,15 @@ pub const NodeType = enum {
     if_statement,
 };
 
-const FromImportWanted = union(enum) {
+pub const FromImportWanted = union(enum) {
+    pub const ImportedFunction = struct {
+        name: []const u8,
+        original_name: []const u8,
+    };
+
     all: void,
-    single: []const u8,
-    multiple: []const []const u8,
+    single: ImportedFunction,
+    multiple: []const ImportedFunction,
 
     pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         switch (value) {
@@ -32,12 +37,12 @@ const FromImportWanted = union(enum) {
                 return writer.print(".all", .{});
             },
             .single => |single| {
-                return writer.print("{{ .single = {s} }}", .{single});
+                return writer.print("{{ .single = {} }}", .{single});
             },
             .multiple => |multiple| {
                 try writer.print("{{ target = [ ", .{});
                 for (multiple) |wanted| {
-                    try writer.print("{s}, ", .{wanted});
+                    try writer.print("{}, ", .{wanted});
                 }
                 return writer.print("] }}", .{});
             },
@@ -57,6 +62,16 @@ pub const Type = union(enum) {
 
         pub const S32: ParsedType = .{
             .name = "s32",
+            .dimension_count = 0,
+        };
+
+        pub const S64: ParsedType = .{
+            .name = "s64",
+            .dimension_count = 0,
+        };
+
+        pub const Bool: ParsedType = .{
+            .name = "bool",
             .dimension_count = 0,
         };
     };
@@ -94,7 +109,7 @@ pub const Node = union(NodeType) {
     };
 
     pub const Class = struct {
-        class_name: []const u8,
+        name: []const u8,
         base_class: ?[]const u8,
         identifier: ?*Expression,
 
@@ -104,7 +119,7 @@ pub const Node = union(NodeType) {
         constructors: ?[]const *const Constructor,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            return writer.print("class{{ class_name = {s}, base_class = {?s}, guid = {?} }}", .{ value.class_name, value.base_class, value.identifier });
+            return writer.print("class{{ class_name = {s}, base_class = {?s}, guid = {?} }}", .{ value.name, value.base_class, value.identifier });
         }
     };
 
@@ -153,10 +168,17 @@ pub const Node = union(NodeType) {
 
     pub const Expression = struct {
         pub const ExpressionContents = union(enum) {
-            s32_literal: i32,
-            s64_literal: i64,
-            f32_literal: f32,
-            f64_literal: f32,
+            pub const LiteralBase = enum {
+                binary,
+                octal,
+                decimal,
+                hex,
+            };
+
+            s32_literal: struct { base: LiteralBase, value: i32 },
+            s64_literal: struct { base: LiteralBase, value: i64 },
+            f32_literal: struct { base: LiteralBase, value: f32 },
+            f64_literal: struct { base: LiteralBase, value: f64 },
             guid_literal: u32,
             bool_literal: bool,
             ascii_string_literal: []const u8,
@@ -171,12 +193,16 @@ pub const Node = union(NodeType) {
                 parameters: []const *Expression,
             },
             class_name: []const u8,
-            variable: []const u8,
+            variable_access: []const u8,
             this: void,
             negate: *Expression,
             function_call: struct {
-                name: []const u8,
+                function: union(enum) {
+                    name: []const u8,
+                    function: *Function,
+                },
                 parameters: []const *Expression,
+                type: Type,
             },
             assignment: struct {
                 destination: *Expression,
@@ -190,20 +216,20 @@ pub const Node = union(NodeType) {
 
             pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
                 return switch (value) {
-                    .s32_literal => |literal| writer.print("expression_contents{{ .s32_literal = {d} }}", .{literal}),
-                    .s64_literal => |literal| writer.print("expression_contents{{ .s64_literal = {d} }}", .{literal}),
-                    .f32_literal => |literal| writer.print("expression_contents{{ .f32_literal = {d} }}", .{literal}),
-                    .f64_literal => |literal| writer.print("expression_contents{{ .f64_literal = {d} }}", .{literal}),
+                    .s32_literal => |literal| writer.print("expression_contents{{ .s32_literal = {} }}", .{literal}),
+                    .s64_literal => |literal| writer.print("expression_contents{{ .s64_literal = {} }}", .{literal}),
+                    .f32_literal => |literal| writer.print("expression_contents{{ .f32_literal = {} }}", .{literal}),
+                    .f64_literal => |literal| writer.print("expression_contents{{ .f64_literal = {} }}", .{literal}),
                     .guid_literal => |literal| writer.print("expression_contents{{ .guid_literal = {d} }}", .{literal}),
                     .bool_literal => |literal| writer.print("expression_contents{{ .bool_literal = {} }}", .{literal}),
                     .ascii_string_literal => |literal| writer.print("expression_contents{{ .ascii_string_literal = {s} }}", .{literal}),
                     .wide_string_literal => |literal| writer.print("expression_contents{{ .wide_string_literal = {s} }}", .{literal}),
                     .class_name => |literal| writer.print("expression_contents{{ .class_name = {s} }}", .{literal}),
                     .field_access => |literal| writer.print("expression_contents{{ .field_access = .{{ .source = {}, .field = {s} }} }}", .{ literal.source, literal.field }),
-                    .variable => |literal| writer.print("expression_contents{{ .variable = {s} }}", .{literal}),
+                    .variable_access => |literal| writer.print("expression_contents{{ .variable = {s} }}", .{literal}),
                     .this => writer.print("expression_contents{{ .this }}", .{}),
                     .negate => |literal| writer.print("expression_contents{{ .negate = {} }}", .{literal}),
-                    .function_call => |literal| writer.print("expression_contents{{ .function_call = .{{ .name = {s}, .parameters = {any} }} }}", .{ literal.name, literal.parameters }),
+                    .function_call => |literal| writer.print("expression_contents{{ .function_call = .{{ .function = {}, .parameters = {any} }} }}", .{ literal.function, literal.parameters }),
                     .member_function_call => |literal| writer.print("expression_contents{{ .member_function_call = .{{ .source = {}, .name = {s}, .parameters = {any} }} }}", .{ literal.source, literal.name, literal.parameters }),
                     .assignment => |literal| writer.print("expression_contents{{ .assignment = .{{ .destination = {}, .value = .{} }} }}", .{ literal.destination, literal.value }),
                     .block => |literal| writer.print("expression_contents{{ .block = {{ .body = {any} }} }}", .{literal}),
@@ -469,7 +495,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
 
     node.* = .{
         .constructors = try constructors.toOwnedSlice(),
-        .class_name = class_name,
+        .name = class_name,
         .base_class = base_class,
         .functions = try functions.toOwnedSlice(),
         .fields = try fields.toOwnedSlice(),
@@ -682,13 +708,41 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
     node.* = .{
         .contents = if (first[0] == '!') blk: {
             break :blk .{ .negate = try consumeExpression(allocator, iter) };
-        } else if (try isInt(i64, first)) |s64| blk: {
-            // If its within the range of an i32, then make this be a s32 literal instead of an s64 literal,
-            // since s32 will coerce to s64 in the type resolution stage
-            if (s64 >= std.math.minInt(i32) and s64 <= std.math.maxInt(i32)) {
-                break :blk .{ .s32_literal = @intCast(s64) };
+        } else if (try isInt(i65, first)) |s65| blk: {
+            //TODO: this needs to handle negative numbers
+            const base: Node.Expression.ExpressionContents.LiteralBase = if (first.len >= 2) switch (hashKeyword(first[0..2])) {
+                hashKeyword("0x") => .hex,
+                hashKeyword("0o") => .octal,
+                hashKeyword("0b") => .binary,
+                else => .decimal,
+            } else .decimal;
+
+            if (base == .decimal) {
+                const s64: i64 = @intCast(s65);
+
+                // If its within the range of an i32, then make this be a s32 literal instead of an s64 literal,
+                // since s32 will coerce to s64 in the type resolution stage
+                if (s65 >= std.math.minInt(i32) and s65 <= std.math.maxInt(i32)) {
+                    break :blk .{ .s32_literal = .{ .base = base, .value = @intCast(s64) } };
+                } else {
+                    break :blk .{ .s64_literal = .{ .base = base, .value = s64 } };
+                }
             } else {
-                break :blk .{ .s64_literal = s64 };
+                const unsigned: u64 = @intCast(s65);
+
+                // If its within the range of an i32, then make this be a s32 literal instead of an s64 literal,
+                // since s32 will coerce to s64 in the type resolution stage
+                if (unsigned >= std.math.minInt(u32) and unsigned <= std.math.maxInt(u32)) {
+                    break :blk .{ .s32_literal = .{
+                        .base = base,
+                        .value = @bitCast(@as(u32, @truncate(unsigned))),
+                    } };
+                } else {
+                    break :blk .{ .s64_literal = .{
+                        .base = base,
+                        .value = @bitCast(unsigned),
+                    } };
+                }
             }
         } else blk: {
             const next = iter.peek() orelse @panic("EOF");
@@ -697,12 +751,16 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
             if (next[0] == '(') {
                 break :blk .{
                     .function_call = .{
-                        .name = first,
+                        .function = .{ .name = first },
                         .parameters = try consumeFunctionCallParameters(allocator, iter),
+                        .type = .unknown,
                     },
                 };
             }
             // We are parsing a field access/member call
+
+            //TODO: this is not the correct place for this logic, this should be down below,
+            //      currently this is unable to parse expressions such as `Function().field`
             else if (next[0] == '.') {
                 const source = try allocator.create(Node.Expression);
                 errdefer allocator.destroy(source);
@@ -712,7 +770,7 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
                     .contents = if (std.mem.eql(u8, first, "this"))
                         .this
                     else
-                        .{ .variable = first },
+                        .{ .variable_access = first },
                     .type = .unknown,
                 };
 
@@ -763,7 +821,7 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
                     break :blk .{ .ascii_string_literal = unwrapStringLiteral(first[1..]) };
                 }
 
-                break :blk .{ .variable = first };
+                break :blk .{ .variable_access = first };
             }
         },
         .type = .unknown,
@@ -1074,7 +1132,7 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     const wanted: FromImportWanted = switch (hashKeyword(first_import_lexeme)) {
         hashKeyword("{") => .{
             .multiple = blk: {
-                var wanted_imports = std.ArrayListUnmanaged([]const u8){};
+                var wanted_imports = std.ArrayListUnmanaged(FromImportWanted.ImportedFunction){};
 
                 was_multi_import = true;
 
@@ -1086,8 +1144,15 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
                 while (true) {
                     const curr = iter.next() orelse std.debug.panic("unexpected EOF in multi import block", .{});
 
+                    //TODO: support renamed function imports eg. `import { Messaging_PoppetInfoMessage: ShowNotification }`
+
+                    const name = unwrapStringLiteral(curr);
+
                     //Append the new import
-                    try wanted_imports.append(tree.allocator, unwrapStringLiteral(curr));
+                    try wanted_imports.append(tree.allocator, .{
+                        .name = name,
+                        .original_name = name,
+                    });
 
                     const next = iter.peek() orelse std.debug.panic("unexpected EOF in multi import block", .{});
 
@@ -1103,11 +1168,17 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
             },
         },
         hashKeyword("*") => .{ .all = {} },
-        else => .{ .single = first_import_lexeme },
+        else => .{
+            .single = .{
+                //TODO: do we need to support the rename syntax for these?
+                .name = first_import_lexeme,
+                .original_name = first_import_lexeme,
+            },
+        },
     };
 
     node.* = .{
-        .target = target,
+        .target = unwrapStringLiteral(target),
         .wanted = wanted,
     };
 

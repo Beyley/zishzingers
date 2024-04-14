@@ -194,7 +194,7 @@ pub fn main() !void {
                 const name = iter.next() orelse @panic("no library name specified");
                 const path = iter.next() orelse @panic("no library path specified");
 
-                try defined_libraries.put(name, try std.fs.cwd().openDir(path, .{}));
+                try defined_libraries.putNoClobber(name, try std.fs.cwd().openDir(path, .{}));
             }
 
             for (res.positionals) |source_file| {
@@ -370,7 +370,7 @@ pub fn main() !void {
                 const script = try resource.stream.readScript(allocator);
                 errdefer script.deinit(allocator);
 
-                try scripts.put(entry.key_ptr.*, script);
+                try scripts.putNoClobber(entry.key_ptr.*, script);
             }
 
             var script_iter = scripts.iterator();

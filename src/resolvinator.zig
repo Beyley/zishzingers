@@ -7,12 +7,25 @@ pub const Libraries = std.StringHashMap(std.fs.Dir);
 
 pub const ParsedScript = struct {
     pub const ImportedTypes = std.StringHashMap(void);
+    /// Map of "imported name" to "original name + script"
+    pub const ImportedFunctions = std.StringHashMap(struct {
+        original_name: []const u8,
+        script: []const u8,
+    });
 
+    /// The AST of the parsed script.
     ast: Parser.Tree,
+    /// The name of the script.
     class_name: []const u8,
+    /// Maps all the types which are imported.
     imported_types: ImportedTypes,
+    /// Maps all the libraries imported.
     imported_libraries: Libraries,
+    /// Maps all the imported functions which use the `from 'std:lams' import Translate;` syntax.
+    imported_functions: ImportedFunctions,
+    /// The identifier of the script.
     resource_identifier: MMTypes.ResourceIdentifier,
+    /// Marks whether the script derives `Thing`, whether directly or indirectly.
     is_thing: bool,
 };
 
@@ -31,19 +44,25 @@ fn getScriptClassNode(tree: Parser.Tree) *Parser.Node.Class {
     @panic("wathtsh");
 }
 
+fn getImportPathFromImportTarget(allocator: std.mem.Allocator, target: []const u8) ![]const u8 {
+    var import_path = try allocator.alloc(u8, target.len + 3);
+
+    @memcpy(import_path[0..target.len], target);
+    @memcpy(import_path[target.len..], ".as");
+
+    //Replace all the `:` with `/` in the import path
+    std.mem.replaceScalar(u8, import_path, ':', '/');
+
+    return import_path;
+}
+
 fn collectImportedTypes(class_name: []const u8, defined_libraries: Libraries, script_table: *ParsedScriptTable) Error!void {
     const script = script_table.get(class_name) orelse @panic("tsheointeonhsaoi");
 
     for (script.ast.root_elements.items) |item| {
         switch (item) {
-            .import => |import| {
-                var import_path = try script.ast.allocator.alloc(u8, import.target.len + 3);
-
-                @memcpy(import_path[0..import.target.len], import.target);
-                @memcpy(import_path[import.target.len..], ".as");
-
-                //Replace all the `:` with `/` in the import path
-                std.mem.replaceScalar(u8, import_path, ':', '/');
+            inline .import, .from_import => |import, import_type| {
+                const import_path = try getImportPathFromImportTarget(script.ast.allocator, import.target);
 
                 var found = false;
 
@@ -75,10 +94,47 @@ fn collectImportedTypes(class_name: []const u8, defined_libraries: Libraries, sc
 
                     const ast = try Parser.parse(script.ast.allocator, lexemes);
 
-                    if (script_table.get(getScriptClassNode(ast).class_name) == null)
+                    const class = getScriptClassNode(ast);
+
+                    if (script_table.get(class.name) == null)
                         try recursivelyResolveScript(ast, defined_libraries, script_table, null);
 
-                    try script.imported_types.put(getScriptClassNode(ast).class_name, {});
+                    switch (comptime import_type) {
+                        .import => {
+                            try script.imported_types.putNoClobber(class.name, {});
+                        },
+                        .from_import => {
+                            switch (import.wanted) {
+                                .all => {
+                                    for (class.functions) |function| {
+                                        //TODO: this *needs* to be putNoClobber, I think these keys need to be the mangled names
+                                        try script.imported_functions.put(function.name, .{
+                                            .original_name = function.name,
+                                            .script = class.name,
+                                        });
+                                    }
+                                },
+                                .multiple => |multiple_imports| {
+                                    //TODO: check to make sure the original names actually exist in the script
+                                    for (multiple_imports) |imported_function| {
+                                        //TODO: this *needs* to be putNoClobber, I think these keys need to be the mangled names
+                                        try script.imported_functions.put(imported_function.name, .{
+                                            .original_name = imported_function.original_name,
+                                            .script = class.name,
+                                        });
+                                    }
+                                },
+                                .single => |single_import| {
+                                    //TODO: this *needs* to be putNoClobber, I think these keys need to be the mangled names
+                                    try script.imported_functions.put(single_import.name, .{
+                                        .original_name = single_import.original_name,
+                                        .script = class.name,
+                                    });
+                                },
+                            }
+                        },
+                        else => @compileError("THAE"),
+                    }
 
                     found = true;
                 }
@@ -110,9 +166,10 @@ fn recursivelyResolveScript(tree: Parser.Tree, defined_libraries: Libraries, scr
     const script = try tree.allocator.create(ParsedScript);
     script.* = ParsedScript{
         .ast = tree,
-        .class_name = getScriptClassNode(tree).class_name,
+        .class_name = getScriptClassNode(tree).name,
         .imported_libraries = Libraries.init(tree.allocator),
         .imported_types = ParsedScript.ImportedTypes.init(tree.allocator),
+        .imported_functions = ParsedScript.ImportedFunctions.init(tree.allocator),
         //Get the identifier for this script, whether it be passed in as a parameter or pulled from the class details
         .resource_identifier = script_identifier orelse switch ((class.identifier orelse @panic("you need to specify a identifier somewhere")).contents) {
             .guid_literal => |guid_literal| .{
@@ -168,7 +225,7 @@ pub fn resolve(
     //Get the class of the script
     const class = getScriptClassNode(tree);
 
-    const script = script_table.get(class.class_name) orelse unreachable;
+    const script = script_table.get(class.name) orelse unreachable;
 
     std.debug.print("type resolving {s}\n", .{script.class_name});
 
@@ -177,47 +234,102 @@ pub fn resolve(
     }
 
     for (class.functions) |function| {
-        try resolveFunction(function, script, &script_table, a_string_table);
+        try resolveFunctionHead(function, script, &script_table, a_string_table);
+        try resolveFunctionBody(function, script, &script_table, a_string_table);
     }
 }
 
-fn resolveFunction(
+fn resolveFunctionBody(
     function: *Parser.Node.Function,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
 ) !void {
-    function.return_type = .{
-        .resolved = try resolveParsedType(
-            function.return_type.parsed,
-            script,
-            script_table,
-            a_string_table,
-        ),
-    };
+    if (function.body) |body| {
+        var variable_stack = FunctionVariableStack.init(script.ast.allocator);
+        defer variable_stack.deinit();
 
-    std.debug.print("resolved function return type as {}\n", .{function.return_type.resolved});
+        var stack_info: FunctionVariableStackInfo = .{
+            .current_level = 0,
+            .stack = &variable_stack,
+            .function = function,
+        };
 
-    for (function.parameters.parameters) |*parameter| {
-        parameter.type = .{
+        if (body.type != .resolved)
+            //TODO: once i parse the `=>` syntax for function bodies, this `null` for target type needs to be made correct!!!
+            //      should i make function_body a special expression type? im not sure yet.
+            //      maybe this could be as simple as "if block, target type == void, if not block, target type is the function return type" that should work
+            try resolveExpression(
+                body,
+                null,
+                script,
+                script_table,
+                a_string_table,
+                &stack_info,
+            );
+    }
+
+    std.debug.print("resolved function body {s}\n", .{function.name});
+}
+
+fn resolveFunctionHead(
+    function: *Parser.Node.Function,
+    script: *ParsedScript,
+    script_table: *ParsedScriptTable,
+    a_string_table: *AStringTable,
+) !void {
+    if (function.return_type != .resolved)
+        function.return_type = .{
             .resolved = try resolveParsedType(
-                parameter.type.parsed,
+                function.return_type.parsed,
                 script,
                 script_table,
                 a_string_table,
             ),
         };
 
+    std.debug.print("resolved function return type as {}\n", .{function.return_type.resolved});
+
+    for (function.parameters.parameters) |*parameter| {
+        if (parameter.type != .resolved)
+            parameter.type = .{
+                .resolved = try resolveParsedType(
+                    parameter.type.parsed,
+                    script,
+                    script_table,
+                    a_string_table,
+                ),
+            };
+
         std.debug.print("resolved function parameter {s} as {}\n", .{ parameter.name, parameter.type.resolved });
     }
 
-    //TODO: once i parse the `=>` syntax for function bodies, this `null` for target type needs to be made correct!!!
-    //      should i make function_body a special expression type? im not sure yet.
-    //      maybe this could be as simple as "if block, target type == void, if not block, target type is the function return type" that should work
-    try resolveExpression(function.body.?, null, script, script_table, a_string_table);
-
-    std.debug.print("resolved function {s}\n", .{function.name});
+    std.debug.print("resolved function head {s}\n", .{function.name});
 }
+
+fn stringType(a_string_table: *AStringTable) !MMTypes.TypeReference {
+    return .{
+        .script = .{ .guid = 16491 },
+        .type_name = @intCast((try a_string_table.getOrPut("String")).index),
+        .machine_type = .object_ref,
+        .fish_type = .void,
+        .dimension_count = 0,
+        .array_base_machine_type = .void,
+    };
+}
+
+const FunctionVariableStack = std.StringArrayHashMap(struct {
+    level: u8,
+    type: Parser.Type,
+});
+
+const FunctionVariableStackInfo = struct {
+    const StackLevel = u8;
+
+    function: *Parser.Node.Function,
+    current_level: StackLevel,
+    stack: *FunctionVariableStack,
+};
 
 fn resolveExpression(
     expression: *Parser.Node.Expression,
@@ -225,10 +337,18 @@ fn resolveExpression(
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
+    function_variable_stack: ?*FunctionVariableStackInfo,
 ) !void {
+    //At the end of this resolution, make sure the type got resolved to the target type
+    defer if (target_type) |target_parsed_type|
+        if (!target_parsed_type.resolved.eql(expression.type.resolved))
+            std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression.type.resolved });
+
     //If this expression has already been resolved, do nothing
     if (expression.type == .resolved)
         return;
+
+    std.debug.print("resolving {}\n", .{expression.contents});
 
     switch (expression.contents) {
         .s32_literal => {
@@ -241,6 +361,113 @@ fn resolveExpression(
                 ),
             };
         },
+        .assignment => |assignment| {
+            //Resolve the type of the destination
+            try resolveExpression(
+                assignment.destination,
+                target_type,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            //Resolve the type of the value, which should be the same type as the destination
+            try resolveExpression(
+                assignment.value,
+                assignment.destination.type,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            // The type of the expression is the type of the destination value
+            // This is to allow constructs like `func(a = 2);`
+            expression.type = assignment.destination.type;
+        },
+        .s64_literal => {
+            expression.type = .{
+                .resolved = try resolveParsedType(
+                    Parser.Type.ParsedType.S64,
+                    script,
+                    script_table,
+                    a_string_table,
+                ),
+            };
+        },
+        .variable_access => |variable_access| {
+            const variable = function_variable_stack.?.stack.get(variable_access) orelse @panic("TODO: proper error here");
+
+            std.debug.assert(variable.type == .resolved);
+
+            expression.type = variable.type;
+        },
+        .bool_literal => {
+            expression.type = .{
+                .resolved = try resolveParsedType(
+                    Parser.Type.ParsedType.Bool,
+                    script,
+                    script_table,
+                    a_string_table,
+                ),
+            };
+        },
+        .wide_string_literal => {
+            expression.type = .{ .resolved = try stringType(a_string_table) };
+        },
+        .function_call => |*function_call| {
+            //First, figure out which function we want to call here...
+            const function, const function_script = blk: {
+                const local_class = getScriptClassNode(script.ast);
+
+                // Iterate over all the functions defined in the local class, and prioritize them
+                for (local_class.functions) |local_function| {
+                    if (std.mem.eql(u8, local_function.name, function_call.function.name)) {
+                        break :blk .{ local_function, script };
+                    }
+                }
+
+                //TODO: handle calling overloads by checking param types... this code does not account for overloads *at all*. this is Not Good.
+                //      why do people have to add overloads to things it *only* makes things harder. JUST NAME THINGS BETTER.
+                //      im going to have to type resolve every imported function in every fucking imported script to be able to track overloads.
+                //      like MAYBE i could only do the resolution when theres a conflict,
+                //      but why the fuck should i have to? thats so much extra state tracking.
+                //      just Dont Put Overloads In Your Language/VM you Bitch.
+                if (script.imported_functions.get(function_call.function.name)) |imported_function| {
+                    const original_script = script_table.get(imported_function.script).?;
+
+                    const script_class = getScriptClassNode(original_script.ast);
+
+                    for (script_class.functions) |imported_script_function| {
+                        if (std.mem.eql(u8, function_call.function.name, imported_script_function.name))
+                            break :blk .{ imported_script_function, original_script };
+                    }
+
+                    unreachable;
+                }
+
+                std.debug.panic("unable to find function {s}", .{function_call.function.name});
+            };
+            std.debug.print("found func {s} for call {s}\n", .{ function.name, function_call.function.name });
+            try resolveFunctionHead(function, function_script, script_table, a_string_table);
+
+            function_call.function = .{ .function = function };
+
+            // Resolve all the call parameter expressions to the types of the function parameters
+            for (function.parameters.parameters, function_call.parameters) |parameter, call_parameter| {
+                try resolveExpression(
+                    call_parameter,
+                    parameter.type,
+                    script,
+                    script_table,
+                    a_string_table,
+                    function_variable_stack,
+                );
+            }
+
+            expression.type = function.return_type;
+        },
         .block => |block| {
             expression.type = .{
                 .resolved = try resolveParsedType(
@@ -250,6 +477,27 @@ fn resolveExpression(
                     a_string_table,
                 ),
             };
+
+            function_variable_stack.?.current_level += 1;
+            defer {
+                var iter = function_variable_stack.?.stack.iterator();
+                while (iter.next()) |variable| {
+                    if (variable.value_ptr.level == function_variable_stack.?.current_level) {
+                        std.debug.assert(function_variable_stack.?.stack.orderedRemove(variable.key_ptr.*));
+
+                        iter.index -= 1;
+                        iter.len -= 1;
+                    }
+                }
+                function_variable_stack.?.current_level -= 1;
+            }
+
+            for (function_variable_stack.?.function.parameters.parameters) |parameter| {
+                try function_variable_stack.?.stack.put(parameter.name, .{
+                    .level = function_variable_stack.?.current_level,
+                    .type = parameter.type,
+                });
+            }
 
             //Resolve the contents
             for (block) |node| {
@@ -264,6 +512,7 @@ fn resolveExpression(
                                     script,
                                     script_table,
                                     a_string_table,
+                                    function_variable_stack,
                                 );
 
                                 //Then we can use the type of the value expression for the type of the variable declaration
@@ -290,19 +539,31 @@ fn resolveExpression(
                                     script,
                                     script_table,
                                     a_string_table,
+                                    function_variable_stack,
                                 );
                             }
                         }
+
+                        try function_variable_stack.?.stack.put(variable_declaration.name, .{
+                            .level = function_variable_stack.?.current_level,
+                            .type = variable_declaration.type,
+                        });
+                    },
+                    .expression => |node_expression| {
+                        try resolveExpression(
+                            node_expression,
+                            target_type,
+                            script,
+                            script_table,
+                            a_string_table,
+                            function_variable_stack,
+                        );
                     },
                     else => |node_type| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(node_type)}),
                 }
             }
         },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
-    }
-
-    if (target_type) |target_parsed_type| {
-        std.debug.assert(target_parsed_type.resolved.eql(expression.type.resolved));
     }
 }
 
@@ -395,6 +656,7 @@ fn resolveField(
                     script,
                     script_table,
                     a_string_table,
+                    null,
                 );
 
                 //Set the type of the field to the resolved default value type
