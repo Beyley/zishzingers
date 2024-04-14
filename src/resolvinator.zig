@@ -44,7 +44,7 @@ fn getScriptClassNode(tree: Parser.Tree) *Parser.Node.Class {
     @panic("wathtsh");
 }
 
-fn getImportPathFromImportTarget(allocator: std.mem.Allocator, target: []const u8) ![]const u8 {
+fn getImportPathFromImportTarget(allocator: std.mem.Allocator, target: []const u8) Error![]const u8 {
     var import_path = try allocator.alloc(u8, target.len + 3);
 
     @memcpy(import_path[0..target.len], target);
@@ -244,7 +244,7 @@ fn resolveFunctionBody(
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
-) !void {
+) Error!void {
     if (function.body) |body| {
         var variable_stack = FunctionVariableStack.init(script.ast.allocator);
         defer variable_stack.deinit();
@@ -277,7 +277,7 @@ fn resolveFunctionHead(
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
-) !void {
+) Error!void {
     if (function.return_type != .resolved)
         function.return_type = .{
             .resolved = try resolveParsedType(
@@ -307,7 +307,7 @@ fn resolveFunctionHead(
     std.debug.print("resolved function head {s}\n", .{function.name});
 }
 
-fn stringType(a_string_table: *AStringTable) !MMTypes.TypeReference {
+fn stringType(a_string_table: *AStringTable) Error!MMTypes.TypeReference {
     return .{
         .script = .{ .guid = 16491 },
         .type_name = @intCast((try a_string_table.getOrPut("String")).index),
@@ -338,7 +338,7 @@ fn resolveExpression(
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
     function_variable_stack: ?*FunctionVariableStackInfo,
-) !void {
+) Error!void {
     //At the end of this resolution, make sure the type got resolved to the target type
     defer if (target_type) |target_parsed_type|
         if (!target_parsed_type.resolved.eql(expression.type.resolved))
@@ -395,6 +395,55 @@ fn resolveExpression(
                     a_string_table,
                 ),
             };
+        },
+        .this => {
+            expression.type = .{ .resolved = try typeReferenceFromScript(
+                script,
+                0,
+                a_string_table,
+            ) };
+        },
+        .field_access => |field_access| {
+            //Resolve the source expression
+            try resolveExpression(
+                field_access.source,
+                null,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            const field = switch (field_access.source.type.resolved.machine_type) {
+                .object_ref, .safe_ptr => field_resolution: {
+                    const source_class_name = a_string_table.keys()[field_access.source.type.resolved.type_name];
+
+                    const source_script = script_table.get(source_class_name).?;
+
+                    const source_class = getScriptClassNode(source_script.ast);
+
+                    for (source_class.fields) |field| {
+                        //If the field name is wrong, continue
+                        if (!std.mem.eql(u8, field.name, field_access.field))
+                            continue;
+
+                        // Type resolve the field
+                        try resolveField(field, source_script, script_table, a_string_table);
+
+                        //Break out now that we have the field
+                        break :field_resolution field;
+                    }
+
+                    //TODO: this should be a proper compile error, not `unreachable`
+                    unreachable;
+                },
+                else => |machine_type| std.debug.panic(
+                    "you cannot do field access on a variable with machine type {s}. must be object_ref or safe_ptr",
+                    .{@tagName(machine_type)},
+                ),
+            };
+
+            expression.type = field.type;
         },
         .variable_access => |variable_access| {
             const variable = function_variable_stack.?.stack.get(variable_access) orelse @panic("TODO: proper error here");
@@ -572,7 +621,7 @@ fn resolveParsedType(
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
-) !MMTypes.TypeReference {
+) Error!MMTypes.TypeReference {
     if (std.meta.stringToEnum(MMTypes.FishType, parsed_type.name)) |fish_type| {
         return if (parsed_type.dimension_count > 0)
             MMTypes.TypeReference{
@@ -600,27 +649,11 @@ fn resolveParsedType(
             if (std.mem.eql(u8, parsed_type.name, imported_type.*)) {
                 const referenced_script = script_table.get(imported_type.*).?;
 
-                //Get the idx of the name of this script, or put into the string table
-                const name_idx = try a_string_table.getOrPut(imported_type.*);
-
-                return if (parsed_type.dimension_count > 0)
-                    MMTypes.TypeReference{
-                        .array_base_machine_type = if (referenced_script.is_thing) .safe_ptr else .object_ref,
-                        .dimension_count = parsed_type.dimension_count,
-                        .fish_type = .void,
-                        .machine_type = .object_ref,
-                        .type_name = @intCast(name_idx.index),
-                        .script = referenced_script.resource_identifier,
-                    }
-                else
-                    MMTypes.TypeReference{
-                        .array_base_machine_type = .void,
-                        .dimension_count = 0,
-                        .fish_type = .void,
-                        .machine_type = if (referenced_script.is_thing) .safe_ptr else .object_ref,
-                        .type_name = @intCast(name_idx.index),
-                        .script = referenced_script.resource_identifier,
-                    };
+                return typeReferenceFromScript(
+                    referenced_script,
+                    parsed_type.dimension_count,
+                    a_string_table,
+                );
             }
         }
 
@@ -628,13 +661,41 @@ fn resolveParsedType(
     }
 }
 
+fn typeReferenceFromScript(script: *ParsedScript, dimension_count: u8, a_string_table: *AStringTable) Error!MMTypes.TypeReference {
+    //Get the idx of the name of this script, or put into the string table
+    const name_idx = try a_string_table.getOrPut(script.class_name);
+
+    return if (dimension_count > 0)
+        MMTypes.TypeReference{
+            .array_base_machine_type = if (script.is_thing) .safe_ptr else .object_ref,
+            .dimension_count = dimension_count,
+            .fish_type = .void,
+            .machine_type = .object_ref,
+            .type_name = @intCast(name_idx.index),
+            .script = script.resource_identifier,
+        }
+    else
+        MMTypes.TypeReference{
+            .array_base_machine_type = .void,
+            .dimension_count = 0,
+            .fish_type = .void,
+            .machine_type = if (script.is_thing) .safe_ptr else .object_ref,
+            .type_name = @intCast(name_idx.index),
+            .script = script.resource_identifier,
+        };
+}
+
 fn resolveField(
     field: *Parser.Node.Field,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
-) !void {
+) Error!void {
     std.debug.print("type resolving field {s}\n", .{field.name});
+
+    //early return if its already resolved
+    if (field.type == .resolved)
+        return;
 
     switch (field.type) {
         .parsed => |parsed_type| {
