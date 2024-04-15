@@ -28,6 +28,8 @@ Compiles an A# file into an LBP script file.
 # TODO: usage instructions
 ```
 
+Sample scripts are provided in the `samples/` folder.
+
 #### Differences from Aidan's compiler
 
 - s32 literals cannot exceed the size of an s32, in Aidan's compiler, s32 literals may be too big for an s32, as long as they fit in a u32, in this case, it is bitcast back to an s32, this is weird, so im not doing this, use a hex literal.
