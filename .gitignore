@@ -3,6 +3,4 @@ zig-out/
 
 alear/
 deploy_std/
-basic.as
-fwd.as
 *.disasm
