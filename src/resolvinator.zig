@@ -646,6 +646,22 @@ fn resolveExpression(
                             function_variable_stack,
                         );
                     },
+                    .return_statement => |return_statement| {
+                        if (function_variable_stack.?.function.return_type.resolved.machine_type != .void and return_statement.expression == null)
+                            std.debug.panic("you cant return nothing when the function wants {}", .{function_variable_stack.?.function.return_type.resolved});
+
+                        //If this return statement has an expression, type resolve that to the return type of the function
+                        if (return_statement.expression) |return_value| {
+                            try resolveExpression(
+                                return_value,
+                                function_variable_stack.?.function.return_type,
+                                script,
+                                script_table,
+                                a_string_table,
+                                function_variable_stack,
+                            );
+                        }
+                    },
                     else => |node_type| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(node_type)}),
                 }
             }
@@ -653,11 +669,45 @@ fn resolveExpression(
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }
 
-    //TODO: implicit type coercions
+    if (target_type) |target_parsed_type| {
+        //If we have a target type, try to coerce to that type
+        if (try coerceExpression(
+            script.ast.allocator,
+            target_parsed_type.resolved,
+            expression,
+        )) |coersion_expression|
+            expression.* = coersion_expression;
 
-    if (target_type) |target_parsed_type|
+        //If we couldnt coerce, then we've hit an unresolvable situation
         if (!target_parsed_type.resolved.eql(expression.type.resolved))
             std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression.type.resolved });
+    }
+}
+
+///Attempts to coerce the expression to the target type, modifying the expression in the meantime
+fn coerceExpression(
+    allocator: std.mem.Allocator,
+    target_type: MMTypes.TypeReference,
+    expression: *Parser.Node.Expression,
+) !?Parser.Node.Expression {
+    const expression_type = expression.type.resolved;
+
+    //If the types already match, then do nothing
+    if (expression_type.eql(target_type))
+        return null;
+
+    if (target_type.machine_type == .s32 and expression_type.machine_type == .bool) {
+        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+        const cast_target_expression = try allocator.create(Parser.Node.Expression);
+        cast_target_expression.* = expression.*;
+
+        return .{
+            .contents = .{ .bool_to_s32 = cast_target_expression },
+            .type = .{ .resolved = target_type },
+        };
+    }
+
+    return null;
 }
 
 fn findMemberFunction(

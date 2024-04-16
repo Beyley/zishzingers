@@ -179,6 +179,8 @@ pub const Node = union(NodeType) {
             s64_literal: struct { base: LiteralBase, value: i64 },
             f32_literal: struct { base: LiteralBase, value: f32 },
             f64_literal: struct { base: LiteralBase, value: f64 },
+            /// A boolean to s32 cast
+            bool_to_s32: *Node.Expression,
             guid_literal: u32,
             bool_literal: bool,
             ascii_string_literal: []const u8,
@@ -220,6 +222,7 @@ pub const Node = union(NodeType) {
                     .s64_literal => |literal| writer.print("expression_contents{{ .s64_literal = {} }}", .{literal}),
                     .f32_literal => |literal| writer.print("expression_contents{{ .f32_literal = {} }}", .{literal}),
                     .f64_literal => |literal| writer.print("expression_contents{{ .f64_literal = {} }}", .{literal}),
+                    .bool_to_s32 => |literal| writer.print("expression_contents{{ .bool_to_s32 = {} }}", .{literal}),
                     .guid_literal => |literal| writer.print("expression_contents{{ .guid_literal = {d} }}", .{literal}),
                     .bool_literal => |literal| writer.print("expression_contents{{ .bool_literal = {} }}", .{literal}),
                     .ascii_string_literal => |literal| writer.print("expression_contents{{ .ascii_string_literal = {s} }}", .{literal}),
