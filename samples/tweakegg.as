@@ -13,7 +13,7 @@ class TweakEgg extends TriggerCollectItem
 {
     private divergent ContentsIcon: Resource;
     private divergent CacheID: s32;
-    private divergent ShareableIndex = 1;
+    private divergent ShareableIndex: s32 = 1;
 
     pub fn StartTweakingObject(player: s32) -> bool
     {
@@ -62,8 +62,8 @@ class TweakEgg extends TriggerCollectItem
 
     pub fn UpdateUI(gooey: Gooey, poppet: Poppet)
     {
-        if (!this.StartTweakFrame(gooey, 1885336970)) return;
-        Poppet.DoSectionBreak(gooey, Translate(3599114461), true);
+        if (!this.StartTweakFrame(gooey, 0x705FF58A)) return;
+        Poppet.DoSectionBreak(gooey, Translate(0xD68620DD), true);
 
         if (gooey.StartFrame())
         {
@@ -84,7 +84,7 @@ class TweakEgg extends TriggerCollectItem
             {
                 poppet.SetToolTip(
                     gooey,
-                    Translate(482298296),
+                    Translate(0x1CBF49B8),
                     gooey.GetLastItemScreenRect(),
                     10000
                 );
@@ -93,7 +93,7 @@ class TweakEgg extends TriggerCollectItem
             gooey.EndFrame();
         }
 
-        Poppet.DoSectionBreak(gooey, Translate(286149884), true);
+        Poppet.DoSectionBreak(gooey, Translate(0x110E4CFC), true);
 
         this.ShareableIndex = this.DoCarousel(
             200000,

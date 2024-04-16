@@ -15,7 +15,6 @@ pub const NodeType = enum {
     expression,
     function,
     constructor,
-    function_parameters,
     variable_declaration,
     return_statement,
     if_statement,
@@ -74,11 +73,38 @@ pub const Type = union(enum) {
             .name = "bool",
             .dimension_count = 0,
         };
+
+        pub fn eql(self: ParsedType, other: ParsedType) bool {
+            return self.dimension_count == other.dimension_count and std.mem.eql(u8, self.name, other.name);
+        }
     };
 
+    pub const Resolved = union(enum) {
+        /// This is a type which exists at runtime
+        runtime_type: MMTypes.TypeReference,
+        /// This is a type which only exists at compile time, and represents a type, eg. the expression is pointing to a Type
+        type: []const u8,
+        integer_literal: void,
+        float_literal: void,
+
+        pub fn eql(self: Resolved, other: Resolved) bool {
+            if (std.meta.activeTag(self) != std.meta.activeTag(other))
+                return false;
+
+            return switch (self) {
+                .runtime_type => |runtime_type| runtime_type.eql(other.runtime_type),
+                .type => |comptime_type| std.mem.eql(u8, comptime_type, other.type),
+                .integer_literal, .float_literal => true,
+            };
+        }
+    };
+
+    /// An unresolved type
     parsed: ParsedType,
+    /// An unknown type, waiting to be resolved
     unknown: void,
-    resolved: MMTypes.TypeReference,
+    /// A resolved type
+    resolved: Resolved,
 };
 
 pub const Node = union(NodeType) {
@@ -125,7 +151,7 @@ pub const Node = union(NodeType) {
 
     pub const Constructor = struct {
         body: ?*const Node.Expression,
-        parameters: *const FunctionParameters,
+        parameters: []Function.Parameter,
         modifiers: MMTypes.Modifiers,
     };
 
@@ -156,13 +182,44 @@ pub const Node = union(NodeType) {
 
     pub const Function = struct {
         return_type: Type,
-        parameters: *FunctionParameters,
+        parameters: []Parameter,
         body: ?*Expression,
         name: []const u8,
         modifiers: MMTypes.Modifiers,
 
+        pub const Parameter = struct {
+            name: []const u8,
+            type: Type,
+
+            pub fn eql(self: Parameter, other: Parameter) bool {
+                if (!std.mem.eql(u8, self.name, other.name))
+                    return false;
+
+                if (std.meta.activeTag(self.type) != std.meta.activeTag(other.type))
+                    return false;
+
+                return switch (self.type) {
+                    .parsed => self.type.parsed.eql(other.type.parsed),
+                    .resolved => self.type.resolved.eql(other.type.resolved),
+                    .unknown => return true,
+                };
+            }
+
+            pub fn sliceEql(self: []const *const Parameter, other: []const *const Parameter) bool {
+                if (self.len != other.len)
+                    return false;
+
+                for (self, other) |param, other_param| {
+                    if (!param.eql(other_param))
+                        return false;
+                }
+
+                return true;
+            }
+        };
+
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            return writer.print("function{{ return_type = {}, modifiers = {}, parameters = {}, name = {s} }}", .{ value.return_type, value.modifiers, value.parameters, value.name });
+            return writer.print("function{{ return_type = {}, modifiers = {}, parameters = {any}, name = {s} }}", .{ value.return_type, value.modifiers, value.parameters, value.name });
         }
     };
 
@@ -175,10 +232,14 @@ pub const Node = union(NodeType) {
                 hex,
             };
 
-            s32_literal: struct { base: LiteralBase, value: i32 },
-            s64_literal: struct { base: LiteralBase, value: i64 },
-            f32_literal: struct { base: LiteralBase, value: f32 },
-            f64_literal: struct { base: LiteralBase, value: f64 },
+            integer_literal: struct { base: LiteralBase, value: i64 },
+            integer_literal_to_s32: *Node.Expression,
+            integer_literal_to_f32: *Node.Expression,
+            integer_literal_to_s64: *Node.Expression,
+            integer_literal_to_f64: *Node.Expression,
+            float_literal: struct { base: LiteralBase, value: f64 },
+            float_literal_to_f32: *Node.Expression,
+            float_literal_to_f64: *Node.Expression,
             /// A boolean to s32 cast
             bool_to_s32: *Node.Expression,
             guid_literal: u32,
@@ -195,9 +256,14 @@ pub const Node = union(NodeType) {
                 parameters: []const *Expression,
             },
             class_name: []const u8,
+            /// An access on a variable of some kind (eg `var.Field`), or a class type (eg `Thing.Func()`)
+            variable_or_class_access: []const u8,
+            /// An access of a class
+            class_access: []const u8,
             variable_access: []const u8,
             this: void,
-            negate: *Expression,
+            numeric_negation: *Expression,
+            logical_negation: *Expression,
             function_call: struct {
                 function: union(enum) {
                     name: []const u8,
@@ -218,10 +284,14 @@ pub const Node = union(NodeType) {
 
             pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
                 return switch (value) {
-                    .s32_literal => |literal| writer.print("expression_contents{{ .s32_literal = {} }}", .{literal}),
-                    .s64_literal => |literal| writer.print("expression_contents{{ .s64_literal = {} }}", .{literal}),
-                    .f32_literal => |literal| writer.print("expression_contents{{ .f32_literal = {} }}", .{literal}),
-                    .f64_literal => |literal| writer.print("expression_contents{{ .f64_literal = {} }}", .{literal}),
+                    .integer_literal => |literal| writer.print("expression_contents{{ .integer_literal = {} }}", .{literal}),
+                    .integer_literal_to_s32 => |literal| writer.print("expression_contents {{ .integer_literal_to_s32 = {d} }}", .{literal}),
+                    .integer_literal_to_f32 => |literal| writer.print("expression_contents {{ .integer_literal_to_f32 = {d} }}", .{literal}),
+                    .integer_literal_to_s64 => |literal| writer.print("expression_contents {{ .integer_literal_to_s64 = {d} }}", .{literal}),
+                    .integer_literal_to_f64 => |literal| writer.print("expression_contents {{ .integer_literal_to_f64 = {d} }}", .{literal}),
+                    .float_literal => |literal| writer.print("expression_contents{{ .float_literal = {} }}", .{literal}),
+                    .float_literal_to_f32 => |literal| writer.print("expression_contents {{ .float_literal_to_f32 = {d} }}", .{literal}),
+                    .float_literal_to_f64 => |literal| writer.print("expression_contents {{ .float_literal_to_f64 = {d} }}", .{literal}),
                     .bool_to_s32 => |literal| writer.print("expression_contents{{ .bool_to_s32 = {} }}", .{literal}),
                     .guid_literal => |literal| writer.print("expression_contents{{ .guid_literal = {d} }}", .{literal}),
                     .bool_literal => |literal| writer.print("expression_contents{{ .bool_literal = {} }}", .{literal}),
@@ -229,9 +299,12 @@ pub const Node = union(NodeType) {
                     .wide_string_literal => |literal| writer.print("expression_contents{{ .wide_string_literal = {s} }}", .{literal}),
                     .class_name => |literal| writer.print("expression_contents{{ .class_name = {s} }}", .{literal}),
                     .field_access => |literal| writer.print("expression_contents{{ .field_access = .{{ .source = {}, .field = {s} }} }}", .{ literal.source, literal.field }),
-                    .variable_access => |literal| writer.print("expression_contents{{ .variable = {s} }}", .{literal}),
+                    .variable_or_class_access => |literal| writer.print("expression_contents{{ .variable_or_class_access = {s} }}", .{literal}),
+                    .variable_access => |literal| writer.print("expression_contents{{ .variable_access = {s} }}", .{literal}),
+                    .class_access => |literal| writer.print("expression_contents{{ .class_access = {s} }}", .{literal}),
                     .this => writer.print("expression_contents{{ .this }}", .{}),
-                    .negate => |literal| writer.print("expression_contents{{ .negate = {} }}", .{literal}),
+                    .numeric_negation => |literal| writer.print("expression_contents{{ .numeric_negation = {} }}", .{literal}),
+                    .logical_negation => |literal| writer.print("expression_contents{{ .logical_negation = {} }}", .{literal}),
                     .function_call => |literal| writer.print("expression_contents{{ .function_call = .{{ .function = {}, .parameters = {any} }} }}", .{ literal.function, literal.parameters }),
                     .member_function_call => |literal| writer.print("expression_contents{{ .member_function_call = .{{ .source = {}, .name = {s}, .parameters = {any} }} }}", .{ literal.source, literal.name, literal.parameters }),
                     .assignment => |literal| writer.print("expression_contents{{ .assignment = .{{ .destination = {}, .value = .{} }} }}", .{ literal.destination, literal.value }),
@@ -246,25 +319,6 @@ pub const Node = union(NodeType) {
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return writer.print("expression{{.contents = {}, .type = {}}}", .{ value.contents, value.type });
-        }
-    };
-
-    pub const FunctionParameters = struct {
-        pub const Parameter = struct {
-            name: []const u8,
-            type: Type,
-        };
-
-        parameters: []Parameter,
-
-        pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            try writer.writeAll("[ ");
-
-            for (value.parameters) |parameter| {
-                try writer.print("{s}: {}", .{ parameter.name, parameter.type });
-            }
-
-            try writer.writeAll(" ]");
         }
     };
 
@@ -301,7 +355,6 @@ pub const Node = union(NodeType) {
     expression: *Expression,
     function: *Function,
     constructor: *Constructor,
-    function_parameters: *FunctionParameters,
     variable_declaration: *VariableDeclaration,
     return_statement: *ReturnStatement,
     if_statement: *IfStatement,
@@ -694,9 +747,23 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
 
 fn isInt(comptime T: type, str: []const u8) !?T {
     return std.fmt.parseInt(T, str, 0) catch |err| {
-        if (err == error.InvalidCharacter) {
+        if (err == std.fmt.ParseIntError.InvalidCharacter)
             return null;
-        }
+
+        return err;
+    };
+}
+
+fn isFloatLiteral(str: []const u8) !?f64 {
+    //Strip the `f` suffix from the literal, if its there
+    const literal = if (str[str.len - 1] == 'f')
+        str[0 .. str.len - 1]
+    else
+        str;
+
+    return std.fmt.parseFloat(f64, literal) catch |err| {
+        if (err == std.fmt.ParseFloatError.InvalidCharacter)
+            return null;
 
         return err;
     };
@@ -709,9 +776,13 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
     const first = iter.next() orelse @panic("eof");
 
     node.* = .{
-        .contents = if (first[0] == '!') blk: {
-            break :blk .{ .negate = try consumeExpression(allocator, iter) };
-        } else if (try isInt(i65, first)) |s65| blk: {
+        .contents = if (first[0] == '!')
+            //We are parsing a logical negation expression
+            .{ .logical_negation = try consumeExpression(allocator, iter) }
+        else if (first[0] == '-')
+            // We are parsing a numeric negation expression
+            .{ .numeric_negation = try consumeExpression(allocator, iter) }
+        else if (try isInt(i65, first)) |s65| blk: {
             //TODO: this needs to handle negative numbers
             const base: Node.Expression.ExpressionContents.LiteralBase = if (first.len >= 2) switch (hashKeyword(first[0..2])) {
                 hashKeyword("0x") => .hex,
@@ -723,30 +794,15 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
             if (base == .decimal) {
                 const s64: i64 = @intCast(s65);
 
-                // If its within the range of an i32, then make this be a s32 literal instead of an s64 literal,
-                // since s32 will coerce to s64 in the type resolution stage
-                if (s65 >= std.math.minInt(i32) and s65 <= std.math.maxInt(i32)) {
-                    break :blk .{ .s32_literal = .{ .base = base, .value = @intCast(s64) } };
-                } else {
-                    break :blk .{ .s64_literal = .{ .base = base, .value = s64 } };
-                }
+                break :blk .{ .integer_literal = .{ .base = base, .value = s64 } };
             } else {
                 const unsigned: u64 = @intCast(s65);
 
-                // If its within the range of an i32, then make this be a s32 literal instead of an s64 literal,
-                // since s32 will coerce to s64 in the type resolution stage
-                if (unsigned >= std.math.minInt(u32) and unsigned <= std.math.maxInt(u32)) {
-                    break :blk .{ .s32_literal = .{
-                        .base = base,
-                        .value = @bitCast(@as(u32, @truncate(unsigned))),
-                    } };
-                } else {
-                    break :blk .{ .s64_literal = .{
-                        .base = base,
-                        .value = @bitCast(unsigned),
-                    } };
-                }
+                break :blk .{ .integer_literal = .{ .base = base, .value = @bitCast(unsigned) } };
             }
+        } else if (try isFloatLiteral(first)) |float| blk: {
+            //TODO: non-base-10 float literals?
+            break :blk .{ .float_literal = .{ .base = .decimal, .value = float } };
         } else blk: {
             const next = iter.peek() orelse @panic("EOF");
 
@@ -761,7 +817,6 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
                 };
             }
             // We are parsing a field access/member call
-
             //TODO: this is not the correct place for this logic, this should be down below,
             //      currently this is unable to parse expressions such as `Function().field`
             else if (next[0] == '.') {
@@ -773,7 +828,7 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
                     .contents = if (std.mem.eql(u8, first, "this"))
                         .this
                     else
-                        .{ .variable_access = first },
+                        .{ .variable_or_class_access = first },
                     .type = .unknown,
                 };
 
@@ -824,7 +879,7 @@ fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme))
                     break :blk .{ .ascii_string_literal = unwrapStringLiteral(first[1..]) };
                 }
 
-                break :blk .{ .variable_access = first };
+                break :blk .{ .variable_or_class_access = first };
             }
         },
         .type = .unknown,
@@ -894,6 +949,7 @@ fn consumeFunctionCallParameters(allocator: std.mem.Allocator, iter: *SliceItera
 
     consumeArbitraryLexeme(iter, "(");
 
+    var i: usize = 0;
     while (true) {
         const next = iter.peek() orelse @panic("EOF");
 
@@ -902,10 +958,12 @@ fn consumeFunctionCallParameters(allocator: std.mem.Allocator, iter: *SliceItera
             break;
         }
 
+        if (i > 0)
+            consumeArbitraryLexeme(iter, ",");
+
         try parameters.append(try consumeExpression(allocator, iter));
 
-        //Consume a comma, if available
-        _ = consumeArbitraryLexemeIfAvailable(iter, ",");
+        i += 1;
     }
 
     return parameters.toOwnedSlice();
@@ -931,14 +989,10 @@ fn consumeTypeName(iter: *SliceIterator(Lexeme)) Type {
     return .{ .parsed = .{ .name = name, .dimension_count = dimension_count } };
 }
 
-fn consumeFunctionParameters(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !*Node.FunctionParameters {
-    const node = try allocator.create(Node.FunctionParameters);
-    errdefer allocator.destroy(node);
-
+fn consumeFunctionParameters(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) ![]Node.Function.Parameter {
     consumeArbitraryLexeme(iter, "(");
 
-    var parameters = std.ArrayListUnmanaged(Node.FunctionParameters.Parameter){};
-    defer parameters.deinit(allocator);
+    var parameters = std.ArrayListUnmanaged(Node.Function.Parameter){};
 
     while (true) {
         const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing function definition parameters", .{});
@@ -955,11 +1009,7 @@ fn consumeFunctionParameters(allocator: std.mem.Allocator, iter: *SliceIterator(
         _ = consumeArbitraryLexemeIfAvailable(iter, ",");
     }
 
-    node.* = .{
-        .parameters = try parameters.toOwnedSlice(allocator),
-    };
-
-    return node;
+    return parameters.items;
 }
 
 fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modifiers: MMTypes.Modifiers) !*Node.Function {
@@ -1278,6 +1328,7 @@ pub const Lexemeizer = struct {
     pub fn next(self: *Lexemeizer) !?Lexeme {
         const iter = self.source[self.pos..];
 
+        var is_number = true;
         var lexeme_start: ?usize = null;
         var i: usize = 0;
         while (i < iter.len) {
@@ -1308,6 +1359,9 @@ pub const Lexemeizer = struct {
                 // Now that we've skipped all the whitespace, mark the start of the new lexeme
                 lexeme_start = i;
             }
+
+            if (!std.ascii.isDigit(char) and char != '.')
+                is_number = false;
 
             const is_long_string = just_started_lexeme and char == 'L' and iter[i + 1] == '\'';
 
@@ -1343,6 +1397,14 @@ pub const Lexemeizer = struct {
                 // If we just started the lexeme (aka this *is* the single char lexeme), mark to go to the next char
                 if (just_started_lexeme)
                     i += 1;
+
+                // If this isnt the start of a lexeme, and its been a number so far,
+                // and the found single char lexeme is a `.`, then we dont want to exit out,
+                // and should continue parsing as float literal
+                if (!just_started_lexeme and is_number and char == '.') {
+                    i += 1;
+                    continue;
+                }
 
                 break;
             }
