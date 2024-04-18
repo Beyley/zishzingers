@@ -1,14 +1,16 @@
 const std = @import("std");
 const clap = @import("clap");
+const builtin = @import("builtin");
 
 const Stream = @import("stream.zig");
 const MMTypes = @import("MMTypes.zig");
-const Debug = @import("debug.zig");
+const Disasm = @import("disasm.zig");
 const Resource = @import("resource.zig");
 const ArrayListStreamSource = @import("ArrayListStreamSource.zig");
 const Parser = @import("parser.zig");
 const Stubinator = @import("stubinator.zig");
 const Resolvinator = @import("resolvinator.zig");
+const Debug = @import("debug.zig");
 
 const no_command_error =
     \\No command specified.
@@ -125,7 +127,7 @@ pub fn main() !void {
                     const script = try resource_stream.readScript(allocator);
                     defer script.deinit(allocator);
 
-                    try Debug.disassembleScript(stdout, script);
+                    try Disasm.disassembleScript(stdout, script);
                 }
             } else {
                 //Iterate over all paths and disassemble them
@@ -142,7 +144,7 @@ pub fn main() !void {
                     const script = try resource.stream.readScript(allocator);
                     defer script.deinit(allocator);
 
-                    try Debug.disassembleScript(stdout, script);
+                    try Disasm.disassembleScript(stdout, script);
                 }
             }
         },
@@ -151,7 +153,7 @@ pub fn main() !void {
                 \\-h, --help                       Display this help and exit.
                 \\-o, --out-file <str>             The output path for the compilation, defaults to "inputname.ff"
                 \\-l, --library <str>...           A library to import, with the syntax `name:path`
-                \\-i, --identifier <u32>           The GUID of the script being compiled, 
+                \\-i, --identifier <u32>           The GUID of the script being compiled,
                 \\                                 this overrides the GUID specified in the file.
                 \\<str>                            The source file
                 \\
@@ -179,6 +181,7 @@ pub fn main() !void {
                 .{ .guid = identifier }
             else
                 null;
+            _ = script_identifier; // autofix
 
             var defined_libraries = Resolvinator.Libraries.init(allocator);
             defer {
@@ -224,15 +227,18 @@ pub fn main() !void {
 
                 const ast = try Parser.parse(ast_allocator, lexemes);
 
+                try Debug.dumpAst(stdout, ast);
+
                 var a_string_table = Resolvinator.AStringTable.init(allocator);
                 defer a_string_table.deinit();
 
-                try Resolvinator.resolve(
-                    ast,
-                    defined_libraries,
-                    &a_string_table,
-                    script_identifier,
-                );
+                // try Resolvinator.resolve(
+                //     ast,
+                //     defined_libraries,
+                //     &a_string_table,
+                //     script_identifier,
+                // );
+                // try Debug.dumpAst(stdout, ast);
 
                 const string_table_keys = a_string_table.keys();
                 for (string_table_keys, 0..) |str, i| {

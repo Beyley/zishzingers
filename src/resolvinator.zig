@@ -505,7 +505,7 @@ fn resolveExpression(
         .bool_literal => {
             expression.type = .{
                 .resolved = try resolveParsedType(
-                    Parser.Type.ParsedType.Bool,
+                    Parser.Type.Parsed.Bool,
                     script,
                     script_table,
                     a_string_table,
@@ -599,7 +599,7 @@ fn resolveExpression(
         .block => |block| {
             expression.type = .{
                 .resolved = try resolveParsedType(
-                    Parser.Type.ParsedType.Void,
+                    Parser.Type.Parsed.Void,
                     script,
                     script_table,
                     a_string_table,
@@ -717,6 +717,8 @@ fn resolveExpression(
                         }
                     },
                     .if_statement => |if_statement| {
+                        std.debug.print("condition {}\n", .{if_statement.condition});
+
                         //Resolve the condition
                         try resolveExpression(
                             if_statement.condition,
@@ -751,6 +753,84 @@ fn resolveExpression(
                 }
             }
         },
+        .vec2_construction => |vec2_construction| {
+            //Resolve the expressions into f32s
+            for (vec2_construction) |param| {
+                try resolveExpression(
+                    param,
+                    f32Type(),
+                    script,
+                    script_table,
+                    a_string_table,
+                    function_variable_stack,
+                );
+            }
+
+            expression.type = vec2Type();
+        },
+        .bitwise_and => |bitwise_and| {
+            //Resolve the lefthand expression to whatever type it naturally wants to be
+            try resolveExpression(
+                bitwise_and.lefthand,
+                null,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            switch (bitwise_and.lefthand.type.resolved.runtime_type.machine_type) {
+                .s32, .bool, .s64 => {},
+                else => |tag| std.debug.panic(
+                    "lefthand side of bitwise type must be s32, bool, or s64, currently is {s}",
+                    .{@tagName(tag)},
+                ),
+            }
+
+            //Resolve the righthand expression to the same type as the lefthand expression
+            try resolveExpression(
+                bitwise_and.righthand,
+                bitwise_and.lefthand.type,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            expression.type = .{ .resolved = bitwise_and.lefthand.type.resolved };
+        },
+        .not_equal => |not_equal| {
+            //Resolve the lefthand expression to whatever type it naturally wants to be
+            try resolveExpression(
+                not_equal.lefthand,
+                null,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            switch (not_equal.lefthand.type.resolved.runtime_type.machine_type) {
+                //NEb   NEc    NEi   NEf   NEs64 NErp      NEo
+                .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref => {},
+                else => |tag| std.debug.panic(
+                    "lefthand side of not equal must be .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref, currently is {s}",
+                    .{@tagName(tag)},
+                ),
+            }
+
+            //Resolve the righthand expression to the same type as the lefthand expression
+            try resolveExpression(
+                not_equal.righthand,
+                not_equal.lefthand.type,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            expression.type = boolType();
+        },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }
 
@@ -774,6 +854,8 @@ fn resolveExpression(
         if (!target_parsed_type.resolved.eql(expression.type.resolved))
             std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression.type.resolved });
     }
+
+    std.debug.assert(expression.type == .resolved);
 }
 
 fn isNumberLike(resolved_type: Parser.Type.Resolved) bool {
@@ -792,7 +874,25 @@ fn typeFromName(name: []const u8) Parser.Type {
 }
 
 fn boolType() Parser.Type {
-    return comptime .{ .resolved = resolveParsedType(Parser.Type.ParsedType.Bool, null, null, null) catch unreachable };
+    return comptime .{ .resolved = resolveParsedType(Parser.Type.Parsed.Bool, null, null, null) catch unreachable };
+}
+
+fn vec2Type() Parser.Type {
+    return .{ .resolved = resolveParsedType(
+        Parser.Type.Parsed.Vec2,
+        null,
+        null,
+        null,
+    ) catch unreachable };
+}
+
+fn f32Type() Parser.Type {
+    return .{ .resolved = resolveParsedType(
+        Parser.Type.Parsed.F32,
+        null,
+        null,
+        null,
+    ) catch unreachable };
 }
 
 ///Attempts to coerce the expression to the target type, modifying the expression in the meantime
@@ -879,6 +979,7 @@ fn coerceExpression(
         };
     }
 
+    // bool -> s32 conversion
     if (target_type.runtime_type.machine_type == .s32 and expression_type.runtime_type.machine_type == .bool) {
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
         const cast_target_expression = try allocator.create(Parser.Node.Expression);
@@ -1084,7 +1185,7 @@ fn scriptDerivesOtherScript(script: *ParsedScript, other: *ParsedScript, script_
 }
 
 fn resolveParsedType(
-    parsed_type: Parser.Type.ParsedType,
+    parsed_type: Parser.Type.Parsed,
     script: ?*ParsedScript,
     script_table: ?*ParsedScriptTable,
     a_string_table: ?*AStringTable,

@@ -1,131 +1,285 @@
 const std = @import("std");
 
-const MMTypes = @import("MMTypes.zig");
+const Parser = @import("parser.zig");
+const Node = Parser.Node;
 
-pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
-    try std.fmt.format(writer, " --- Class Name: {s} ---\n", .{script.class_name});
-    try std.fmt.format(writer, " --- Up to date script: {?} ---\n", .{script.up_to_date_script});
-    try std.fmt.format(writer, " --- Super class script: {?} ---\n", .{script.super_class_script});
-    try std.fmt.format(writer, " --- Modifiers: {?d} ---\n", .{script.modifiers});
-    try std.fmt.format(writer, "\n", .{});
+const Error = std.fs.File.WriteError;
 
-    try std.fmt.format(writer, " --- Type References ---\n", .{});
-    for (script.type_references) |*type_reference| {
-        try std.fmt.format(writer, " - Type {*} \n", .{type_reference});
-        if (type_reference.type_name != 0xFFFFFFFF) {
-            try std.fmt.format(writer, "   - Type Name: {s}\n", .{script.a_string_table.strings[type_reference.type_name]});
+pub fn dumpAst(writer: anytype, ast: Parser.Tree) Error!void {
+    var indent: usize = 0;
+    for (ast.root_elements.items) |root_node| {
+        switch (root_node) {
+            .using => |using| try printUsing(writer, &indent, using),
+            .import => |import| try printImport(writer, &indent, import),
+            .from_import => |from_import| try printFromImport(writer, &indent, from_import),
+            .class => |class| try printClass(writer, &indent, class),
+            else => |tag| std.debug.panic("todo: {s}", .{@tagName(tag)}),
         }
-        try std.fmt.format(writer, "   - Machine Type: {s}\n", .{@tagName(type_reference.machine_type)});
-        try std.fmt.format(writer, "   - Fish Type: {s}\n", .{@tagName(type_reference.fish_type)});
-        try std.fmt.format(writer, "   - Dimension Count: {d}\n", .{type_reference.dimension_count});
-        try std.fmt.format(writer, "   - Array Base Machine Type: {s}\n", .{@tagName(type_reference.array_base_machine_type)});
-        try std.fmt.format(writer, "   - Script: {?}\n", .{type_reference.script});
     }
-    try std.fmt.format(writer, "\n", .{});
+}
 
-    try std.fmt.format(writer, " --- Field References ---\n", .{});
-    for (script.field_references) |*field_reference| {
-        try std.fmt.format(writer, " - Field {*} \n", .{field_reference});
-        if (field_reference.name != 0xFFFFFFFF) {
-            try std.fmt.format(writer, "   - Name: {s}\n", .{script.a_string_table.strings[field_reference.name]});
-        }
-        try std.fmt.format(writer, "   - Type: {*}\n", .{&script.type_references[field_reference.type_reference]});
+fn printImport(writer: anytype, indent: *usize, import: *Node.Import) Error!void {
+    try printIndent(writer, indent);
+
+    try writer.print("Import: {s}\n", .{import.target});
+}
+
+fn printFromImport(writer: anytype, indent: *usize, from_import: *Node.FromImport) Error!void {
+    try printIndent(writer, indent);
+
+    try writer.print("From Import: {s}, Wanted {}\n", .{ from_import.target, from_import.wanted });
+}
+
+fn printUsing(writer: anytype, indent: *usize, using: *Node.Using) Error!void {
+    try printIndent(writer, indent);
+
+    try writer.print("Using: {s}, Target {s}\n", .{ @tagName(using.type), using.target });
+}
+
+fn printClass(writer: anytype, indent: *usize, class: *Node.Class) Error!void {
+    try printIndent(writer, indent);
+
+    try writer.print("Class: {s}, Base Class: {?s}\n", .{ class.name, class.base_class });
+
+    indent.* += 1;
+    defer indent.* -= 1;
+
+    if (class.identifier) |identifier| {
+        try printIndent(writer, indent);
+        try writer.print("Identifier:\n", .{});
+
+        indent.* += 1;
+        defer indent.* -= 1;
+
+        try printIndent(writer, indent);
+        try printExpression(writer, indent, identifier);
     }
-    try std.fmt.format(writer, "\n", .{});
 
-    try std.fmt.format(writer, " --- Functions ---\n", .{});
-    for (script.functions) |*function| {
-        try std.fmt.format(writer, " - Function {*} \n", .{function});
-        try std.fmt.format(writer, "   - Modifiers: {}\n", .{function.modifiers});
-        try std.fmt.format(writer, "   - Stack size: {d}\n", .{function.stack_size});
-        if (function.name != 0xFFFFFFFF) {
-            try std.fmt.format(writer, "   - Name: {s}\n", .{script.a_string_table.strings[function.name]});
+    for (class.fields) |field| {
+        try printIndent(writer, indent);
+        try writer.print(
+            "Field: {s}, Modifiers: {}, Type: ",
+            .{ field.name, field.modifiers },
+        );
+        try printType(writer, indent, field.type);
+        try writer.writeByte('\n');
+
+        indent.* += 1;
+        defer indent.* -= 1;
+
+        if (field.default_value) |default_value| {
+            try printIndent(writer, indent);
+            try writer.writeAll("Default Value:\n");
+
+            indent.* += 1;
+            defer indent.* -= 1;
+
+            try printIndent(writer, indent);
+            try printExpression(writer, indent, default_value);
         }
-        try std.fmt.format(writer, "   - Type: {*}\n", .{&script.type_references[function.type_reference]});
+    }
 
-        if (function.arguments.len() > 0) {
-            try std.fmt.format(writer, "   - Arguments\n", .{});
-            for (function.arguments.slice(script.arguments)) |argument| {
-                try std.fmt.format(writer, "      - Offset: {d}\n", .{argument.offset});
-                try std.fmt.format(writer, "      - Type: {*}\n", .{&script.type_references[argument.type_reference]});
+    for (class.properties) |property| {
+        try printIndent(writer, indent);
+        try writer.print(
+            "Property: {s}, Modifiers: {}, Type: ",
+            .{ property.name, property.modifiers },
+        );
+        try printType(writer, indent, property.type);
+        try writer.writeByte('\n');
+
+        try printIndent(writer, indent);
+        switch (property.get_body) {
+            .missing, .forward_declaration => {},
+            .expression => |expression| {
+                try writer.writeAll("Get body:\n");
+
+                indent.* += 1;
+                defer indent.* -= 1;
+
+                try printIndent(writer, indent);
+
+                try printExpression(writer, indent, expression);
+            },
+        }
+    }
+
+    for (class.functions) |function| {
+        try printIndent(writer, indent);
+        try writer.print(
+            "Function: {s}, Modifiers {}, Type: ",
+            .{ function.name, function.modifiers },
+        );
+        try printType(writer, indent, function.return_type);
+        try writer.writeAll(", Parameters: [ ");
+        for (function.parameters) |parameter| {
+            try writer.print("{{ Name: {s}, Type: ", .{parameter.name});
+            try printType(writer, indent, parameter.type);
+            try writer.writeAll("}, ");
+        }
+        try writer.writeAll("]\n");
+
+        if (function.body) |body| {
+            indent.* += 1;
+            defer indent.* -= 1;
+
+            try printIndent(writer, indent);
+            try printExpression(writer, indent, body);
+        }
+    }
+}
+
+fn printType(writer: anytype, indent: *usize, tree_type: Parser.Type) Error!void {
+    _ = indent; // autofix
+
+    switch (tree_type) {
+        .parsed => |parsed| {
+            if (parsed.dimension_count > 0) {
+                try writer.print(
+                    "{s} ({d} dimensions)",
+                    .{ parsed.name, parsed.dimension_count },
+                );
+            } else {
+                try writer.print("{s}", .{parsed.name});
             }
-        }
+        },
+        .resolved => try writer.writeAll("todo"),
+        .unknown => try writer.writeAll("unknown"),
+    }
+}
 
-        if (function.local_variables.len() > 0) {
-            try std.fmt.format(writer, "   - Local Variables\n", .{});
-            for (function.local_variables.slice(script.local_variables)) |local_variable| {
-                try std.fmt.format(writer, "      - Name: {s}\n", .{script.a_string_table.strings[local_variable.name]});
-                try std.fmt.format(writer, "      - Offset: {d}\n", .{local_variable.offset});
-                try std.fmt.format(writer, "      - Modifiers: {d}\n", .{local_variable.modifiers});
-                try std.fmt.format(writer, "      - Type: {*}\n", .{&script.type_references[local_variable.type_reference]});
+fn printExpression(writer: anytype, indent: *usize, expression: *Node.Expression) Error!void {
+    switch (expression.contents) {
+        .guid_literal => |guid| try writer.print("GUID literal: {d}", .{guid}),
+        .integer_literal => |literal| try writer.print(
+            "Integer literal: {d} ({s})",
+            .{ literal.value, @tagName(literal.base) },
+        ),
+        .block => |block| {
+            try writer.writeAll("Block:\n");
+
+            indent.* += 1;
+            defer indent.* -= 1;
+
+            try printBlock(writer, indent, block);
+        },
+        .variable_or_class_access => |variable_or_class_access| {
+            try writer.print("Variable or class access: {s}", .{variable_or_class_access});
+        },
+        .function_call => |function_call| {
+            try writer.print(
+                "Function call: {s}, Type: ",
+                .{switch (function_call.function) {
+                    .name => |name| name,
+                    .function => |function| function.name,
+                }},
+            );
+            try printType(writer, indent, function_call.type);
+            try writer.writeByte('\n');
+
+            indent.* += 1;
+            defer indent.* -= 1;
+
+            for (function_call.parameters) |parameter| {
+                try printIndent(writer, indent);
+                try writer.writeAll("Parameter:\n");
+
+                indent.* += 1;
+                defer indent.* -= 1;
+
+                try printIndent(writer, indent);
+                try printExpression(writer, indent, parameter);
             }
-        }
+        },
+        .ascii_string_literal => |ascii_string_literal| {
+            try writer.print("ASCII string literal: {s}", .{ascii_string_literal});
+        },
+        .wide_string_literal => |wide_string_literal| {
+            try writer.print("UTF-16 string literal: {s}", .{wide_string_literal});
+        },
+        .assignment => |assignment| {
+            try writer.writeAll("Assignment:\n");
 
-        if (function.bytecode.len() > 0) {
-            try std.fmt.format(writer, "   - Bytecode\n", .{});
+            {
+                indent.* += 1;
+                defer indent.* -= 1;
 
-            for (function.bytecode.slice(script.bytecode), function.line_numbers.slice(script.line_numbers), 0..) |bytecode, line_number, i| {
-                _ = line_number; // autofix
+                try printIndent(writer, indent);
+                try writer.writeAll("Destination:\n");
 
-                try std.fmt.format(writer, "      {d:0>4}: 0x{x:0>16} {s} ", .{
-                    i,
-                    @as(u64, @bitCast(bytecode)),
-                    @tagName(bytecode.op),
-                });
-                switch (bytecode.op) {
-                    inline else => |op| {
-                        const params = @field(bytecode.params, @tagName(op));
+                indent.* += 1;
+                defer indent.* -= 1;
 
-                        const ParamsType = @TypeOf(params);
+                try printIndent(writer, indent);
+                try printExpression(writer, indent, assignment.destination);
+            }
 
-                        switch (ParamsType) {
-                            MMTypes.NopClass => {},
-                            MMTypes.LoadConstClass => try std.fmt.format(writer, "r{d}, cid{d}", .{ params.dst_idx, params.constant_idx }),
-                            MMTypes.UnaryClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.src_idx }),
-                            MMTypes.BinaryClass => try std.fmt.format(writer, "r{d}, r{d}, r{d}", .{ params.dst_idx, params.src_a_idx, params.src_b_idx }),
-                            MMTypes.GetBuiltinMemberClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
-                            MMTypes.SetBuiltinMemberClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.src_idx, params.base_idx }),
-                            MMTypes.GetMemberClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
-                            MMTypes.SetMemberClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.src_idx, params.base_idx }),
-                            MMTypes.GetElementClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
-                            MMTypes.SetElementClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.src_idx, params.base_idx }),
-                            MMTypes.NewArrayClass => try std.fmt.format(writer, "r{d}, t{d}[r{d}]", .{ params.dst_idx, params.type_idx, params.size_idx }),
-                            MMTypes.WriteClass => try std.fmt.format(writer, "r{d}", .{params.src_idx}),
-                            MMTypes.ArgClass => try std.fmt.format(writer, "a{d}, r{d}", .{ params.arg_idx, params.src_idx }),
-                            MMTypes.CallClass => try std.fmt.format(writer, "r{d}, c{d}", .{ params.dst_idx, params.call_idx }),
-                            MMTypes.ReturnClass => try std.fmt.format(writer, "r{d}", .{params.src_idx}),
-                            MMTypes.BranchClass => try std.fmt.format(writer, "r{d}, @{d}", .{ params.src_idx, params.branch_offset + @as(i32, @intCast(i)) }),
-                            MMTypes.CastClass => try std.fmt.format(writer, "r{d}, t{d}, r{d}", .{ params.dst_idx, params.type_idx, params.src_idx }),
-                            MMTypes.NewObjectClass => try std.fmt.format(writer, "r{d}, t{d}", .{ params.dst_idx, params.type_idx }),
-                            MMTypes.ExternalInvokeClass => try std.fmt.format(writer, "r{d}, 0x{x}", .{ params.dst_idx, params.call_address }),
-                            else => @compileError("Unhandled class type " ++ @typeName(ParamsType)),
-                        }
-                    },
+            {
+                indent.* += 1;
+                defer indent.* -= 1;
+
+                try printIndent(writer, indent);
+                try writer.writeAll("Value:\n");
+
+                indent.* += 1;
+                defer indent.* -= 1;
+
+                try printIndent(writer, indent);
+                try printExpression(writer, indent, assignment.value);
+            }
+        },
+        else => |tag| try writer.print("todo {s}", .{@tagName(tag)}),
+    }
+
+    try writer.writeByte('\n');
+}
+
+fn printBlock(writer: anytype, indent: *usize, nodes: []const Node) Error!void {
+    for (nodes) |node| {
+        try printIndent(writer, indent);
+        switch (node) {
+            .variable_declaration => |variable_declaration| {
+                try writer.print(
+                    "Variable Declaration: {s}, Type: ",
+                    .{variable_declaration.name},
+                );
+                try printType(writer, indent, variable_declaration.type);
+                try writer.writeByte('\n');
+                if (variable_declaration.value) |value| {
+                    indent.* += 1;
+                    defer indent.* -= 1;
+
+                    try printIndent(writer, indent);
+                    try writer.writeAll("Value:\n");
+
+                    indent.* += 1;
+                    defer indent.* -= 1;
+
+                    try printIndent(writer, indent);
+                    try printExpression(writer, indent, value);
                 }
+            },
+            .expression => |expression| {
+                try writer.print(
+                    "Expression, Type: ",
+                    .{},
+                );
+                try printType(writer, indent, expression.type);
+                try writer.writeByte('\n');
 
-                if (bytecode.type != .void)
-                    try std.fmt.format(writer, " ({s})\n", .{@tagName(bytecode.type)})
-                else
-                    try std.fmt.format(writer, "\n", .{});
-            }
+                indent.* += 1;
+                defer indent.* -= 1;
+
+                try printIndent(writer, indent);
+                try printExpression(writer, indent, expression);
+            },
+            else => |tag| try writer.print("todo: {s}\n", .{@tagName(tag)}),
         }
     }
+}
 
-    try std.fmt.format(writer, "\n", .{});
-
-    try std.fmt.format(writer, " --- Constant table s64 ---\n", .{});
-    if (script.constant_table_s64) |constant_table_s64| {
-        for (constant_table_s64, 0..) |constant, i| {
-            try std.fmt.format(writer, "    {d}: {d}\n", .{ i, constant });
-        }
+fn printIndent(writer: anytype, indent: *usize) Error!void {
+    for (0..indent.*) |_| {
+        try writer.writeAll("    ");
     }
-
-    try std.fmt.format(writer, " --- Constant table f32 ---\n", .{});
-    for (script.constant_table_float, 0..) |constant, i| {
-        try std.fmt.format(writer, "    {d}: {d}\n", .{ i, constant });
-    }
-
-    // try std.fmt.format(writer, "\n", .{});
-    // try std.fmt.format(writer, "script class_name: {s}\n", .{script.class_name});
-    // try std.fmt.format(writer, "{}\n", .{script});
 }

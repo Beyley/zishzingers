@@ -50,31 +50,46 @@ pub const FromImportWanted = union(enum) {
 };
 
 pub const Type = union(enum) {
-    pub const ParsedType = struct {
+    pub const Parsed = struct {
         name: []const u8,
         dimension_count: u8,
 
-        pub const Void: ParsedType = .{
+        pub const Void: Parsed = .{
             .name = "void",
             .dimension_count = 0,
         };
 
-        pub const S32: ParsedType = .{
+        pub const S32: Parsed = .{
             .name = "s32",
             .dimension_count = 0,
         };
 
-        pub const S64: ParsedType = .{
+        pub const S64: Parsed = .{
             .name = "s64",
             .dimension_count = 0,
         };
 
-        pub const Bool: ParsedType = .{
+        pub const F32: Parsed = .{
+            .name = "f32",
+            .dimension_count = 0,
+        };
+
+        pub const F64: Parsed = .{
+            .name = "f64",
+            .dimension_count = 0,
+        };
+
+        pub const Vec2: Parsed = .{
+            .name = "vec2",
+            .dimension_count = 0,
+        };
+
+        pub const Bool: Parsed = .{
             .name = "bool",
             .dimension_count = 0,
         };
 
-        pub fn eql(self: ParsedType, other: ParsedType) bool {
+        pub fn eql(self: Parsed, other: Parsed) bool {
             return self.dimension_count == other.dimension_count and std.mem.eql(u8, self.name, other.name);
         }
     };
@@ -100,7 +115,7 @@ pub const Type = union(enum) {
     };
 
     /// An unresolved type
-    parsed: ParsedType,
+    parsed: Parsed,
     /// An unknown type, waiting to be resolved
     unknown: void,
     /// A resolved type
@@ -224,7 +239,7 @@ pub const Node = union(NodeType) {
     };
 
     pub const Expression = struct {
-        pub const ExpressionContents = union(enum) {
+        pub const Contents = union(enum) {
             pub const LiteralBase = enum {
                 binary,
                 octal,
@@ -232,16 +247,22 @@ pub const Node = union(NodeType) {
                 hex,
             };
 
+            pub const UnaryExpression = *Node.Expression;
+            pub const BinaryExpression = struct {
+                lefthand: *Expression,
+                righthand: *Expression,
+            };
+
             integer_literal: struct { base: LiteralBase, value: i64 },
-            integer_literal_to_s32: *Node.Expression,
-            integer_literal_to_f32: *Node.Expression,
-            integer_literal_to_s64: *Node.Expression,
-            integer_literal_to_f64: *Node.Expression,
+            integer_literal_to_s32: UnaryExpression,
+            integer_literal_to_f32: UnaryExpression,
+            integer_literal_to_s64: UnaryExpression,
+            integer_literal_to_f64: UnaryExpression,
             float_literal: struct { base: LiteralBase, value: f64 },
-            float_literal_to_f32: *Node.Expression,
-            float_literal_to_f64: *Node.Expression,
+            float_literal_to_f32: UnaryExpression,
+            float_literal_to_f64: UnaryExpression,
             /// A boolean to s32 cast
-            bool_to_s32: *Node.Expression,
+            bool_to_s32: UnaryExpression,
             guid_literal: u32,
             bool_literal: bool,
             ascii_string_literal: []const u8,
@@ -277,10 +298,22 @@ pub const Node = union(NodeType) {
                 value: *Expression,
             },
             block: []const Node,
-            bitwise_and: struct {
-                lefthand: *Expression,
-                righthand: *Expression,
-            },
+            bitwise_and: BinaryExpression,
+            bitwise_or: BinaryExpression,
+            bitwise_xor: BinaryExpression,
+            equal: BinaryExpression,
+            not_equal: BinaryExpression,
+            less_than: BinaryExpression,
+            less_than_or_equal: BinaryExpression,
+            greater_than: BinaryExpression,
+            greater_than_or_equal: BinaryExpression,
+            addition: BinaryExpression,
+            subtraction: BinaryExpression,
+            multiplication: BinaryExpression,
+            division: BinaryExpression,
+            vec2_construction: [2]*Expression,
+            vec3_construction: [3]*Expression,
+            vec4_construction: [4]*Expression,
 
             pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
                 return switch (value) {
@@ -309,12 +342,16 @@ pub const Node = union(NodeType) {
                     .member_function_call => |literal| writer.print("expression_contents{{ .member_function_call = .{{ .source = {}, .name = {s}, .parameters = {any} }} }}", .{ literal.source, literal.name, literal.parameters }),
                     .assignment => |literal| writer.print("expression_contents{{ .assignment = .{{ .destination = {}, .value = .{} }} }}", .{ literal.destination, literal.value }),
                     .block => |literal| writer.print("expression_contents{{ .block = {{ .body = {any} }} }}", .{literal}),
-                    .bitwise_and => |literal| writer.print("expression_contents{{ .bitwise_and = {{ .lefthand = {}, .lefthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
+                    .bitwise_and => |literal| writer.print("expression_contents{{ .bitwise_and = {{ .lefthand = {}, .righthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
+                    .not_equal => |literal| writer.print("expression_contents{{ .not_equal = {{ .lefthand = {}, .righthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
+                    .vec2_construction => |literal| writer.print("expression_contents {{ .vec2_construction = {d} }}", .{literal}),
+                    .vec3_construction => |literal| writer.print("expression_contents {{ .vec3_construction = {d} }}", .{literal}),
+                    .vec4_construction => |literal| writer.print("expression_contents {{ .vec4_construction = {d} }}", .{literal}),
                 };
             }
         };
 
-        contents: ExpressionContents,
+        contents: Contents,
         type: Type,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -473,7 +510,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     const identifier: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "(")) blk: {
         const expression = try consumeExpression(tree.allocator, iter);
         if (expression.contents != .guid_literal)
-            @panic("aint a guid, buddy");
+            std.debug.panic("needs to be a guid, is {s}", .{@tagName(expression.contents)});
 
         consumeArbitraryLexeme(iter, ")");
 
@@ -769,178 +806,427 @@ fn isFloatLiteral(str: []const u8) !?f64 {
     };
 }
 
-fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    const node = try allocator.create(Node.Expression);
-    errdefer allocator.destroy(node);
-
+fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
     const first = iter.next() orelse @panic("eof");
 
-    node.* = .{
-        .contents = if (first[0] == '!')
-            //We are parsing a logical negation expression
-            .{ .logical_negation = try consumeExpression(allocator, iter) }
-        else if (first[0] == '-')
-            // We are parsing a numeric negation expression
-            .{ .numeric_negation = try consumeExpression(allocator, iter) }
-        else if (try isInt(i65, first)) |s65| blk: {
-            //TODO: this needs to handle negative numbers
-            const base: Node.Expression.ExpressionContents.LiteralBase = if (first.len >= 2) switch (hashKeyword(first[0..2])) {
-                hashKeyword("0x") => .hex,
-                hashKeyword("0o") => .octal,
-                hashKeyword("0b") => .binary,
-                else => .decimal,
-            } else .decimal;
+    if (first[0] == '(') {
+        const expression = consumeExpression(allocator, iter);
 
-            if (base == .decimal) {
-                const s64: i64 = @intCast(s65);
+        consumeArbitraryLexeme(iter, ")");
 
-                break :blk .{ .integer_literal = .{ .base = base, .value = s64 } };
-            } else {
-                const unsigned: u64 = @intCast(s65);
+        return expression;
+    }
 
-                break :blk .{ .integer_literal = .{ .base = base, .value = @bitCast(unsigned) } };
-            }
-        } else if (try isFloatLiteral(first)) |float| blk: {
-            //TODO: non-base-10 float literals?
-            break :blk .{ .float_literal = .{ .base = .decimal, .value = float } };
-        } else blk: {
-            const next = iter.peek() orelse @panic("EOF");
+    if (try isInt(i65, first)) |s65| {
+        const base: Node.Expression.Contents.LiteralBase = if (first.len >= 2) switch (hashKeyword(first[0..2])) {
+            hashKeyword("0x") => .hex,
+            hashKeyword("0o") => .octal,
+            hashKeyword("0b") => .binary,
+            else => .decimal,
+        } else .decimal;
 
-            // We are parsing a function
-            if (next[0] == '(') {
-                break :blk .{
-                    .function_call = .{
-                        .function = .{ .name = first },
-                        .parameters = try consumeFunctionCallParameters(allocator, iter),
-                        .type = .unknown,
-                    },
+        const expression = try allocator.create(Node.Expression);
+
+        expression.* = .{
+            .contents = .{ .integer_literal = .{
+                .base = base,
+                .value = if (base == .decimal)
+                    @intCast(s65)
+                else
+                    @bitCast(@as(u64, @intCast(s65))),
+            } },
+            .type = .unknown,
+        };
+
+        return expression;
+    }
+
+    if (try isFloatLiteral(first)) |float| {
+        const expression = try allocator.create(Node.Expression);
+
+        //TODO: non-base-10 float literals
+        expression.* = .{
+            .contents = .{ .float_literal = .{
+                .base = .decimal,
+                .value = float,
+            } },
+            .type = .unknown,
+        };
+
+        return expression;
+    }
+
+    // Try to match bool/null literals
+    if (consumeAnyMatches(iter, &.{ "true", "false", "null" })) |match| {
+        switch (match) {
+            .true, .false => {
+                const expression = try allocator.create(Node.Expression);
+
+                expression.* = .{
+                    .contents = .{ .bool_literal = match == .true },
+                    .type = .{ .parsed = Type.Parsed.Bool },
                 };
-            }
-            // We are parsing a field access/member call
-            //TODO: this is not the correct place for this logic, this should be down below,
-            //      currently this is unable to parse expressions such as `Function().field`
-            else if (next[0] == '.') {
-                const source = try allocator.create(Node.Expression);
-                errdefer allocator.destroy(source);
 
-                //If the source of the access is `this`, then we want to special case that and emit the `this` expression
-                source.* = .{
-                    .contents = if (std.mem.eql(u8, first, "this"))
-                        .this
-                    else
-                        .{ .variable_or_class_access = first },
+                return expression;
+            },
+            .null => {
+                @panic("TODO: null literals");
+            },
+        }
+    }
+
+    const next = iter.peek() orelse @panic("EOF");
+
+    //If the next expression is a ( then its a function call
+    if (next[0] == '(') {
+        const expression = try allocator.create(Node.Expression);
+
+        const parameters = try consumeFunctionCallParameters(allocator, iter);
+
+        expression.* = .{
+            .contents = .{ .function_call = .{
+                .function = .{ .name = first },
+                .parameters = parameters,
+                .type = .unknown,
+            } },
+            .type = .unknown,
+        };
+
+        return expression;
+    }
+
+    //If the first char is a g
+    if (first[0] == 'g') {
+        // And the rest of the lexeme is a number that fits into a u32, this is a GUID literal
+        if (try isInt(u32, first[1..])) |guid| {
+            const expression = try allocator.create(Node.Expression);
+            expression.* = .{
+                .contents = .{ .guid_literal = guid },
+                .type = .unknown,
+            };
+            return expression;
+        }
+    }
+
+    //TODO: hash literals
+
+    if (isWideStringLiteral(first)) |wide_string_literal| {
+        const expression = try allocator.create(Node.Expression);
+        expression.* = .{
+            .contents = .{ .wide_string_literal = wide_string_literal },
+            .type = .unknown,
+        };
+        return expression;
+    }
+
+    if (isAsciiStringLiteral(first)) |string_literal| {
+        const expression = try allocator.create(Node.Expression);
+        expression.* = .{
+            .contents = .{ .ascii_string_literal = string_literal },
+            .type = .unknown,
+        };
+        return expression;
+    }
+
+    //If none of the other checks matched, this is a variable access
+    const expression = try allocator.create(Node.Expression);
+    expression.* = .{
+        .contents = .{ .variable_or_class_access = first },
+        .type = .unknown,
+    };
+    return expression;
+}
+
+fn consumeDotExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    var node = try consumePrimaryExpression(allocator, iter);
+
+    while (consumeArbitraryLexemeIfAvailable(iter, ".")) {
+        const field_access = try allocator.create(Node.Expression);
+
+        const name = iter.next() orelse @panic("EOF");
+
+        const next = iter.peek() orelse @panic("EOF");
+
+        field_access.* = .{
+            .contents = if (next[0] == '(')
+                .{
+                    .member_function_call = .{
+                        .source = node,
+                        .name = name,
+                        .parameters = try consumeFunctionCallParameters(allocator, iter),
+                    },
+                }
+            else
+                .{
+                    .field_access = .{
+                        .field = name,
+                        .source = node,
+                    },
+                },
+            .type = .unknown,
+        };
+
+        node = field_access;
+    }
+
+    return node;
+}
+
+fn consumeUnaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    if (consumeAnyMatches(iter, &.{ "!", "-" })) |match| {
+        const unary = try allocator.create(Node.Expression);
+
+        unary.* = switch (match) {
+            .@"!" => .{
+                .contents = .{
+                    .logical_negation = try consumeUnaryExpression(allocator, iter),
+                },
+                .type = .{ .parsed = Type.Parsed.Bool },
+            },
+            .@"-" => .{
+                .contents = .{
+                    .numeric_negation = try consumeUnaryExpression(allocator, iter),
+                },
+                .type = .unknown,
+            },
+        };
+
+        return unary;
+    } else {
+        return consumeDotExpression(allocator, iter);
+    }
+}
+
+fn consumeFactorExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    var node = try consumeUnaryExpression(allocator, iter);
+
+    while (consumeAnyMatches(iter, &.{ "/", "*" })) |match| {
+        node = switch (match) {
+            inline else => |keyword| blk: {
+                const factor = try allocator.create(Node.Expression);
+
+                factor.* = .{
+                    .contents = @unionInit(
+                        Node.Expression.Contents,
+                        switch (keyword) {
+                            .@"/" => @tagName(Node.Expression.Contents.division),
+                            .@"*" => @tagName(Node.Expression.Contents.multiplication),
+                        },
+                        .{
+                            .lefthand = node,
+                            .righthand = try consumeUnaryExpression(allocator, iter),
+                        },
+                    ),
                     .type = .unknown,
                 };
 
-                consumeArbitraryLexeme(iter, ".");
-
-                const name = iter.next() orelse @panic("field name EOF");
-
-                //If this member call, parse as that, else parse as field access
-                if ((iter.peek() orelse @panic("EOF"))[0] == '(') {
-                    const parameters = try consumeFunctionCallParameters(allocator, iter);
-
-                    break :blk .{
-                        .member_function_call = .{
-                            .name = name,
-                            .parameters = parameters,
-                            .source = source,
-                        },
-                    };
-                } else break :blk .{
-                    .field_access = .{
-                        .source = source,
-                        .field = name,
-                    },
-                };
-            }
-            // We are parsing some other misc expression, like a string literal or boolean literal
-            else {
-                //We *may* be parsing a GUID literal
-                if (first[0] == 'g') {
-                    if (try isInt(u32, first[1..])) |guid| {
-                        break :blk .{ .guid_literal = guid };
-                    }
-                }
-
-                if (maybeHashKeyword(first)) |keyword| {
-                    switch (keyword) {
-                        hashKeyword("true") => break :blk .{ .bool_literal = true },
-                        hashKeyword("false") => break :blk .{ .bool_literal = false },
-                        else => {},
-                    }
-                }
-
-                if (first.len >= 2 and std.mem.eql(u8, first[0..2], "L'")) {
-                    break :blk .{ .wide_string_literal = unwrapStringLiteral(first[1..]) };
-                }
-
-                if (first[0] == '\'') {
-                    break :blk .{ .ascii_string_literal = unwrapStringLiteral(first[1..]) };
-                }
-
-                break :blk .{ .variable_or_class_access = first };
-            }
-        },
-        .type = .unknown,
-    };
-
-    if (iter.peek()) |next| {
-        if (maybeHashKeyword(next)) |keyword| {
-            switch (keyword) {
-                // If the next char is `=`, then we know this is an assignment,
-                // where the current value in `node` is the source for the assignment
-                hashKeyword("=") => {
-                    //consume the =
-                    _ = iter.next();
-
-                    const value = try consumeExpression(allocator, iter);
-
-                    const destination = try allocator.create(Node.Expression);
-                    errdefer allocator.free(destination);
-
-                    destination.* = node.*;
-
-                    node.* = .{
-                        .contents = .{
-                            .assignment = .{
-                                .destination = destination,
-                                .value = value,
-                            },
-                        },
-                        .type = .unknown,
-                    };
-                },
-                hashKeyword("&") => {
-                    //consume the &
-                    _ = iter.next();
-
-                    const righthand = try consumeExpression(allocator, iter);
-
-                    const lefthand = try allocator.create(Node.Expression);
-                    errdefer allocator.free(lefthand);
-
-                    //Copy the current expression into the left hand side
-                    lefthand.* = node.*;
-
-                    node.* = .{
-                        .contents = .{
-                            .bitwise_and = .{
-                                .lefthand = lefthand,
-                                .righthand = righthand,
-                            },
-                        },
-                        .type = .unknown,
-                    };
-                },
-                else => {},
-            }
-        }
-    } else @panic("EOF");
-
-    // std.debug.print("zz {}\n", .{node.*});
+                break :blk factor;
+            },
+        };
+    }
 
     return node;
+}
+
+fn consumeTermExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    var node = try consumeFactorExpression(allocator, iter);
+
+    while (consumeAnyMatches(iter, &.{ "-", "+" })) |match| {
+        node = switch (match) {
+            inline else => |keyword| blk: {
+                const term = try allocator.create(Node.Expression);
+
+                term.* = .{
+                    .contents = @unionInit(
+                        Node.Expression.Contents,
+                        switch (keyword) {
+                            .@"+" => @tagName(Node.Expression.Contents.addition),
+                            .@"-" => @tagName(Node.Expression.Contents.subtraction),
+                        },
+                        .{
+                            .lefthand = node,
+                            .righthand = try consumeFactorExpression(allocator, iter),
+                        },
+                    ),
+                    .type = .unknown,
+                };
+
+                break :blk term;
+            },
+        };
+    }
+
+    return node;
+}
+
+fn consumeComparisonExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    var node = try consumeTermExpression(allocator, iter);
+
+    while (consumeAnyMatches(iter, &.{ ">", ">=", "<", "<=" })) |match| {
+        node = switch (match) {
+            inline else => |keyword| blk: {
+                const comparison = try allocator.create(Node.Expression);
+
+                comparison.* = .{
+                    .contents = @unionInit(
+                        Node.Expression.Contents,
+                        switch (keyword) {
+                            .@">" => @tagName(Node.Expression.Contents.greater_than),
+                            .@">=" => @tagName(Node.Expression.Contents.greater_than_or_equal),
+                            .@"<" => @tagName(Node.Expression.Contents.less_than),
+                            .@"<=" => @tagName(Node.Expression.Contents.less_than_or_equal),
+                        },
+                        .{
+                            .lefthand = node,
+                            .righthand = try consumeTermExpression(allocator, iter),
+                        },
+                    ),
+                    .type = .{ .parsed = Type.Parsed.Bool },
+                };
+
+                break :blk comparison;
+            },
+        };
+    }
+
+    return node;
+}
+
+fn consumeEqualityExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    var node = try consumeComparisonExpression(allocator, iter);
+
+    while (consumeAnyMatches(iter, &.{ "==", "!=" })) |match| {
+        node = switch (match) {
+            inline else => |keyword| blk: {
+                const equality = try allocator.create(Node.Expression);
+
+                equality.* = .{
+                    .contents = @unionInit(
+                        Node.Expression.Contents,
+                        if (keyword == .@"==") @tagName(Node.Expression.Contents.equal) else @tagName(Node.Expression.Contents.not_equal),
+                        .{
+                            .lefthand = node,
+                            .righthand = try consumeComparisonExpression(allocator, iter),
+                        },
+                    ),
+                    .type = .{ .parsed = Type.Parsed.Bool },
+                };
+
+                break :blk equality;
+            },
+        };
+    }
+
+    return node;
+}
+
+fn consumeBitwiseExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    var node = try consumeEqualityExpression(allocator, iter);
+
+    while (consumeAnyMatches(iter, &.{ "&", "^", "|" })) |match| {
+        node = switch (match) {
+            inline else => |keyword| blk: {
+                const bitwise = try allocator.create(Node.Expression);
+
+                bitwise.* = .{
+                    .contents = @unionInit(
+                        Node.Expression.Contents,
+                        switch (keyword) {
+                            .@"&" => @tagName(Node.Expression.Contents.bitwise_and),
+                            .@"^" => @tagName(Node.Expression.Contents.bitwise_xor),
+                            .@"|" => @tagName(Node.Expression.Contents.bitwise_or),
+                        },
+                        .{
+                            .lefthand = node,
+                            .righthand = try consumeEqualityExpression(allocator, iter),
+                        },
+                    ),
+                    .type = .unknown,
+                };
+
+                break :blk bitwise;
+            },
+        };
+    }
+
+    return node;
+}
+
+fn consumeAssignmentExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    const destination = try consumeBitwiseExpression(allocator, iter);
+
+    if (consumeArbitraryLexemeIfAvailable(iter, "=")) {
+        const value = try consumeAssignmentExpression(allocator, iter);
+
+        const assignment = try allocator.create(Node.Expression);
+
+        assignment.* = .{
+            .contents = .{ .assignment = .{
+                .destination = destination,
+                .value = value,
+            } },
+            .type = .unknown,
+        };
+
+        return assignment;
+    }
+
+    return destination;
+}
+
+fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    return consumeAssignmentExpression(allocator, iter);
+}
+
+fn MatchEnum(comptime matches: []const [:0]const u8) type {
+    const Enum = @Type(.{
+        .Enum = .{
+            .tag_type = std.math.IntFittingRange(0, matches.len),
+            .is_exhaustive = true,
+            .decls = &.{},
+            .fields = comptime blk: {
+                var fields: [matches.len]std.builtin.Type.EnumField = undefined;
+
+                for (matches, &fields, 0..) |match, *field, i| {
+                    field.* = .{
+                        .name = match,
+                        .value = i,
+                    };
+                }
+
+                break :blk &fields;
+            },
+        },
+    });
+
+    return Enum;
+}
+
+fn consumeAnyMatches(iter: *SliceIterator(Lexeme), comptime matches: []const [:0]const u8) ?MatchEnum(matches) {
+    const matches_keywords = comptime blk: {
+        var keywords: [matches.len]u72 = undefined;
+
+        for (matches, 0..) |match, i| {
+            keywords[i] = hashKeyword(match);
+        }
+
+        break :blk keywords;
+    };
+
+    const Enum = MatchEnum(matches);
+
+    //If the next lexeme is a valid keyword
+    if (maybeHashKeyword(iter.peek() orelse @panic("EOF"))) |keyword| {
+        inline for (matches_keywords, matches) |match, match_str| {
+            if (keyword == match) {
+                _ = iter.next() orelse unreachable;
+
+                return @field(Enum, match_str);
+            }
+        }
+    }
+
+    return null;
 }
 
 fn consumeFunctionCallParameters(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) ![]const *Node.Expression {
@@ -1026,7 +1312,7 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
             break :blk consumeTypeName(iter);
         }
 
-        break :blk .{ .parsed = Type.ParsedType.Void };
+        break :blk .{ .parsed = Type.Parsed.Void };
     };
 
     const body: ?*Node.Expression = if (!consumeArbitraryLexemeIfAvailable(iter, ";"))
@@ -1043,6 +1329,31 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
     };
 
     return node;
+}
+
+fn isWideStringLiteral(lexeme: Lexeme) ?[]const u8 {
+    if (lexeme.len < 3)
+        return null;
+
+    if (lexeme[0] != 'L')
+        return null;
+
+    if (lexeme[1] != '\'' or lexeme[lexeme.len - 1] != '\'')
+        return null;
+
+    //Strip to just the contents
+    return lexeme[2 .. lexeme.len - 1];
+}
+
+fn isAsciiStringLiteral(lexeme: Lexeme) ?[]const u8 {
+    if (lexeme.len < 2)
+        return null;
+
+    if (lexeme[0] != '\'' or lexeme[lexeme.len - 1] != '\'')
+        return null;
+
+    //Strip to just the contents
+    return lexeme[1 .. lexeme.len - 1];
 }
 
 fn consumeIfStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
@@ -1284,7 +1595,13 @@ fn consumeArbitraryLexeme(iter: *SliceIterator(Lexeme), intended: []const u8) vo
 
     if (iter.next()) |next| {
         if (!std.mem.eql(u8, next, intended)) {
-            std.debug.panic("unexpected lexeme {s}, expected {s}", .{ next, intended });
+            const prev_lexeme = iter.slice[iter.pos - 1];
+            const next_lexeme = iter.peek() orelse @panic("eof");
+
+            std.debug.panic(
+                "unexpected lexeme {s}, expected {s}, prev {s}, next {s}",
+                .{ next, intended, prev_lexeme, next_lexeme },
+            );
         }
     } else {
         std.debug.panic("unexpected EOF when expecting {s}", .{intended});
@@ -1323,6 +1640,10 @@ pub const Lexemeizer = struct {
         @intCast(hashKeyword("->")),
         @intCast(hashKeyword(">>")),
         @intCast(hashKeyword("<<")),
+        @intCast(hashKeyword("==")),
+        @intCast(hashKeyword("!=")),
+        @intCast(hashKeyword(">=")),
+        @intCast(hashKeyword("<=")),
     };
 
     pub fn next(self: *Lexemeizer) !?Lexeme {
