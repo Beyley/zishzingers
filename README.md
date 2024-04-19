@@ -4,7 +4,7 @@ A set of tools for working with the fish fingers (FF) bytecode script format use
 
 ## Compilation
 
-- Install the latest version of [Zig](https://ziglang.org/) (tested with version `0.12.0-dev.3609+ac21ade66`)
+- Install the latest version of [Zig](https://ziglang.org/) (tested with version `0.12.0-dev.3677+22a97cd23`)
 - Run `zig build`, which will place an executable file titled `zishzingers` in `zig-out/bin/`
 
 ## Usage
@@ -21,14 +21,25 @@ $ zishzingers disasm compressed_script.ff
 $ zishzingers disasm -n decompressed_script.ff -c integers -c matrices -c vectors -r 0x272
 ```
 
+### `generate_library`
+Generates an A# library from a folder of extracted assets and a MAP file.
+
+```
+# Read the help file `zishzingers generate_library --help` for details on what these options do!
+$ zishzingers generate_library -m blurayguids.map -o deploy_std/ -f game_data/ -s std -n lbpdeploy
+```
+
 ### `compile`
 Compiles an A# file into an LBP script file.
 
 ```
-# TODO: usage instructions
+# Read the help file `zishzingers compile --help` for details on what these options do!
+# zishzingers compile compile samples/tweakegg.as -l lbpdeploy:deploy_std/ -i 1234
 ```
 
 Sample scripts are provided in the `samples/` folder.
+
+You can read a WIP language reference [here](langref.md).
 
 ## Special Thanks
 
