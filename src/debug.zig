@@ -190,6 +190,22 @@ fn printExpression(self: *Self, expression: *Node.Expression) Error!void {
             "Integer literal: {d} ({s})",
             .{ literal.value, @tagName(literal.base) },
         ),
+        .bool_literal => |literal| try self.writer.print("Boolean literal: {}", .{literal}),
+        .integer_literal_to_s32 => |integer_literal_to_s32| {
+            try self.writer.print("Integer literal to s32:\n", .{});
+
+            self.indent += 1;
+            defer self.indent -= 1;
+
+            try self.printIndent();
+            try self.writer.writeAll("Contents:\n");
+
+            self.indent += 1;
+            defer self.indent -= 1;
+
+            try self.printIndent();
+            try self.printExpression(integer_literal_to_s32);
+        },
         .block => |block| {
             try self.writer.writeAll("Block:\n");
 
@@ -200,6 +216,9 @@ fn printExpression(self: *Self, expression: *Node.Expression) Error!void {
         },
         .variable_or_class_access => |variable_or_class_access| {
             try self.writer.print("Variable or class access: {s}", .{variable_or_class_access});
+        },
+        .variable_access => |variable_access| {
+            try self.writer.print("Variable access: {s}", .{variable_access});
         },
         .function_call => |function_call| {
             try self.writer.print(
@@ -223,6 +242,12 @@ fn printExpression(self: *Self, expression: *Node.Expression) Error!void {
                 defer self.indent -= 1;
 
                 try self.printIndent();
+                try self.writer.writeAll("Type: ");
+                try self.printType(parameter.type);
+                try self.writer.writeByte('\n');
+
+                try self.printIndent();
+                try self.writer.writeAll("Value: ");
                 try self.printExpression(parameter);
             }
         },
