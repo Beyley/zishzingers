@@ -8,4 +8,12 @@ class Basic(g1234568)
 
         y = x = 2;
     }
+
+    pub fn BitwiseOrder() {
+        let x: s32 = 0;
+
+        if(x & 2 != 0) {
+
+        }
+    }
 }

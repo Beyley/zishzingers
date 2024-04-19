@@ -1,285 +1,368 @@
 const std = @import("std");
 
 const Parser = @import("parser.zig");
+const Resolvinator = @import("resolvinator.zig");
 const Node = Parser.Node;
 
-const Error = std.fs.File.WriteError;
+const Error = std.io.AnyWriter.Error;
 
-pub fn dumpAst(writer: anytype, ast: Parser.Tree) Error!void {
-    var indent: usize = 0;
+indent: usize,
+writer: std.io.AnyWriter,
+a_string_table: *Resolvinator.AStringTable,
+
+const Self = @This();
+
+pub fn dumpAst(self: *Self, ast: Parser.Tree) Error!void {
     for (ast.root_elements.items) |root_node| {
         switch (root_node) {
-            .using => |using| try printUsing(writer, &indent, using),
-            .import => |import| try printImport(writer, &indent, import),
-            .from_import => |from_import| try printFromImport(writer, &indent, from_import),
-            .class => |class| try printClass(writer, &indent, class),
+            .using => |using| try self.printUsing(using),
+            .import => |import| try self.printImport(import),
+            .from_import => |from_import| try self.printFromImport(from_import),
+            .class => |class| try self.printClass(class),
             else => |tag| std.debug.panic("todo: {s}", .{@tagName(tag)}),
         }
     }
 }
 
-fn printImport(writer: anytype, indent: *usize, import: *Node.Import) Error!void {
-    try printIndent(writer, indent);
-
-    try writer.print("Import: {s}\n", .{import.target});
+fn printImport(self: *Self, import: *Node.Import) Error!void {
+    try self.printIndent();
+    try self.writer.print("Import: {s}\n", .{import.target});
 }
 
-fn printFromImport(writer: anytype, indent: *usize, from_import: *Node.FromImport) Error!void {
-    try printIndent(writer, indent);
-
-    try writer.print("From Import: {s}, Wanted {}\n", .{ from_import.target, from_import.wanted });
+fn printFromImport(self: *Self, from_import: *Node.FromImport) Error!void {
+    try self.printIndent();
+    try self.writer.print("From Import: {s}, Wanted {}\n", .{ from_import.target, from_import.wanted });
 }
 
-fn printUsing(writer: anytype, indent: *usize, using: *Node.Using) Error!void {
-    try printIndent(writer, indent);
+fn printUsing(self: *Self, using: *Node.Using) Error!void {
+    try self.printIndent();
 
-    try writer.print("Using: {s}, Target {s}\n", .{ @tagName(using.type), using.target });
+    try self.writer.print("Using: {s}, Target {s}\n", .{ @tagName(using.type), using.target });
 }
 
-fn printClass(writer: anytype, indent: *usize, class: *Node.Class) Error!void {
-    try printIndent(writer, indent);
+fn printClass(self: *Self, class: *Node.Class) Error!void {
+    try self.printIndent();
 
-    try writer.print("Class: {s}, Base Class: {?s}\n", .{ class.name, class.base_class });
+    try self.writer.print("Class: {s}, Base Class: {?s}\n", .{ class.name, class.base_class });
 
-    indent.* += 1;
-    defer indent.* -= 1;
+    self.indent += 1;
+    defer self.indent -= 1;
 
     if (class.identifier) |identifier| {
-        try printIndent(writer, indent);
-        try writer.print("Identifier:\n", .{});
+        try self.printIndent();
+        try self.writer.print("Identifier:\n", .{});
 
-        indent.* += 1;
-        defer indent.* -= 1;
+        self.indent += 1;
+        defer self.indent -= 1;
 
-        try printIndent(writer, indent);
-        try printExpression(writer, indent, identifier);
+        try self.printIndent();
+        try self.printExpression(identifier);
     }
 
     for (class.fields) |field| {
-        try printIndent(writer, indent);
-        try writer.print(
+        try self.printIndent();
+        try self.writer.print(
             "Field: {s}, Modifiers: {}, Type: ",
             .{ field.name, field.modifiers },
         );
-        try printType(writer, indent, field.type);
-        try writer.writeByte('\n');
+        try self.printType(field.type);
+        try self.writer.writeByte('\n');
 
-        indent.* += 1;
-        defer indent.* -= 1;
+        self.indent += 1;
+        defer self.indent -= 1;
 
         if (field.default_value) |default_value| {
-            try printIndent(writer, indent);
-            try writer.writeAll("Default Value:\n");
+            try self.printIndent();
+            try self.writer.writeAll("Default Value:\n");
 
-            indent.* += 1;
-            defer indent.* -= 1;
+            self.indent += 1;
+            defer self.indent -= 1;
 
-            try printIndent(writer, indent);
-            try printExpression(writer, indent, default_value);
+            try self.printIndent();
+            try self.printExpression(default_value);
         }
     }
 
     for (class.properties) |property| {
-        try printIndent(writer, indent);
-        try writer.print(
+        try self.printIndent();
+        try self.writer.print(
             "Property: {s}, Modifiers: {}, Type: ",
             .{ property.name, property.modifiers },
         );
-        try printType(writer, indent, property.type);
-        try writer.writeByte('\n');
+        try self.printType(property.type);
+        try self.writer.writeByte('\n');
 
-        try printIndent(writer, indent);
+        try self.printIndent();
         switch (property.get_body) {
             .missing, .forward_declaration => {},
             .expression => |expression| {
-                try writer.writeAll("Get body:\n");
+                try self.writer.writeAll("Get body:\n");
 
-                indent.* += 1;
-                defer indent.* -= 1;
+                self.indent += 1;
+                defer self.indent -= 1;
 
-                try printIndent(writer, indent);
+                try self.printIndent();
 
-                try printExpression(writer, indent, expression);
+                try self.printExpression(expression);
             },
         }
     }
 
     for (class.functions) |function| {
-        try printIndent(writer, indent);
-        try writer.print(
+        try self.printIndent();
+        try self.writer.print(
             "Function: {s}, Modifiers {}, Type: ",
             .{ function.name, function.modifiers },
         );
-        try printType(writer, indent, function.return_type);
-        try writer.writeAll(", Parameters: [ ");
+        try self.printType(function.return_type);
+        try self.writer.writeAll(", Parameters: [ ");
         for (function.parameters) |parameter| {
-            try writer.print("{{ Name: {s}, Type: ", .{parameter.name});
-            try printType(writer, indent, parameter.type);
-            try writer.writeAll("}, ");
+            try self.writer.print("{{ Name: {s}, Type: ", .{parameter.name});
+            try self.printType(parameter.type);
+            try self.writer.writeAll("}, ");
         }
-        try writer.writeAll("]\n");
+        try self.writer.writeAll("]\n");
 
         if (function.body) |body| {
-            indent.* += 1;
-            defer indent.* -= 1;
+            self.indent += 1;
+            defer self.indent -= 1;
 
-            try printIndent(writer, indent);
-            try printExpression(writer, indent, body);
+            try self.printIndent();
+            try self.printExpression(body);
         }
     }
 }
 
-fn printType(writer: anytype, indent: *usize, tree_type: Parser.Type) Error!void {
-    _ = indent; // autofix
-
+fn printType(self: *Self, tree_type: Parser.Type) Error!void {
     switch (tree_type) {
         .parsed => |parsed| {
             if (parsed.dimension_count > 0) {
-                try writer.print(
+                try self.writer.print(
                     "{s} ({d} dimensions)",
                     .{ parsed.name, parsed.dimension_count },
                 );
             } else {
-                try writer.print("{s}", .{parsed.name});
+                try self.writer.print("{s}", .{parsed.name});
             }
         },
-        .resolved => try writer.writeAll("todo"),
-        .unknown => try writer.writeAll("unknown"),
+        .resolved => |resolved| {
+            switch (resolved) {
+                .runtime_type => |runtime_type| {
+                    if (runtime_type.dimension_count > 0) try self.writer.print(
+                        "Name: {s}, Machine Type: {s}, Fish Type: {s}, Dimension Count: {d}, Array Base Machine Type: {s}, Script: {?}",
+                        .{
+                            if (runtime_type.type_name == 0xFFFFFFFF)
+                                "(unknown)"
+                            else
+                                self.a_string_table.keys()[runtime_type.type_name],
+                            @tagName(runtime_type.machine_type),
+                            @tagName(runtime_type.fish_type),
+                            runtime_type.dimension_count,
+                            @tagName(runtime_type.array_base_machine_type),
+                            runtime_type.script,
+                        },
+                    ) else try self.writer.print(
+                        "Name: {s}, Machine Type: {s}, Fish Type: {s}, Script: {?}",
+                        .{
+                            if (runtime_type.type_name == 0xFFFFFFFF)
+                                "(unknown)"
+                            else
+                                self.a_string_table.keys()[runtime_type.type_name],
+                            @tagName(runtime_type.machine_type),
+                            @tagName(runtime_type.fish_type),
+                            runtime_type.script,
+                        },
+                    );
+                },
+                .integer_literal => try self.writer.print("Integer Literal", .{}),
+                .float_literal => try self.writer.print("Float Literal", .{}),
+                .type => |type_name| try self.writer.writeAll(type_name),
+            }
+        },
+        .unknown => try self.writer.writeAll("unknown"),
     }
 }
 
-fn printExpression(writer: anytype, indent: *usize, expression: *Node.Expression) Error!void {
+fn printExpression(self: *Self, expression: *Node.Expression) Error!void {
     switch (expression.contents) {
-        .guid_literal => |guid| try writer.print("GUID literal: {d}", .{guid}),
-        .integer_literal => |literal| try writer.print(
+        .guid_literal => |guid| try self.writer.print("GUID literal: {d}", .{guid}),
+        .integer_literal => |literal| try self.writer.print(
             "Integer literal: {d} ({s})",
             .{ literal.value, @tagName(literal.base) },
         ),
         .block => |block| {
-            try writer.writeAll("Block:\n");
+            try self.writer.writeAll("Block:\n");
 
-            indent.* += 1;
-            defer indent.* -= 1;
+            self.indent += 1;
+            defer self.indent -= 1;
 
-            try printBlock(writer, indent, block);
+            try self.printBlock(block);
         },
         .variable_or_class_access => |variable_or_class_access| {
-            try writer.print("Variable or class access: {s}", .{variable_or_class_access});
+            try self.writer.print("Variable or class access: {s}", .{variable_or_class_access});
         },
         .function_call => |function_call| {
-            try writer.print(
+            try self.writer.print(
                 "Function call: {s}, Type: ",
                 .{switch (function_call.function) {
                     .name => |name| name,
                     .function => |function| function.name,
                 }},
             );
-            try printType(writer, indent, function_call.type);
-            try writer.writeByte('\n');
+            try self.printType(function_call.type);
+            try self.writer.writeByte('\n');
 
-            indent.* += 1;
-            defer indent.* -= 1;
+            self.indent += 1;
+            defer self.indent -= 1;
 
             for (function_call.parameters) |parameter| {
-                try printIndent(writer, indent);
-                try writer.writeAll("Parameter:\n");
+                try self.printIndent();
+                try self.writer.writeAll("Parameter:\n");
 
-                indent.* += 1;
-                defer indent.* -= 1;
+                self.indent += 1;
+                defer self.indent -= 1;
 
-                try printIndent(writer, indent);
-                try printExpression(writer, indent, parameter);
+                try self.printIndent();
+                try self.printExpression(parameter);
             }
         },
         .ascii_string_literal => |ascii_string_literal| {
-            try writer.print("ASCII string literal: {s}", .{ascii_string_literal});
+            try self.writer.print("ASCII string literal: {s}", .{ascii_string_literal});
         },
         .wide_string_literal => |wide_string_literal| {
-            try writer.print("UTF-16 string literal: {s}", .{wide_string_literal});
+            try self.writer.print("UTF-16 string literal: {s}", .{wide_string_literal});
+        },
+        .bitwise_and, .not_equal => |bitwise_and| {
+            try self.writer.print("{s}:\n", .{@tagName(expression.contents)});
+
+            self.indent += 1;
+            defer self.indent -= 1;
+
+            try self.printIndent();
+            try self.writer.print("Lefthand:\n", .{});
+
+            {
+                self.indent += 1;
+                defer self.indent -= 1;
+
+                try self.printIndent();
+                try self.printExpression(bitwise_and.lefthand);
+            }
+
+            try self.printIndent();
+            try self.writer.print("Righthand:\n", .{});
+
+            {
+                self.indent += 1;
+                defer self.indent -= 1;
+
+                try self.printIndent();
+                try self.printExpression(bitwise_and.righthand);
+            }
         },
         .assignment => |assignment| {
-            try writer.writeAll("Assignment:\n");
+            try self.writer.writeAll("Assignment:\n");
 
             {
-                indent.* += 1;
-                defer indent.* -= 1;
+                self.indent += 1;
+                defer self.indent -= 1;
 
-                try printIndent(writer, indent);
-                try writer.writeAll("Destination:\n");
+                try self.printIndent();
+                try self.writer.writeAll("Destination:\n");
 
-                indent.* += 1;
-                defer indent.* -= 1;
+                self.indent += 1;
+                defer self.indent -= 1;
 
-                try printIndent(writer, indent);
-                try printExpression(writer, indent, assignment.destination);
+                try self.printIndent();
+                try self.printExpression(assignment.destination);
             }
 
             {
-                indent.* += 1;
-                defer indent.* -= 1;
+                self.indent += 1;
+                defer self.indent -= 1;
 
-                try printIndent(writer, indent);
-                try writer.writeAll("Value:\n");
+                try self.printIndent();
+                try self.writer.writeAll("Value:\n");
 
-                indent.* += 1;
-                defer indent.* -= 1;
+                self.indent += 1;
+                defer self.indent -= 1;
 
-                try printIndent(writer, indent);
-                try printExpression(writer, indent, assignment.value);
+                try self.printIndent();
+                try self.printExpression(assignment.value);
             }
         },
-        else => |tag| try writer.print("todo {s}", .{@tagName(tag)}),
+        else => |tag| try self.writer.print("todo {s}", .{@tagName(tag)}),
     }
 
-    try writer.writeByte('\n');
+    try self.writer.writeByte('\n');
 }
 
-fn printBlock(writer: anytype, indent: *usize, nodes: []const Node) Error!void {
+fn printBlock(self: *Self, nodes: []const Node) Error!void {
     for (nodes) |node| {
-        try printIndent(writer, indent);
+        try self.printIndent();
         switch (node) {
             .variable_declaration => |variable_declaration| {
-                try writer.print(
+                try self.writer.print(
                     "Variable Declaration: {s}, Type: ",
                     .{variable_declaration.name},
                 );
-                try printType(writer, indent, variable_declaration.type);
-                try writer.writeByte('\n');
+                try self.printType(variable_declaration.type);
+                try self.writer.writeByte('\n');
                 if (variable_declaration.value) |value| {
-                    indent.* += 1;
-                    defer indent.* -= 1;
+                    self.indent += 1;
+                    defer self.indent -= 1;
 
-                    try printIndent(writer, indent);
-                    try writer.writeAll("Value:\n");
+                    try self.printIndent();
+                    try self.writer.writeAll("Value:\n");
 
-                    indent.* += 1;
-                    defer indent.* -= 1;
+                    self.indent += 1;
+                    defer self.indent -= 1;
 
-                    try printIndent(writer, indent);
-                    try printExpression(writer, indent, value);
+                    try self.printIndent();
+                    try self.printExpression(value);
                 }
             },
             .expression => |expression| {
-                try writer.print(
+                try self.writer.print(
                     "Expression, Type: ",
                     .{},
                 );
-                try printType(writer, indent, expression.type);
-                try writer.writeByte('\n');
+                try self.printType(expression.type);
+                try self.writer.writeByte('\n');
 
-                indent.* += 1;
-                defer indent.* -= 1;
+                self.indent += 1;
+                defer self.indent -= 1;
 
-                try printIndent(writer, indent);
-                try printExpression(writer, indent, expression);
+                try self.printIndent();
+                try self.printExpression(expression);
             },
-            else => |tag| try writer.print("todo: {s}\n", .{@tagName(tag)}),
+            .if_statement => |if_statement| {
+                try self.writer.print(
+                    "If Statement:\n",
+                    .{},
+                );
+
+                self.indent += 1;
+                defer self.indent -= 1;
+
+                try self.printIndent();
+                try self.writer.writeAll("Condition:\n");
+
+                {
+                    self.indent += 1;
+                    defer self.indent -= 1;
+
+                    try self.printIndent();
+                    try self.printExpression(if_statement.condition);
+                }
+            },
+            else => |tag| try self.writer.print("todo: {s}\n", .{@tagName(tag)}),
         }
     }
 }
 
-fn printIndent(writer: anytype, indent: *usize) Error!void {
-    for (0..indent.*) |_| {
-        try writer.writeAll("    ");
+fn printIndent(self: *Self) Error!void {
+    for (0..self.indent) |_| {
+        try self.writer.writeAll("    ");
     }
 }

@@ -181,7 +181,6 @@ pub fn main() !void {
                 .{ .guid = identifier }
             else
                 null;
-            _ = script_identifier; // autofix
 
             var defined_libraries = Resolvinator.Libraries.init(allocator);
             defer {
@@ -227,23 +226,29 @@ pub fn main() !void {
 
                 const ast = try Parser.parse(ast_allocator, lexemes);
 
-                try Debug.dumpAst(stdout, ast);
+                // try Debug.dumpAst(stdout, ast);
 
                 var a_string_table = Resolvinator.AStringTable.init(allocator);
                 defer a_string_table.deinit();
 
-                // try Resolvinator.resolve(
-                //     ast,
-                //     defined_libraries,
-                //     &a_string_table,
-                //     script_identifier,
-                // );
-                // try Debug.dumpAst(stdout, ast);
+                try Resolvinator.resolve(
+                    ast,
+                    defined_libraries,
+                    &a_string_table,
+                    script_identifier,
+                );
 
-                const string_table_keys = a_string_table.keys();
-                for (string_table_keys, 0..) |str, i| {
-                    std.debug.print("string {d}: {s}\n", .{ i, str });
-                }
+                var debug = Debug{
+                    .indent = 0,
+                    .writer = stdout.any(),
+                    .a_string_table = &a_string_table,
+                };
+                try debug.dumpAst(ast);
+
+                // const string_table_keys = a_string_table.keys();
+                // for (string_table_keys, 0..) |str, i| {
+                //     std.debug.print("string {d}: {s}\n", .{ i, str });
+                // }
 
                 // for (ast.root_elements.items) |item| {
                 //     switch (item) {

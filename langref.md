@@ -14,18 +14,23 @@ This is a document describing the variant of the A# language used by the zishzin
 
 ```
 expression          → assignment ;
-assignment          → bitwise "=" assignment
-                    | bitwise ;
-bitwise             → equality ( ( "&" | "^" | "|" ) equality )* ;
+assignment          → equality "=" assignment
+                    | equality ;
 equality            → comparison ( ( "!=" | "==" ) comparison )* ;
-comparison          → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
+comparison          → bitwise ( ( ">" | ">=" | "<" | "<=" ) bitwise )* ;
+bitwise             → term ( ( "&" | "^" | "|" ) term )* ;
 term                → factor ( ( "-" | "+" ) factor )* ;
 factor              → unary ( ( "/" | "*" ) unary )* ;
 unary               → ( "!" | "-" ) unary
                     | dot ;
 dot                 → primary ( "." ( FIELD | function_call ) )* ;
-primary             → NUMBER | "true" | "false" | "null"
-                    | "(" expression ")" 
+primary             → "true" | "false" | "null" | "this"
+                    | "(" expression ")"
+                    | INTEGER_LITERAL
+                    | FLOAT_LITERAL
+                    | vec2_construction
+                    | vec3_construction
+                    | vec4_construction
                     | function_call 
                     | guid_literal
                     | hash_literal
@@ -34,6 +39,13 @@ primary             → NUMBER | "true" | "false" | "null"
                     | VARIABLE_ACCESS ;
 hash_literal        → hSHA1HASH ;
 guid_literal        → gNUMBER ;
+vec2_construction   → "float2(" expression "," expression ")"
+vec3_construction   → "float3(" expression "," expression "," expression ")"
+vec4_construction   → "float4(" 
+                      expression "," 
+                      expression "," 
+                      expression "," 
+                      expression ")"
 function_call       → FUNCTION_NAME "(" 
                       expression
                       | ( expression "," )+ expression
