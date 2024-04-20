@@ -1,7 +1,12 @@
+//! Crawls an AST and recursively type resolves all expressions
+
 const std = @import("std");
 
 pub const MMTypes = @import("MMTypes.zig");
 pub const Parser = @import("parser.zig");
+
+pub const AStringTable = std.StringArrayHashMap(void);
+pub const WStringTable = std.AutoArrayHashMap([]const u16, void);
 
 pub const Libraries = std.StringHashMap(std.fs.Dir);
 
@@ -191,6 +196,19 @@ fn recursivelyResolveScript(tree: Parser.Tree, defined_libraries: Libraries, scr
 
     script.is_thing = isScriptThing(script, script_table);
 
+    if (class.base_class == .parsed) {
+        const parsed_base_class = class.base_class.parsed;
+
+        _ = script.imported_types.get(parsed_base_class) orelse std.debug.panic("base class {s} not found\n", .{parsed_base_class});
+
+        const base_script = script_table.get(parsed_base_class).?;
+
+        class.base_class = .{ .resolved = .{
+            .ident = base_script.resource_identifier,
+            .name = parsed_base_class,
+        } };
+    }
+
     std.debug.print("script {s} is {} thing/notthing\n", .{ script.class_name, script.is_thing });
 }
 
@@ -201,15 +219,13 @@ fn isScriptThing(script: *const ParsedScript, script_table: *const ParsedScriptT
 
     const class = getScriptClassNode(script.ast);
 
-    if (class.base_class) |base_class| {
-        return isScriptThing(script_table.get(base_class).?, script_table);
+    if (class.base_class == .parsed) {
+        return isScriptThing(script_table.get(class.base_class.parsed).?, script_table);
     } else {
         // This class is not Thing, and extends no other classes, therefor it cannot be a Thing
         return false;
     }
 }
-
-pub const AStringTable = std.StringArrayHashMap(void);
 
 pub fn resolve(
     tree: Parser.Tree,
@@ -1078,7 +1094,10 @@ fn findFunction(
                                 try candidates.append(function);
                             }
 
-                            source_script = script_table.get(class.base_class orelse break).?;
+                            if (class.base_class == .none)
+                                break;
+
+                            source_script = script_table.get(class.base_class.resolved.name).?;
                             class = getScriptClassNode(source_script.ast);
                         }
                     },
@@ -1172,13 +1191,13 @@ fn scriptDerivesOtherScript(script: *ParsedScript, other: *ParsedScript, script_
 
     var class = getScriptClassNode(script.ast);
     while (true) {
-        if (class.base_class == null)
+        if (class.base_class == .none)
             break;
 
-        if (std.mem.eql(u8, class.base_class.?, other.class_name))
+        if (std.mem.eql(u8, class.base_class.resolved.name, other.class_name))
             return true;
 
-        class = getScriptClassNode(script_table.get(class.base_class.?).?.ast);
+        class = getScriptClassNode(script_table.get(class.base_class.resolved.name).?.ast);
     }
 
     return false;

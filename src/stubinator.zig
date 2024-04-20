@@ -1,3 +1,5 @@
+//! Generates library stubs from a MAP and a folder of script files
+
 const std = @import("std");
 
 const MMTypes = @import("MMTypes.zig");

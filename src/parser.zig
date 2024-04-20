@@ -161,7 +161,14 @@ pub const Node = union(NodeType) {
 
     pub const Class = struct {
         name: []const u8,
-        base_class: ?[]const u8,
+        base_class: union(enum) {
+            none: void,
+            parsed: []const u8,
+            resolved: struct {
+                name: []const u8,
+                ident: MMTypes.ResourceIdentifier,
+            },
+        },
         identifier: ?*Expression,
 
         fields: []const *Field,
@@ -170,7 +177,7 @@ pub const Node = union(NodeType) {
         constructors: ?[]const *const Constructor,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
-            return writer.print("class{{ class_name = {s}, base_class = {?s}, guid = {?} }}", .{ value.name, value.base_class, value.identifier });
+            return writer.print("class{{ class_name = {s}, base_class = {?}, guid = {?} }}", .{ value.name, value.base_class, value.identifier });
         }
     };
 
@@ -610,7 +617,10 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     node.* = .{
         .constructors = try constructors.toOwnedSlice(),
         .name = class_name,
-        .base_class = base_class,
+        .base_class = if (base_class == null)
+            .none
+        else
+            .{ .parsed = base_class.? },
         .functions = try functions.toOwnedSlice(),
         .fields = try fields.toOwnedSlice(),
         .properties = try properties.toOwnedSlice(),

@@ -43,7 +43,7 @@ fn printUsing(self: *Self, using: *Node.Using) Error!void {
 fn printClass(self: *Self, class: *Node.Class) Error!void {
     try self.printIndent();
 
-    try self.writer.print("Class: {s}, Base Class: {?s}\n", .{ class.name, class.base_class });
+    try self.writer.print("Class: {s}, Base Class: {?}\n", .{ class.name, class.base_class });
 
     self.indent += 1;
     defer self.indent -= 1;

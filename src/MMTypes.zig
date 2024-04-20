@@ -5,7 +5,7 @@ pub const Script = struct {
     up_to_date_script: ?ResourceIdentifier,
     class_name: []const u8,
     super_class_script: ?ResourceIdentifier,
-    modifiers: ?u32,
+    modifiers: ?Modifiers,
     type_references: []const TypeReference,
     field_references: []const FieldReference,
     function_references: []const FunctionReference,

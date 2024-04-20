@@ -6,7 +6,8 @@ pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
     try std.fmt.format(writer, " --- Class Name: {s} ---\n", .{script.class_name});
     try std.fmt.format(writer, " --- Up to date script: {?} ---\n", .{script.up_to_date_script});
     try std.fmt.format(writer, " --- Super class script: {?} ---\n", .{script.super_class_script});
-    try std.fmt.format(writer, " --- Modifiers: {?d} ---\n", .{script.modifiers});
+    try std.fmt.format(writer, " --- Modifiers: {?} ---\n", .{script.modifiers});
+    try std.fmt.format(writer, " --- Depending guids: {?any} ---\n", .{script.depending_guids});
     try std.fmt.format(writer, "\n", .{});
 
     try std.fmt.format(writer, " --- Type References ---\n", .{});
@@ -30,6 +31,16 @@ pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
             try std.fmt.format(writer, "   - Name: {s}\n", .{script.a_string_table.strings[field_reference.name]});
         }
         try std.fmt.format(writer, "   - Type: {*}\n", .{&script.type_references[field_reference.type_reference]});
+    }
+    try std.fmt.format(writer, "\n", .{});
+
+    try std.fmt.format(writer, " --- Function References ---\n", .{});
+    for (script.function_references) |*function_reference| {
+        try std.fmt.format(writer, " - Function {*} \n", .{function_reference});
+        if (function_reference.name != 0xFFFFFFFF) {
+            try std.fmt.format(writer, "   - Name: {s}\n", .{script.a_string_table.strings[function_reference.name]});
+        }
+        try std.fmt.format(writer, "   - Type: {*}\n", .{&script.type_references[function_reference.type_reference]});
     }
     try std.fmt.format(writer, "\n", .{});
 

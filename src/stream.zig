@@ -89,8 +89,8 @@ pub fn MMStream(comptime Stream: type) type {
                 inline else => |read_type_is_u16| {
                     const ScriptReadType = if (read_type_is_u16) u16 else u32;
 
-                    const modifiers: ?u32 = if (self.revision.head >= 0x1e5)
-                        try self.readInt(ScriptReadType)
+                    const modifiers: ?MMTypes.Modifiers = if (self.revision.head >= 0x1e5)
+                        @bitCast(@as(u32, try self.readInt(ScriptReadType)))
                     else
                         null;
 

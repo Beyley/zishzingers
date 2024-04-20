@@ -11,6 +11,7 @@ const Parser = @import("parser.zig");
 const Stubinator = @import("stubinator.zig");
 const Resolvinator = @import("resolvinator.zig");
 const Debug = @import("debug.zig");
+const Genny = @import("genny.zig");
 
 const no_command_error =
     \\No command specified.
@@ -231,6 +232,9 @@ pub fn main() !void {
                 var a_string_table = Resolvinator.AStringTable.init(allocator);
                 defer a_string_table.deinit();
 
+                var w_string_table = Resolvinator.WStringTable.init(allocator);
+                defer w_string_table.deinit();
+
                 try Resolvinator.resolve(
                     ast,
                     defined_libraries,
@@ -244,6 +248,10 @@ pub fn main() !void {
                     .a_string_table = &a_string_table,
                 };
                 try debug.dumpAst(ast);
+
+                var genny = Genny.init(ast, &a_string_table, &w_string_table);
+                const script = try genny.generate();
+                _ = script; // autofix
 
                 // const string_table_keys = a_string_table.keys();
                 // for (string_table_keys, 0..) |str, i| {
