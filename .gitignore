@@ -4,3 +4,4 @@ zig-out/
 alear/
 deploy_std/
 *.disasm
+*.ff
