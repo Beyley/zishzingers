@@ -508,7 +508,7 @@ pub fn MMStream(comptime Stream: type) type {
 
                     //In revision 0x1e5 modifiers were added to scripts
                     if (self.revision.head >= 0x1e5)
-                        try self.writeInt(ScriptWriteType, @intCast(script.modifiers orelse 0));
+                        try self.writeInt(ScriptWriteType, @intCast(@as(u32, @bitCast(script.modifiers orelse MMTypes.Modifiers{}))));
 
                     try self.writeArray(MMTypes.TypeReference, script.type_references, false, ScriptWriteType);
                     try self.writeArray(MMTypes.FieldReference, script.field_references, false, ScriptWriteType);

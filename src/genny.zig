@@ -52,6 +52,20 @@ pub fn init(
     };
 }
 
+pub fn deinit(self: *Self) void {
+    self.s64_constants.deinit();
+    self.f32_constants.deinit();
+    self.type_references.deinit();
+    self.bytecode.deinit();
+    self.arguments.deinit();
+    self.line_numbers.deinit();
+    self.local_variables.deinit();
+    self.function_references.deinit();
+    self.field_references.deinit();
+
+    self.* = undefined;
+}
+
 fn compileFunction(self: *Self, function: *Parser.Node.Function) !MMTypes.FunctionDefinition {
     var bytecode = BytecodeList.init(self.ast.allocator);
     _ = &bytecode;
@@ -61,6 +75,9 @@ fn compileFunction(self: *Self, function: *Parser.Node.Function) !MMTypes.Functi
     _ = &line_numbers;
     var local_variables = LocalVariableList.init(self.ast.allocator);
     _ = &local_variables;
+
+    //TODO: Add an ASSERT at the end of the function as a safety barrier to prevent buffer overruns if somehow a RET is dropped at the end
+    //TODO: let users put this under a debug flag, once this is implemented
 
     return .{
         .name = @intCast((try self.a_string_table.getOrPut(function.name)).index),

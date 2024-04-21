@@ -46,6 +46,8 @@ pub fn main() !void {
     const allocator = gpa.allocator();
 
     var arg_iter = try std.process.ArgIterator.initWithAllocator(allocator);
+    defer arg_iter.deinit();
+    
     _ = arg_iter.next(); //skip exe name
 
     const command_str = arg_iter.next() orelse {
@@ -142,6 +144,11 @@ pub fn main() !void {
                     var resource = try Resource.readResource(file_contents, allocator);
                     defer resource.deinit();
 
+                    std.debug.print("compression {}\n", .{resource.stream.compression_flags});
+                    std.debug.print("revision {}\n", .{resource.stream.revision});
+
+                    std.debug.dump_hex(resource.stream.stream.buffer);
+
                     const script = try resource.stream.readScript(allocator);
                     defer script.deinit(allocator);
 
@@ -155,6 +162,7 @@ pub fn main() !void {
                 \\-o, --out-file <str>             The output path for the compilation, defaults to "inputname.ff"
                 \\-l, --library <str>...           A library to import, with the syntax `name:path`
                 \\-i, --identifier <u32>           The GUID of the script being compiled,
+                \\-r, --revision <u32>             The revision of the asset to be serialized
                 \\                                 this overrides the GUID specified in the file.
                 \\<str>                            The source file
                 \\
@@ -172,7 +180,7 @@ pub fn main() !void {
             defer res.deinit();
 
             //If no arguments are passed or the user requested the help menu, display the help menu
-            if (res.args.help != 0 or res.positionals.len == 0) {
+            if (res.args.help != 0 or res.positionals.len == 0 or res.args.revision == null) {
                 try clap.help(stderr, clap.Help, &params, .{});
 
                 return;
@@ -250,8 +258,50 @@ pub fn main() !void {
                 try debug.dumpAst(ast);
 
                 var genny = Genny.init(ast, &a_string_table, &w_string_table);
+                defer genny.deinit();
+
                 const script = try genny.generate();
-                _ = script; // autofix
+
+                //TODO: actually use `output` parameter
+                const out_path = try std.fmt.allocPrint(allocator, "{s}.ff", .{std.fs.path.stem(source_file)});
+                defer allocator.free(out_path);
+                const out = try std.fs.cwd().createFile(out_path, .{});
+                defer out.close();
+
+                const compression_flags = .{
+                    .compressed_integers = true,
+                    .compressed_matrices = true,
+                    .compressed_vectors = true,
+                };
+
+                const revision = .{
+                    .head = res.args.revision.?,
+                    .branch_revision = 0,
+                    .branch_id = 0,
+                };
+
+                var resource_stream = Stream.MMStream(ArrayListStreamSource){
+                    .stream = .{
+                        .array_list = std.ArrayList(u8).init(allocator),
+                        .pos = 0,
+                    },
+                    .compression_flags = compression_flags,
+                    .revision = revision,
+                };
+                defer resource_stream.stream.array_list.deinit();
+
+                try resource_stream.writeScript(script, allocator);
+
+                var file_stream: std.io.StreamSource = .{ .file = out };
+                try Resource.writeResource(
+                    .script,
+                    compression_flags,
+                    &.{}, //TODO: write out dependencies by pulling referenced files
+                    revision,
+                    &file_stream,
+                    resource_stream.stream.array_list.items,
+                    allocator,
+                );
 
                 // const string_table_keys = a_string_table.keys();
                 // for (string_table_keys, 0..) |str, i| {

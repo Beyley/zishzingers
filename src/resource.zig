@@ -65,6 +65,8 @@ pub fn writeResource(
         //In revision 0x272 on the non-zero branch, compression flags were added. In revision 0x297, compression flags were made manditory
         if (revision.head >= 0x297 or (revision.head == 0x272 and revision.branch_id != 0)) {
             try writer.writeByte(@bitCast(compression_flags));
+        } else if (compression_flags.compressed_integers or compression_flags.compressed_matrices or compression_flags.compressed_vectors) {
+            std.debug.panic("unable to serialize compressed data when revision is (< 0x297) or (0x272 + nonzero branch id)", .{});
         }
 
         //Write whether its compressed with zlib compression
