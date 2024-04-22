@@ -91,7 +91,12 @@ pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
 
                         switch (ParamsType) {
                             MMTypes.NopClass => {},
-                            MMTypes.LoadConstClass => try std.fmt.format(writer, "r{d}, cid{d}", .{ params.dst_idx, params.constant_idx }),
+                            MMTypes.LoadConstClass => {
+                                switch (op) {
+                                    .LCsw => try std.fmt.format(writer, "r{d}, \"{}\"", .{ params.dst_idx, std.unicode.fmtUtf16Le(script.w_string_table.strings[params.constant_idx]) }),
+                                    else => try std.fmt.format(writer, "r{d}, cid{d}", .{ params.dst_idx, params.constant_idx }),
+                                }
+                            },
                             MMTypes.UnaryClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.src_idx }),
                             MMTypes.BinaryClass => try std.fmt.format(writer, "r{d}, r{d}, r{d}", .{ params.dst_idx, params.src_a_idx, params.src_b_idx }),
                             MMTypes.GetBuiltinMemberClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
