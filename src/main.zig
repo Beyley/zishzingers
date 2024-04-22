@@ -47,7 +47,7 @@ pub fn main() !void {
 
     var arg_iter = try std.process.ArgIterator.initWithAllocator(allocator);
     defer arg_iter.deinit();
-    
+
     _ = arg_iter.next(); //skip exe name
 
     const command_str = arg_iter.next() orelse {
@@ -303,32 +303,7 @@ pub fn main() !void {
                     allocator,
                 );
 
-                // const string_table_keys = a_string_table.keys();
-                // for (string_table_keys, 0..) |str, i| {
-                //     std.debug.print("string {d}: {s}\n", .{ i, str });
-                // }
-
-                // for (ast.root_elements.items) |item| {
-                //     switch (item) {
-                //         .class => |class| {
-                //             std.debug.print("{}\n", .{class.*});
-
-                //             for (class.fields) |field| {
-                //                 std.debug.print("field {}\n", .{field.*});
-                //             }
-
-                //             for (class.functions) |function| {
-                //                 std.debug.print("function {}\n", .{function.*});
-                //                 std.debug.print("function body {?}\n", .{function.body});
-                //             }
-
-                //             std.debug.print("{?any}\n", .{class.constructors});
-                //         },
-                //         inline else => |ptr| {
-                //             std.debug.print("{}\n", .{ptr.*});
-                //         },
-                //     }
-                // }
+                try Disasm.disassembleScript(stdout, script);
             }
         },
         .generate_library => {

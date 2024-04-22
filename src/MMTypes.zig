@@ -1464,6 +1464,25 @@ pub const MachineType = enum(u8) {
     s64 = 0xc,
     /// A 64-bit floating point number
     f64 = 0xd,
+
+    pub fn size(self: MachineType) u16 {
+        return switch (self) {
+            .void => 0,
+            .bool => 1,
+            .char => 2,
+            .s32 => 4,
+            .f32 => 4,
+            .v4 => 4 * 4,
+            .m44 => 4 * 4 * 4,
+            .raw_ptr => 4,
+            .ref_ptr => 4,
+            .safe_ptr => 4,
+            .object_ref => 4,
+            .s64 => 8,
+            .f64 => 8,
+            .deprecated => unreachable,
+        };
+    }
 };
 
 /// Also known as BuiltInType

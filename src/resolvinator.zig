@@ -6,7 +6,26 @@ pub const MMTypes = @import("MMTypes.zig");
 pub const Parser = @import("parser.zig");
 
 pub const AStringTable = std.StringArrayHashMap(void);
-pub const WStringTable = std.AutoArrayHashMap([]const u16, void);
+pub const WStringTable = std.ArrayHashMap([]const u16, void, struct {
+    pub fn hash(self: @This(), s: []const u16) u32 {
+        _ = self;
+        return hashString(s);
+    }
+
+    pub fn eql(self: @This(), a: []const u16, b: []const u16, b_index: usize) bool {
+        _ = self;
+        _ = b_index;
+        return eqlString(a, b);
+    }
+
+    pub fn hashString(s: []const u16) u32 {
+        return @as(u32, @truncate(std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(s))));
+    }
+
+    pub fn eqlString(a: []const u16, b: []const u16) bool {
+        return std.mem.eql(u16, a, b);
+    }
+}, true);
 
 pub const Libraries = std.StringHashMap(std.fs.Dir);
 
@@ -241,6 +260,8 @@ pub fn resolve(
     //Get the class of the script
     const class = getScriptClassNode(tree);
 
+    class.type_reference = (try typeReferenceFromScript(script_table.get(class.name).?, 0, a_string_table)).runtime_type;
+
     const script = script_table.get(class.name) orelse unreachable;
 
     std.debug.print("type resolving {s}\n", .{script.class_name});
@@ -402,13 +423,6 @@ fn resolveExpression(
             // This is to allow constructs like `func(a = 2);`
             expression.type = assignment.destination.type;
         },
-        .this => {
-            expression.type = .{ .resolved = try typeReferenceFromScript(
-                script,
-                0,
-                a_string_table,
-            ) };
-        },
         .member_function_call => |member_function_call| {
             //Resolve the source expression
             try resolveExpression(
@@ -505,15 +519,26 @@ fn resolveExpression(
                     .type = typeFromName(variable_or_class_access),
                 };
             } else {
-                const variable = function_variable_stack.?.stack.get(variable_or_class_access) orelse std.debug.panic(
-                    "could not find variable {s}",
-                    .{variable_or_class_access},
-                );
+                if (!function_variable_stack.?.function.modifiers.static and std.mem.eql(u8, variable_or_class_access, "this")) {
+                    expression.* = .{
+                        .contents = .{ .variable_access = variable_or_class_access },
+                        .type = .{ .resolved = try typeReferenceFromScript(
+                            script,
+                            0,
+                            a_string_table,
+                        ) },
+                    };
+                } else {
+                    const variable = function_variable_stack.?.stack.get(variable_or_class_access) orelse std.debug.panic(
+                        "could not find variable {s}",
+                        .{variable_or_class_access},
+                    );
 
-                expression.* = .{
-                    .contents = .{ .variable_access = variable_or_class_access },
-                    .type = variable.type,
-                };
+                    expression.* = .{
+                        .contents = .{ .variable_access = variable_or_class_access },
+                        .type = variable.type,
+                    };
+                }
             }
 
             std.debug.assert(expression.contents != .variable_or_class_access);
@@ -1250,7 +1275,7 @@ fn resolveParsedType(
     }
 }
 
-fn typeReferenceFromScript(script: *ParsedScript, dimension_count: u8, a_string_table: *AStringTable) Error!Parser.Type.Resolved {
+pub fn typeReferenceFromScript(script: *ParsedScript, dimension_count: u8, a_string_table: *AStringTable) Error!Parser.Type.Resolved {
     //Get the idx of the name of this script, or put into the string table
     const name_idx = try a_string_table.getOrPut(script.class_name);
 

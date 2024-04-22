@@ -24,7 +24,7 @@ factor              → unary ( ( "/" | "*" ) unary )* ;
 unary               → ( "!" | "-" ) unary
                     | dot ;
 dot                 → primary ( "." ( FIELD | function_call ) )* ;
-primary             → "true" | "false" | "null" | "this"
+primary             → "true" | "false" | "null"
                     | "(" expression ")"
                     | INTEGER_LITERAL
                     | FLOAT_LITERAL

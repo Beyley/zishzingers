@@ -176,6 +176,8 @@ pub const Node = union(NodeType) {
         functions: []const *Function,
         constructors: ?[]const *const Constructor,
 
+        type_reference: ?MMTypes.TypeReference,
+
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return writer.print("class{{ class_name = {s}, base_class = {?}, guid = {?} }}", .{ value.name, value.base_class, value.identifier });
         }
@@ -299,7 +301,6 @@ pub const Node = union(NodeType) {
             /// An access of a class
             class_access: []const u8,
             variable_access: []const u8,
-            this: void,
             numeric_negation: *Expression,
             logical_negation: *Expression,
             function_call: struct {
@@ -352,7 +353,6 @@ pub const Node = union(NodeType) {
                     .variable_or_class_access => |literal| writer.print("expression_contents{{ .variable_or_class_access = {s} }}", .{literal}),
                     .variable_access => |literal| writer.print("expression_contents{{ .variable_access = {s} }}", .{literal}),
                     .class_access => |literal| writer.print("expression_contents{{ .class_access = {s} }}", .{literal}),
-                    .this => writer.print("expression_contents{{ .this }}", .{}),
                     .numeric_negation => |literal| writer.print("expression_contents{{ .numeric_negation = {} }}", .{literal}),
                     .logical_negation => |literal| writer.print("expression_contents{{ .logical_negation = {} }}", .{literal}),
                     .function_call => |literal| writer.print("expression_contents{{ .function_call = .{{ .function = {}, .parameters = {any} }} }}", .{ literal.function, literal.parameters }),
@@ -516,6 +516,7 @@ fn consumeTopLevel(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
             hashKeyword("using") => try consumeUsingStatement(tree, iter),
             hashKeyword("import") => try consumeImportStatement(tree, iter),
             hashKeyword("from") => try consumeFromImportStatement(tree, iter),
+            //TODO: classes can be abstract and divergent
             hashKeyword("class") => try consumeClassStatement(tree, iter),
             else => {
                 std.debug.panic("Unexpected top level lexeme \"{s}\"", .{lexeme});
@@ -625,6 +626,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
         .fields = try fields.toOwnedSlice(),
         .properties = try properties.toOwnedSlice(),
         .identifier = identifier,
+        .type_reference = null,
     };
 
     try tree.root_elements.append(tree.allocator, .{ .class = node });
@@ -839,7 +841,7 @@ fn isFloatLiteral(str: []const u8) !?f64 {
 
 fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
     // Try to match bool/null literals
-    if (consumeAnyMatches(iter, &.{ "true", "false", "null", "this" })) |match| {
+    if (consumeAnyMatches(iter, &.{ "true", "false", "null" })) |match| {
         switch (match) {
             .true, .false => {
                 const expression = try allocator.create(Node.Expression);
@@ -847,16 +849,6 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
                 expression.* = .{
                     .contents = .{ .bool_literal = match == .true },
                     .type = .{ .parsed = Type.Parsed.Bool },
-                };
-
-                return expression;
-            },
-            .this => {
-                const expression = try allocator.create(Node.Expression);
-
-                expression.* = .{
-                    .contents = .this,
-                    .type = .unknown,
                 };
 
                 return expression;
