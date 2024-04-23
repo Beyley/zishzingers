@@ -230,6 +230,14 @@ const Codegen = struct {
         } }, machine_type));
     }
 
+    pub fn emitGetObjectMember(self: *Codegen, dst_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .GET_OBJ_MEMBER = .{
+            .dst_idx = dst_idx,
+            .base_idx = base_idx,
+            .field_ref = field_ref,
+        } }, machine_type));
+    }
+
     pub fn emitBoolToS32(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .INTb = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
     }
@@ -481,6 +489,37 @@ fn compileExpression(
 
             break :blk null;
         },
+        .field_access => |field_access| blk: {
+            if (discard_result)
+                break :blk null;
+
+            const source_variable = scope_local_variables.get(field_access.source.contents.variable_access).?;
+
+            const source_variable_type = codegen.genny.type_references.keys()[source_variable.type_reference];
+
+            const machine_type = expression.type.resolved.runtime_type.machine_type;
+
+            const register = result_register orelse try codegen.register_allocator.allocate(machine_type);
+
+            const field_reference: u16 = @intCast((try codegen.genny.field_references.getOrPut(.{
+                .name = @intCast((try codegen.genny.a_string_table.getOrPut(field_access.field)).index),
+                .type_reference = @intCast((try codegen.genny.type_references.getOrPut(source_variable_type)).index),
+            })).index);
+
+            switch (source_variable_type.machine_type) {
+                .object_ref => {
+                    try codegen.emitGetObjectMember(
+                        register[0],
+                        @intCast(source_variable.offset),
+                        field_reference,
+                        machine_type,
+                    );
+                },
+                else => |tag| std.debug.panic("unable to do field access on machine type {s}", .{@tagName(tag)}),
+            }
+
+            break :blk register;
+        },
         else => |tag| std.debug.panic("cant codegen for expression {s} yet\n", .{@tagName(tag)}),
     };
 }
@@ -491,12 +530,16 @@ fn compileBlock(
     scope_local_variables: *LocalVariableTable,
     block: []const Parser.Node,
     class: *Parser.Node.Class,
+    top_level: bool,
+    return_type: MMTypes.MachineType,
 ) !void {
     _ = class; // autofix
 
     var local_variables_from_this_scope = std.ArrayList([]const u8).init(codegen.register_allocator.allocator);
 
-    for (block) |node| {
+    var return_emit = false;
+
+    for (block) |node| block_loop: {
         switch (node) {
             .variable_declaration => |variable_declaration| {
                 const runtime_type = variable_declaration.type.resolved.runtime_type;
@@ -561,6 +604,11 @@ fn compileBlock(
                 } else {
                     try codegen.emitRet(0, .void);
                 }
+
+                return_emit = true;
+
+                // At a return statement, immediately break out of the block, we dont need to generate code after a return statement
+                break :block_loop;
             },
             else => |tag| std.debug.panic("cant codegen for block {s} yet\n", .{@tagName(tag)}),
         }
@@ -575,6 +623,16 @@ fn compileBlock(
             codegen.genny.type_references.keys()[local_variable.type_reference].machine_type,
         });
         _ = scope_local_variables.swapRemove(local_variable_to_free);
+    }
+
+    if (top_level and !return_emit) {
+        if (return_type == .void) {
+            //On void return functions, we can emit an implicit RET
+            try codegen.emitRet(0, .void);
+        } else {
+            //On non void return functions, we need to error
+            std.debug.panic("non void return function does not return at end of function!", .{});
+        }
     }
 }
 
@@ -638,6 +696,8 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         &scope_local_variables,
         function.body.?.contents.block,
         class,
+        true,
+        function.return_type.resolved.runtime_type.machine_type,
     );
 
     //TODO: let users put this safety feature under a debug flag
