@@ -712,6 +712,7 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
     const stack_size = codegen.register_allocator.highest_register + 1;
 
     return .{
+        //TODO: this name needs to be mangled
         .name = @intCast((try self.a_string_table.getOrPut(function.name)).index),
         .modifiers = function.modifiers,
         .stack_size = stack_size,
