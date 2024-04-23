@@ -147,8 +147,6 @@ pub fn main() !void {
                     std.debug.print("compression {}\n", .{resource.stream.compression_flags});
                     std.debug.print("revision {}\n", .{resource.stream.revision});
 
-                    std.debug.dump_hex(resource.stream.stream.buffer);
-
                     const script = try resource.stream.readScript(allocator);
                     defer script.deinit(allocator);
 

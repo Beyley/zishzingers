@@ -222,14 +222,12 @@ fn printExpression(self: *Self, expression: *Node.Expression) Error!void {
         },
         .function_call => |function_call| {
             try self.writer.print(
-                "Function call: {s}, Type: ",
+                "Function call: {s}\n",
                 .{switch (function_call.function) {
                     .name => |name| name,
-                    .function => |function| function.name,
+                    .function => |function| function.function.name,
                 }},
             );
-            try self.printType(function_call.type);
-            try self.writer.writeByte('\n');
 
             self.indent += 1;
             defer self.indent -= 1;

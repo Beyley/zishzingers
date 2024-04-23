@@ -423,46 +423,6 @@ fn resolveExpression(
             // This is to allow constructs like `func(a = 2);`
             expression.type = assignment.destination.type;
         },
-        .member_function_call => |member_function_call| {
-            //Resolve the source expression
-            try resolveExpression(
-                member_function_call.source,
-                null,
-                script,
-                script_table,
-                a_string_table,
-                function_variable_stack,
-            );
-
-            const function = try findFunction(
-                member_function_call.name,
-                member_function_call.parameters,
-                script.ast.allocator,
-                member_function_call.source,
-                script,
-                script_table,
-                a_string_table,
-            );
-            std.debug.print("found function {s}, special cased? {}\n", .{ function.found_function.name, function.special_cased });
-
-            const function_parameters_to_check = if (function.special_cased)
-                function.found_function.parameters[1..]
-            else
-                function.found_function.parameters;
-
-            for (function_parameters_to_check, member_function_call.parameters) |function_parameter, call_parameter| {
-                try resolveExpression(
-                    call_parameter,
-                    function_parameter.type,
-                    script,
-                    script_table,
-                    a_string_table,
-                    function_variable_stack,
-                );
-            }
-
-            expression.type = function.found_function.return_type;
-        },
         .field_access => |field_access| {
             //Resolve the source expression
             try resolveExpression(
@@ -557,56 +517,116 @@ fn resolveExpression(
             expression.type = .{ .resolved = try stringType(a_string_table) };
         },
         .function_call => |*function_call| {
-            //First, figure out which function we want to call here...
-            const function, const function_script = blk: {
-                const local_class = getScriptClassNode(script.ast);
-
-                // Iterate over all the functions defined in the local class, and prioritize them
-                for (local_class.functions) |local_function| {
-                    if (std.mem.eql(u8, local_function.name, function_call.function.name)) {
-                        break :blk .{ local_function, script };
-                    }
-                }
-
-                //TODO: handle calling overloads by checking param types... this code does not account for overloads *at all*. this is Not Good.
-                //      why do people have to add overloads to things it *only* makes things harder. JUST NAME THINGS BETTER.
-                //      im going to have to type resolve every imported function in every fucking imported script to be able to track overloads.
-                //      like MAYBE i could only do the resolution when theres a conflict,
-                //      but why the fuck should i have to? thats so much extra state tracking.
-                //      just Dont Put Overloads In Your Language/VM you Bitch.
-                if (script.imported_functions.get(function_call.function.name)) |imported_function| {
-                    const original_script = script_table.get(imported_function.script).?;
-
-                    const script_class = getScriptClassNode(original_script.ast);
-
-                    for (script_class.functions) |imported_script_function| {
-                        if (std.mem.eql(u8, function_call.function.name, imported_script_function.name))
-                            break :blk .{ imported_script_function, original_script };
-                    }
-
-                    unreachable;
-                }
-
-                std.debug.panic("unable to find function {s}", .{function_call.function.name});
-            };
-            std.debug.print("found func {s} for call {s}\n", .{ function.name, function_call.function.name });
-            try resolveFunctionHead(function, function_script, script_table, a_string_table);
-
-            function_call.function = .{ .function = function };
-
-            // Resolve all the call parameter expressions to the types of the function parameters
-            for (function.parameters, function_call.parameters) |parameter, call_parameter| {
+            if (function_call.source != null) {
+                //Resolve the source expression
                 try resolveExpression(
-                    call_parameter,
-                    parameter.type,
+                    function_call.source.?,
+                    null,
                     script,
                     script_table,
                     a_string_table,
                     function_variable_stack,
                 );
-            }
 
-            expression.type = function.return_type;
+                const function = try findFunction(
+                    function_call.function.name,
+                    function_call.parameters,
+                    script.ast.allocator,
+                    function_call.source,
+                    script,
+                    script_table,
+                    a_string_table,
+                );
+                std.debug.print("found function {s}, special cased? {}\n", .{ function.found_function.name, function.special_cased });
+
+                const function_parameters_to_check = if (function.special_cased)
+                    function.found_function.parameters[1..]
+                else
+                    function.found_function.parameters;
+
+                for (function_parameters_to_check, function_call.parameters) |function_parameter, call_parameter| {
+                    try resolveExpression(
+                        call_parameter,
+                        function_parameter.type,
+                        script,
+                        script_table,
+                        a_string_table,
+                        function_variable_stack,
+                    );
+                }
+
+                function_call.function = .{ .function = .{
+                    .function = function.found_function,
+                    .owning_type = function.owning_type,
+                } };
+
+                expression.type = function.found_function.return_type;
+            } else {
+                //First, figure out which function we want to call here...
+                const function, const function_script = blk: {
+                    const local_class = getScriptClassNode(script.ast);
+
+                    // Iterate over all the functions defined in the local class, and prioritize them
+                    for (local_class.functions) |local_function| {
+                        if (std.mem.eql(u8, local_function.name, function_call.function.name)) {
+                            break :blk .{ local_function, script };
+                        }
+                    }
+
+                    //TODO: handle calling overloads by checking param types... this code does not account for overloads *at all*. this is Not Good.
+                    //      why do people have to add overloads to things it *only* makes things harder. JUST NAME THINGS BETTER.
+                    //      im going to have to type resolve every imported function in every fucking imported script to be able to track overloads.
+                    //      like MAYBE i could only do the resolution when theres a conflict,
+                    //      but why the fuck should i have to? thats so much extra state tracking.
+                    //      just Dont Put Overloads In Your Language/VM you Bitch.
+                    if (script.imported_functions.get(function_call.function.name)) |imported_function| {
+                        const original_script = script_table.get(imported_function.script).?;
+
+                        const script_class = getScriptClassNode(original_script.ast);
+
+                        for (script_class.functions) |imported_script_function| {
+                            if (std.mem.eql(u8, function_call.function.name, imported_script_function.name))
+                                break :blk .{ imported_script_function, original_script };
+                        }
+
+                        unreachable;
+                    }
+
+                    std.debug.panic("unable to find function {s}", .{function_call.function.name});
+                };
+                std.debug.print("found func {s} for call {s}\n", .{ function.name, function_call.function.name });
+                try resolveFunctionHead(
+                    function,
+                    function_script,
+                    script_table,
+                    a_string_table,
+                );
+
+                function_call.function = .{
+                    .function = .{
+                        .function = function,
+                        .owning_type = (try typeReferenceFromScript(
+                            function_script,
+                            0,
+                            a_string_table,
+                        )).runtime_type,
+                    },
+                };
+
+                // Resolve all the call parameter expressions to the types of the function parameters
+                for (function.parameters, function_call.parameters) |parameter, call_parameter| {
+                    try resolveExpression(
+                        call_parameter,
+                        parameter.type,
+                        script,
+                        script_table,
+                        a_string_table,
+                        function_variable_stack,
+                    );
+                }
+
+                expression.type = function.return_type;
+            }
         },
         .logical_negation => |logical_negation| {
             // Resolve the sub-expression of the negation
@@ -1046,8 +1066,9 @@ fn findFunction(
 ) !struct {
     found_function: *Parser.Node.Function,
     special_cased: bool,
+    owning_type: MMTypes.TypeReference,
 } {
-    var candidates = std.ArrayList(*Parser.Node.Function).init(allocator);
+    var candidates = std.ArrayList(struct { *Parser.Node.Function, MMTypes.TypeReference }).init(allocator);
     defer candidates.deinit();
 
     if (source_expression) |function_source_expression| {
@@ -1108,7 +1129,10 @@ fn findFunction(
                                             calling_script,
                                             script_table.get(type_name).?,
                                             script_table,
-                                        )) try candidates.append(function);
+                                        )) try candidates.append(.{
+                                            function,
+                                            (try typeReferenceFromScript(source_script, 0, a_string_table)).runtime_type,
+                                        });
 
                                         continue;
                                     }
@@ -1116,7 +1140,10 @@ fn findFunction(
                                     std.debug.panic("you cant member call a static function {s}, sorry bub", .{function.name});
                                 }
 
-                                try candidates.append(function);
+                                try candidates.append(.{
+                                    function,
+                                    (try typeReferenceFromScript(source_script, 0, a_string_table)).runtime_type,
+                                });
                             }
 
                             if (class.base_class == .none)
@@ -1157,7 +1184,10 @@ fn findFunction(
                         if (function.parameters.len != calling_parameters.len)
                             continue;
 
-                        try candidates.append(function);
+                        try candidates.append(.{
+                            function,
+                            (try typeReferenceFromScript(type_script, 0, a_string_table)).runtime_type,
+                        });
                     }
                 }
             },
@@ -1169,19 +1199,19 @@ fn findFunction(
         const candidate = candidates.items[0];
 
         // Since the param count should *always* match unless its special cased, use that as the determining factor here
-        return if (calling_parameters.len + 1 == candidate.parameters.len)
-            .{ .found_function = candidate, .special_cased = true }
+        return if (calling_parameters.len + 1 == candidate[0].parameters.len)
+            .{ .found_function = candidate[0], .special_cased = true, .owning_type = candidate[1] }
         else
-            .{ .found_function = candidate, .special_cased = false };
+            .{ .found_function = candidate[0], .special_cased = false, .owning_type = candidate[1] };
     } else if (candidates.items.len > 1) {
         //Find which parameters differ between the overloads
         var checked_parameters = try allocator.alloc(?*Parser.Node.Function.Parameter, calling_parameters.len);
 
         for (candidates.items, 0..) |candidate, i| {
             // Since the param count should *always* match unless its special cased, use that as the determining factor here
-            const is_special_cased = calling_parameters.len + 1 == candidate.parameters.len;
+            const is_special_cased = calling_parameters.len + 1 == candidate[0].parameters.len;
 
-            const candidate_params = if (is_special_cased) candidate.parameters[1..] else candidate.parameters;
+            const candidate_params = if (is_special_cased) candidate[0].parameters[1..] else candidate[0].parameters;
 
             if (i == 0) {
                 for (candidate_params, 0..) |*param, j| {

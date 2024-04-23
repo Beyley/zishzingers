@@ -290,11 +290,6 @@ pub const Node = union(NodeType) {
                 source: *Expression,
                 field: []const u8,
             },
-            member_function_call: struct {
-                source: *Expression,
-                name: []const u8,
-                parameters: []const *Expression,
-            },
             class_name: []const u8,
             /// An access on a variable of some kind (eg `var.Field`), or a class type (eg `Thing.Func()`)
             variable_or_class_access: []const u8,
@@ -304,12 +299,15 @@ pub const Node = union(NodeType) {
             numeric_negation: *Expression,
             logical_negation: *Expression,
             function_call: struct {
+                source: ?*Expression,
                 function: union(enum) {
                     name: []const u8,
-                    function: *Function,
+                    function: struct {
+                        function: *Function,
+                        owning_type: MMTypes.TypeReference,
+                    },
                 },
                 parameters: []const *Expression,
-                type: Type,
             },
             assignment: struct {
                 destination: *Expression,
@@ -356,7 +354,6 @@ pub const Node = union(NodeType) {
                     .numeric_negation => |literal| writer.print("expression_contents{{ .numeric_negation = {} }}", .{literal}),
                     .logical_negation => |literal| writer.print("expression_contents{{ .logical_negation = {} }}", .{literal}),
                     .function_call => |literal| writer.print("expression_contents{{ .function_call = .{{ .function = {}, .parameters = {any} }} }}", .{ literal.function, literal.parameters }),
-                    .member_function_call => |literal| writer.print("expression_contents{{ .member_function_call = .{{ .source = {}, .name = {s}, .parameters = {any} }} }}", .{ literal.source, literal.name, literal.parameters }),
                     .assignment => |literal| writer.print("expression_contents{{ .assignment = .{{ .destination = {}, .value = .{} }} }}", .{ literal.destination, literal.value }),
                     .block => |literal| writer.print("expression_contents{{ .block = {{ .body = {any} }} }}", .{literal}),
                     .bitwise_and => |literal| writer.print("expression_contents{{ .bitwise_and = {{ .lefthand = {}, .righthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
@@ -958,9 +955,9 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
 
         expression.* = .{
             .contents = .{ .function_call = .{
+                .source = null,
                 .function = .{ .name = first },
                 .parameters = parameters,
-                .type = .unknown,
             } },
             .type = .unknown,
         };
@@ -1024,9 +1021,9 @@ fn consumeDotExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexem
         field_access.* = .{
             .contents = if (next[0] == '(')
                 .{
-                    .member_function_call = .{
+                    .function_call = .{
                         .source = node,
-                        .name = name,
+                        .function = .{ .name = name },
                         .parameters = try consumeFunctionCallParameters(allocator, iter),
                     },
                 }
