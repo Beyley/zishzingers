@@ -79,7 +79,8 @@ class TweakEgg extends TriggerCollectItem
                 256
             );
 
-            if (input & 256 != 0) poppet.PushSubModeInventory(this.CacheID);
+            if (input & 256 != 0) 
+                poppet.PushSubModeInventory(this.CacheID);
             else if (input & 4194304 != 0)
             {
                 poppet.SetToolTip(

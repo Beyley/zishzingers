@@ -8,8 +8,10 @@ const MMTypes = @import("MMTypes.zig");
 
 const Genny = @This();
 
+pub const Error = std.mem.Allocator.Error || error{InvalidUtf8};
+
 pub const S64ConstantTable = std.AutoArrayHashMap(i64, void);
-pub const FloatConstantTable = std.AutoArrayHashMap(f32, void);
+pub const FloatConstantTable = std.AutoArrayHashMap([4]f32, void);
 pub const TypeReferenceTable = std.AutoArrayHashMap(MMTypes.TypeReference, void);
 pub const FieldReferenceTable = std.AutoArrayHashMap(MMTypes.FieldReference, void);
 pub const FunctionReferenceTable = std.AutoArrayHashMap(*Parser.Node.Function, MMTypes.FunctionReference);
@@ -245,6 +247,99 @@ const Codegen = struct {
     pub fn emitRet(self: *Codegen, src_idx: u16, machine_type: MMTypes.MachineType) !void {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .RET = .{ .src_idx = src_idx } }, machine_type));
     }
+
+    pub fn emitBranchNotEqualZero(self: *Codegen, src_idx: u16) !usize {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .BNEZ = .{
+            .branch_offset = undefined,
+            .src_idx = src_idx,
+        } }, .void));
+
+        //Return the index of the last item inserted, which is our branch instruction, so that the branch offset can be filled in later
+        return self.bytecode.items.len - 1;
+    }
+
+    pub fn emitBranchEqualZero(self: *Codegen, src_idx: u16) !usize {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .BEZ = .{
+            .branch_offset = undefined,
+            .src_idx = src_idx,
+        } }, .void));
+
+        //Return the index of the last item inserted, which is our branch instruction, so that the branch offset can be filled in later
+        return self.bytecode.items.len - 1;
+    }
+
+    pub fn emitBranch(self: *Codegen) !usize {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .B = .{
+            .src_idx = 0xFFFF,
+            .branch_offset = undefined,
+        } }, .void));
+
+        //Return the index of the last item inserted, which is our branch instruction, so that the branch offset can be filled in later
+        return self.bytecode.items.len - 1;
+    }
+
+    pub fn emitLogicalNegationBoolean(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(
+            .{ .LOG_NEGb = .{ .dst_idx = dst_idx, .src_idx = src_idx } },
+            .void,
+        ));
+    }
+
+    pub fn emitLoadConstFloat(self: *Codegen, dst_idx: u16, value: f32) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(
+            .{ .LCf = .{ .constant_idx = @bitCast(value), .dst_idx = dst_idx } },
+            .void,
+        ));
+    }
+
+    pub fn emitLoadConstVector4(self: *Codegen, dst_idx: u16, value: [4]f32) !void {
+        const constant_idx: u32 = @intCast((try self.genny.f32_constants.getOrPut(value)).index);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(
+            .{ .LCv4 = .{
+                .constant_idx = constant_idx,
+                .dst_idx = dst_idx,
+            } },
+            .void,
+        ));
+    }
+
+    pub fn emitSetVectorElement(self: *Codegen, dst_idx: u16, element: u2, src_idx: u16) !void {
+        switch (element) {
+            inline else => |element_val| {
+                const tag_name = comptime switch (element_val) {
+                    0 => @tagName(MMTypes.InstructionType.SET_V4_X),
+                    1 => @tagName(MMTypes.InstructionType.SET_V4_Y),
+                    2 => @tagName(MMTypes.InstructionType.SET_V4_Z),
+                    3 => @tagName(MMTypes.InstructionType.SET_V4_W),
+                };
+
+                try self.appendBytecode(MMTypes.Bytecode.init(
+                    @unionInit(MMTypes.TaggedInstruction, tag_name, .{
+                        .src_idx = src_idx,
+                        .base_idx = dst_idx,
+                    }),
+                    .void,
+                ));
+            },
+        }
+    }
+
+    pub fn emitIntNotEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .NEi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = left_idx,
+            .src_b_idx = right_idx,
+        } }, .void));
+    }
+
+    pub fn emitIntBitwiseAnd(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .BIT_ANDi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = left_idx,
+            .src_b_idx = right_idx,
+        } }, .void));
+    }
 };
 
 const Register = struct { u16, MMTypes.MachineType };
@@ -257,7 +352,7 @@ fn compileExpression(
     expression: *Parser.Node.Expression,
     discard_result: bool,
     result_register: ?Register,
-) !?Register {
+) Error!?Register {
     return switch (expression.contents) {
         .assignment => |assignment| blk: {
             switch (assignment.destination.contents) {
@@ -328,39 +423,33 @@ fn compileExpression(
                 break :int @bitCast(unsigned_u32);
             } else @intCast(integer_literal.contents.integer_literal.value);
 
-            //If the result register is known, just load directly into that
-            if (result_register) |result_idx| {
-                try codegen.emitLoadConstInt(result_idx[0], value);
+            const register = result_register orelse try codegen.register_allocator.allocate(.s32);
 
-                break :blk result_idx;
-            }
-            // Else, allocate a new register and use that
-            else {
-                const result_idx = try codegen.register_allocator.allocate(.s32);
+            try codegen.emitLoadConstInt(register[0], value);
 
-                try codegen.emitLoadConstInt(result_idx[0], value);
+            break :blk register;
+        },
+        .float_literal_to_f32 => |float_literal| blk: {
+            if (discard_result)
+                break :blk null;
 
-                break :blk result_idx;
-            }
+            const value = float_literal.contents.float_literal.value;
+
+            const register = result_register orelse try codegen.register_allocator.allocate(.f32);
+
+            try codegen.emitLoadConstFloat(register[0], @floatCast(value));
+
+            break :blk register;
         },
         .bool_literal => |bool_literal| blk: {
             if (discard_result)
                 break :blk null;
 
-            //If the result register is known, just load directly into that
-            if (result_register) |result_idx| {
-                try codegen.emitLoadConstBool(result_idx[0], bool_literal);
+            const register = result_register orelse try codegen.register_allocator.allocate(.bool);
 
-                break :blk result_idx;
-            }
-            // Else, allocate a new register and use that
-            else {
-                const result_idx = try codegen.register_allocator.allocate(.bool);
+            try codegen.emitLoadConstBool(register[0], bool_literal);
 
-                try codegen.emitLoadConstBool(result_idx[0], bool_literal);
-
-                break :blk result_idx;
-            }
+            break :blk register;
         },
         .wide_string_literal => |wide_string_literal| blk: {
             if (discard_result)
@@ -435,13 +524,16 @@ fn compileExpression(
 
             // If this is a member function call, we need to add the source as the arg0 reg
             if (function_call.source) |source| {
-                const source_variable = scope_local_variables.get(source.contents.variable_access).?;
+                // We only want to put arg0 as the `this` param if we are calling a method on a variable, and not a class
+                if (source.contents == .variable_access) {
+                    const source_variable = scope_local_variables.get(source.contents.variable_access).?;
 
-                const source_machine_type = codegen.genny.type_references.keys()[source_variable.type_reference].machine_type;
+                    const source_machine_type = codegen.genny.type_references.keys()[source_variable.type_reference].machine_type;
 
-                try codegen.emitArg(0, @intCast(source_variable.offset), source_machine_type);
+                    try codegen.emitArg(0, @intCast(source_variable.offset), source_machine_type);
 
-                curr_arg_register += source_machine_type.size();
+                    curr_arg_register += source_machine_type.size();
+                }
             }
 
             for (parameter_registers) |parameter_register| {
@@ -520,6 +612,119 @@ fn compileExpression(
 
             break :blk register;
         },
+        .logical_negation => |logical_negation| blk: {
+            if (try compileExpression(
+                codegen,
+                function_local_variables,
+                scope_local_variables,
+                logical_negation,
+                false,
+                null,
+            )) |source_register| {
+                const register = result_register orelse try codegen.register_allocator.allocate(.bool);
+
+                try codegen.emitLogicalNegationBoolean(register[0], source_register[0]);
+
+                if (discard_result and result_register == null) {
+                    try codegen.register_allocator.free(register);
+                    break :blk null;
+                }
+
+                break :blk register;
+            } else @panic("BUG: logical negation source has no register");
+        },
+        .block => |block| blk: {
+            std.debug.assert(result_register == null);
+
+            try compileBlock(
+                codegen,
+                function_local_variables,
+                scope_local_variables,
+                block,
+                false,
+                .void,
+            );
+
+            break :blk null;
+        },
+        .vec2_construction => |vec2_construction| blk: {
+            if (discard_result)
+                break :blk null;
+
+            const register = result_register orelse try codegen.register_allocator.allocate(.v4);
+
+            for (vec2_construction, 0..) |element_expression, i| {
+                const element_register = (try compileExpression(
+                    codegen,
+                    function_local_variables,
+                    scope_local_variables,
+                    element_expression,
+                    false,
+                    null,
+                )).?;
+
+                try codegen.emitSetVectorElement(register[0], @intCast(i), element_register[0]);
+
+                try codegen.register_allocator.free(element_register);
+            }
+
+            break :blk register;
+        },
+        inline .not_equal, .bitwise_and => |binary, binary_type| blk: {
+            //Assert the types are equal
+            std.debug.assert(binary.lefthand.type.resolved.eql(binary.righthand.type.resolved));
+
+            const hand_type = binary.lefthand.type.resolved;
+
+            const register = result_register orelse try codegen.register_allocator.allocate(.bool);
+
+            switch (hand_type) {
+                .runtime_type => |runtime_type| {
+                    const lefthand = (try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        binary.lefthand,
+                        false,
+                        null,
+                    )).?;
+                    const righthand = (try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        binary.righthand,
+                        false,
+                        null,
+                    )).?;
+
+                    switch (runtime_type.machine_type) {
+                        .s32 => switch (binary_type) {
+                            .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
+                            .bitwise_and => try codegen.emitIntBitwiseAnd(register[0], lefthand[0], righthand[0]),
+                            else => unreachable,
+                        },
+                        else => |tag| std.debug.panic("TODO: comparisons for machine type {s}", .{@tagName(tag)}),
+                    }
+
+                    try codegen.register_allocator.free(lefthand);
+                    try codegen.register_allocator.free(righthand);
+                },
+                .type => @panic("BUG: i dont think this should be allowed?"),
+                .integer_literal => {
+                    @panic("TODO: int literal comparison");
+                },
+                .float_literal => {
+                    @panic("TODO: float literal comparison");
+                },
+            }
+
+            if (discard_result and result_register != null) {
+                try codegen.register_allocator.free(register);
+                break :blk null;
+            }
+
+            break :blk register;
+        },
         else => |tag| std.debug.panic("cant codegen for expression {s} yet\n", .{@tagName(tag)}),
     };
 }
@@ -529,12 +734,9 @@ fn compileBlock(
     function_local_variables: *LocalVariableTable,
     scope_local_variables: *LocalVariableTable,
     block: []const Parser.Node,
-    class: *Parser.Node.Class,
     top_level: bool,
     return_type: MMTypes.MachineType,
-) !void {
-    _ = class; // autofix
-
+) Error!void {
     var local_variables_from_this_scope = std.ArrayList([]const u8).init(codegen.register_allocator.allocator);
 
     var return_emit = false;
@@ -609,6 +811,58 @@ fn compileBlock(
 
                 // At a return statement, immediately break out of the block, we dont need to generate code after a return statement
                 break :block_loop;
+            },
+            .if_statement => |if_statement| {
+                const condition_register = (try compileExpression(
+                    codegen,
+                    function_local_variables,
+                    scope_local_variables,
+                    if_statement.condition,
+                    false,
+                    null,
+                )).?;
+
+                // If the condition is false (0), we need to skip over the main body,
+                // this will either skip ahead to after the main body and continue execution as normal,
+                // or it will skip to the else body, which is emit after the main body
+                const skip_body_instruction = try codegen.emitBranchEqualZero(condition_register[0]);
+
+                // Now that we are done with the condition, we can get rid of that register
+                try codegen.register_allocator.free(condition_register);
+
+                // Compile the main body expression
+                std.debug.assert(try compileExpression(
+                    codegen,
+                    function_local_variables,
+                    scope_local_variables,
+                    if_statement.body,
+                    true,
+                    null,
+                ) == null);
+
+                // If we have an else body, we need to emit an instruction after the main body to skip over the else block
+                const skip_else_instruction: ?usize = if (if_statement.else_body != null) try codegen.emitBranch() else null;
+
+                // Set the branch offset of the instruction to the next instruction to be emit
+                codegen.bytecode.items[skip_body_instruction].params.BEZ.branch_offset =
+                    @intCast(codegen.bytecode.items.len - skip_body_instruction);
+
+                // If we have an else body, we need to emit that
+                if (if_statement.else_body) |else_body| {
+                    // Emit the actual body
+                    std.debug.assert(try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        else_body,
+                        true,
+                        null,
+                    ) == null);
+
+                    // Set the skip else target to the instruction after the current instruction
+                    codegen.bytecode.items[skip_else_instruction.?].params.B.branch_offset =
+                        @intCast(codegen.bytecode.items.len - skip_else_instruction.?);
+                }
             },
             else => |tag| std.debug.panic("cant codegen for block {s} yet\n", .{@tagName(tag)}),
         }
@@ -695,7 +949,6 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         &local_variables,
         &scope_local_variables,
         function.body.?.contents.block,
-        class,
         true,
         function.return_type.resolved.runtime_type.machine_type,
     );
@@ -791,7 +1044,7 @@ pub fn generate(self: *Genny) !MMTypes.Script {
             .local_variables = self.local_variables.items,
             .function_references = self.function_references.values(),
             .constant_table_s64 = self.s64_constants.keys(),
-            .constant_table_float = self.f32_constants.keys(),
+            .constant_table_float = std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(self.f32_constants.keys())),
             .type_references = self.type_references.keys(),
             .field_references = self.field_references.keys(),
             .a_string_table = blk: {

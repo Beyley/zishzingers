@@ -956,6 +956,39 @@ fn f32Type() Parser.Type {
     ) catch unreachable };
 }
 
+fn resolveComptimeInteger(expression: *Parser.Node.Expression) !void {
+    std.debug.assert(expression.type.resolved == .integer_literal);
+
+    switch (expression.contents) {
+        // Do nothing if its already just an integer literal
+        .integer_literal => {},
+        else => |tag| std.debug.panic("cannot resolve integer expression type {s}", .{@tagName(tag)}),
+    }
+}
+
+fn resolveComptimeFloat(expression: *Parser.Node.Expression) !void {
+    std.debug.assert(expression.type.resolved == .float_literal);
+
+    switch (expression.contents) {
+        // Do nothing if its already just a float literal
+        .float_literal => {},
+        //At compile time, resolve the numeric negation
+        .numeric_negation => |numeric_negation| {
+            try resolveComptimeFloat(numeric_negation);
+
+            expression.contents = .{
+                .float_literal = .{
+                    //Negate the value
+                    .value = -numeric_negation.contents.float_literal.value,
+                    //Same base as the child type
+                    .base = numeric_negation.contents.float_literal.base,
+                },
+            };
+        },
+        else => |tag| std.debug.panic("cannot resolve float expression type {s}", .{@tagName(tag)}),
+    }
+}
+
 ///Attempts to coerce the expression to the target type, modifying the expression in the meantime
 fn coerceExpression(
     allocator: std.mem.Allocator,
@@ -970,6 +1003,8 @@ fn coerceExpression(
 
     // Integer literal -> s32 coercion
     if (target_type.runtime_type.machine_type == .s32 and expression_type == .integer_literal) {
+        try resolveComptimeInteger(expression);
+
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
         const cast_target_expression = try allocator.create(Parser.Node.Expression);
         cast_target_expression.* = expression.*;
@@ -982,6 +1017,8 @@ fn coerceExpression(
 
     //Integer literal -> s64 coercion
     if (target_type.runtime_type.machine_type == .s64 and expression_type == .integer_literal) {
+        try resolveComptimeInteger(expression);
+
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
         const cast_target_expression = try allocator.create(Parser.Node.Expression);
         cast_target_expression.* = expression.*;
@@ -994,6 +1031,8 @@ fn coerceExpression(
 
     // Integer literal -> f32 coercion
     if (target_type.runtime_type.machine_type == .f32 and expression_type == .integer_literal) {
+        try resolveComptimeInteger(expression);
+
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
         const cast_target_expression = try allocator.create(Parser.Node.Expression);
         cast_target_expression.* = expression.*;
@@ -1006,6 +1045,8 @@ fn coerceExpression(
 
     //Integer literal -> f64 coercion
     if (target_type.runtime_type.machine_type == .f64 and expression_type == .integer_literal) {
+        try resolveComptimeInteger(expression);
+
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
         const cast_target_expression = try allocator.create(Parser.Node.Expression);
         cast_target_expression.* = expression.*;
@@ -1018,6 +1059,8 @@ fn coerceExpression(
 
     // Float literal -> f32 coercion
     if (target_type.runtime_type.machine_type == .f32 and expression_type == .float_literal) {
+        try resolveComptimeFloat(expression);
+
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
         const cast_target_expression = try allocator.create(Parser.Node.Expression);
         cast_target_expression.* = expression.*;
@@ -1030,6 +1073,8 @@ fn coerceExpression(
 
     //Float literal -> f64 coercion
     if (target_type.runtime_type.machine_type == .f64 and expression_type == .float_literal) {
+        try resolveComptimeFloat(expression);
+
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
         const cast_target_expression = try allocator.create(Parser.Node.Expression);
         cast_target_expression.* = expression.*;
