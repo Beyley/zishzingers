@@ -106,6 +106,8 @@ const Codegen = struct {
 
         /// Allocates a regester from the memory space, and returns the start register for the passed data type
         pub fn allocate(self: *RegisterAllocator, machine_type: MMTypes.MachineType) !Register {
+            //TODO: align vec4 to a 16 byte boundary
+
             const size = machine_type.size();
 
             var item = self.free_spaces.first;
@@ -206,6 +208,10 @@ const Codegen = struct {
 
     pub fn emitAssert(self: *Codegen, src_idx: u16) !void {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .ASSERT = .{ .src_idx = src_idx } }, .void));
+    }
+
+    pub fn emitCallVo(self: *Codegen, dst_idx: u16, call_idx: u16) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALLVo = .{ .dst_idx = dst_idx, .call_idx = call_idx } }, .void));
     }
 
     pub fn emitArg(self: *Codegen, arg_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
@@ -955,10 +961,20 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
 
     //TODO: let users put this safety feature under a debug flag
     {
-        const str_idx = try codegen.register_allocator.allocate(.object_ref);
-        try codegen.emitLoadConstStringWide(str_idx[0], std.unicode.utf8ToUtf16LeStringLiteral("function overrun protection..."));
-        try codegen.emitAssert(str_idx[0]);
-        try codegen.register_allocator.free(str_idx);
+        //TODO: let users force ASSERT to be used, since that can give nice names/text
+        //TODO: use WRITE if available, else try to use a patched runtime to call into that game's printf,
+        //      if that fails, THEN fall back to the CALLVo crash
+
+        // Allocate a register which will just have 0
+        const call_idx = try codegen.register_allocator.allocate(.object_ref);
+
+        // Load 0 into that instruction
+        try codegen.emitLoadConstInt(call_idx[0], 0);
+
+        // Emit a call instruction which uses a nonsense target and 0 source, causing a script exception
+        try codegen.emitCallVo(call_idx[0], 0);
+
+        try codegen.register_allocator.free(call_idx);
     }
 
     // Stack size is the highest used register + 1, since registers are zero indexed

@@ -860,12 +860,9 @@ pub const TaggedInstruction = union(enum(u8)) {
     ///
     /// Assumption: Clears the array stored at the base_idx register, eg. making it have only 0 elements
     ARRAY_CLEAR: SetElementClass = 0xa1,
-    /// TODO: 0x216614
+    /// Formats the object specified in the source index, and writes it out
     ///
-    /// Assumption: Seems to be a type of debug log statement?
-    ///             Perhaps used for printf debugging,
-    ///             see the PodIntroductionThread script from LBP1,
-    ///             it uses this as a logger of sorts
+    /// This only works on debug copies of the game.
     WRITE: WriteClass = 0xa2,
     /// Loads the specified register into the specified argument register
     ///
@@ -986,9 +983,7 @@ pub const TaggedInstruction = union(enum(u8)) {
     ///
     /// Throws an exception if the safe ptr lookup returns a NULL Thing
     CALLVsp: CallClass = 0xc1,
-    /// TODO:
-    ///
-    /// Assumption: Triggers an immediate script exception, using the WString stored at the source register as the exception text.
+    /// Would trigger a script assertion, but it seems that the code was compiled out at least in builds like 1/2/3 and even Deploy.
     ASSERT: WriteClass = 0xc2,
 
     // LBP2+
@@ -1049,6 +1044,10 @@ pub const TaggedInstruction = union(enum(u8)) {
     /// Invokes a native method at the specified address with the TOC switch set, storing the result in the destination pointer,
     /// the amount of data moved into the destination register depends on the machine type of the instruction.
     /// HOWEVER: this is *not* implemented right now, and it always assumes an s32 return type.
+    ///
+    /// a0  -> a32 are integer values (8 registers, r3 -> r10)
+    /// a32 -> a48 are float values (4 registers f1 -> f4)
+    /// a48 is a single vec4 that gets stored in the v2 register
     ///
     /// Only available in Aidan's modified script runtime
     EXT_INVOKE: ExternalInvokeClass = 0xce,
