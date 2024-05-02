@@ -344,6 +344,15 @@ fn resolveFunctionHead(
     }
 
     std.debug.print("resolved function head {s}\n", .{function.name});
+
+    var mangled_name = std.ArrayList(u8).init(script_table.allocator);
+    try mangleFunctionName(
+        mangled_name.writer(),
+        a_string_table,
+        function.name,
+        function.parameters,
+    );
+    function.mangled_name = mangled_name.items;
 }
 
 fn stringType(a_string_table: *AStringTable) Error!Parser.Type.Resolved {
@@ -1427,4 +1436,35 @@ fn resolveField(
             "field {s}'s default value's is unknown at runtime, currently is {s}",
             .{ field.name, @tagName(field.type.resolved) },
         );
+}
+
+pub fn mangleFunctionName(
+    writer: anytype,
+    a_string_table: *const AStringTable,
+    name: []const u8,
+    parameters: []const Parser.Node.Function.Parameter,
+) !void {
+    try writer.writeAll(name);
+    try writer.writeAll("__");
+
+    for (parameters) |parameter| {
+        const parameter_type = parameter.type.resolved.runtime_type;
+        switch (parameter_type.fish_type) {
+            .void => {
+                const type_name = a_string_table.keys()[parameter_type.type_name];
+
+                try writer.writeByte('Q');
+                try std.fmt.formatInt(
+                    type_name.len,
+                    10,
+                    .lower,
+                    .{},
+                    writer,
+                );
+
+                try writer.writeAll(type_name);
+            },
+            else => try writer.writeByte(parameter_type.fish_type.toMangledId()),
+        }
+    }
 }

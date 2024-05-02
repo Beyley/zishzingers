@@ -497,7 +497,7 @@ fn compileExpression(
 
             const called_function_idx: u16 = @intCast((try codegen.genny.function_references.getOrPutValue(function.function, .{
                 //TODO: this name needs to be mangled
-                .name = @intCast((try codegen.genny.a_string_table.getOrPut(function.function.name)).index),
+                .name = @intCast((try codegen.genny.a_string_table.getOrPut(function.function.mangled_name.?)).index),
                 .type_reference = @intCast((try codegen.genny.type_references.getOrPut(function.owning_type)).index),
             })).index);
 
@@ -966,7 +966,7 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
 
     return .{
         //TODO: this name needs to be mangled
-        .name = @intCast((try self.a_string_table.getOrPut(function.name)).index),
+        .name = @intCast((try self.a_string_table.getOrPut(function.mangled_name.?)).index),
         .modifiers = function.modifiers,
         .stack_size = stack_size,
         .type_reference = @intCast((try self.type_references.getOrPut(function.return_type.resolved.runtime_type)).index),

@@ -219,6 +219,7 @@ pub const Node = union(NodeType) {
         parameters: []Parameter,
         body: ?*Expression,
         name: []const u8,
+        mangled_name: ?[]const u8,
         modifiers: MMTypes.Modifiers,
 
         pub const Parameter = struct {
@@ -1397,6 +1398,7 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
         .parameters = parameters,
         .name = name,
         .return_type = return_type,
+        .mangled_name = null,
     };
 
     return node;

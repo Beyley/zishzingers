@@ -88,7 +88,7 @@ pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std
             continue;
         }
 
-        const fish_type = fishTypeFromMangledId(c);
+        const fish_type = FishType.fromMangledId(c);
 
         try demangled.appendSlice(@tagName(fish_type));
     }
@@ -96,24 +96,6 @@ pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std
     try demangled.appendSlice(")");
 
     return demangled.toOwnedSlice();
-}
-
-fn fishTypeFromMangledId(id: u8) FishType {
-    return switch (id) {
-        'v' => .void,
-        'b' => .bool,
-        'w' => .char,
-        'i' => .s32,
-        'f' => .f32,
-        'p' => .vec2,
-        'q' => .vec3,
-        'r' => .vec4,
-        'm' => .m44,
-        'g' => .guid,
-        'j' => .s64,
-        'd' => .f64,
-        else => std.debug.panic("Unknown mangling ID {c}", .{id}),
-    };
 }
 
 pub const NopClass = packed struct(u48) {
@@ -224,7 +206,9 @@ pub const BranchClass = packed struct(u48) {
 
 pub const ExternalInvokeClass = packed struct(u48) {
     dst_idx: u16,
-    call_address: u32,
+    call_address: u24,
+    toc_switch: bool,
+    _unused: u7 = undefined,
 };
 
 pub const Bytecode = packed struct(u64) {
@@ -1062,9 +1046,9 @@ pub const TaggedInstruction = union(enum(u8)) {
     ///
     /// Only available in Aidan's modified script runtime
     EXT_STORE: UnaryClass = 0xcd,
-    /// Invokes a native method at the specified address, storing the result in the destination pointer,
-    /// the amount of data moved into the destination register depends on the machine type of the instruction
-    /// TODO: figure out the table here
+    /// Invokes a native method at the specified address with the TOC switch set, storing the result in the destination pointer,
+    /// the amount of data moved into the destination register depends on the machine type of the instruction.
+    /// HOWEVER: this is *not* implemented right now, and it always assumes an s32 return type.
     ///
     /// Only available in Aidan's modified script runtime
     EXT_INVOKE: ExternalInvokeClass = 0xce,
@@ -1504,6 +1488,41 @@ pub const FishType = enum(u8) {
     guid = 0x9,
     s64 = 0xa,
     f64 = 0xb,
+
+    pub fn fromMangledId(id: u8) FishType {
+        return switch (id) {
+            'v' => .void,
+            'b' => .bool,
+            'w' => .char,
+            'i' => .s32,
+            'f' => .f32,
+            'p' => .vec2,
+            'q' => .vec3,
+            'r' => .vec4,
+            'm' => .m44,
+            'g' => .guid,
+            'j' => .s64,
+            'd' => .f64,
+            else => std.debug.panic("Unknown mangling ID {c}", .{id}),
+        };
+    }
+
+    pub fn toMangledId(fish_type: FishType) u8 {
+        return switch (fish_type) {
+            .void => 'v',
+            .bool => 'b',
+            .char => 'w',
+            .s32 => 'i',
+            .f32 => 'f',
+            .vec2 => 'p',
+            .vec3 => 'q',
+            .vec4 => 'r',
+            .m44 => 'm',
+            .guid => 'g',
+            .s64 => 'j',
+            .f64 => 'd',
+        };
+    }
 
     pub fn guessFromMachineType(machine_type: MachineType) FishType {
         return switch (machine_type) {

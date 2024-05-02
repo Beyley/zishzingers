@@ -2,6 +2,11 @@
 
 This is a document describing the variant of the A# language used by the zishzingers compiler.
 
+## Built-ins
+
+- stackalloc(BYTE_AMOUNT)
+  - This allocates a set amount of bytes in the function's "stack" and returns the pointer of the space
+
 ## Differences from Aidan's compiler
 
 - Decimal integer literals greater than an `s32` (but which can fit into a `u32`) do not get automatically bitcasted from `u32` -> `s32`. You must use a hex literal.
@@ -9,6 +14,7 @@ This is a document describing the variant of the A# language used by the zishzin
 - Integer/float literal types are compile time only, you cannot use an integer or float literal to define the type of a variable. eg `let var = 1;` will not compile, you must do `let var: s32 = 1;` or `let var = (s32)1;`. This allows more advanced compile time math semantics. This also forces you to be a bit more verbose in your types, which is a plus for readability.
 - Properties have completely changed syntax, they use the C# style syntax now.
 - Forward declarations have been added, this is how the standard library works in zishzingers.
+- Enums are now C# style, not JavaScript style, eg `member = 0` instead of `member: 0`
 
 ## Expression grammar
 
