@@ -176,6 +176,7 @@ fn printType(self: *Self, tree_type: Parser.Type) Error!void {
                 },
                 .integer_literal => try self.writer.print("Integer Literal", .{}),
                 .float_literal => try self.writer.print("Float Literal", .{}),
+                .null_literal => try self.writer.print("Null Literal", .{}),
                 .type => |type_name| try self.writer.writeAll(type_name),
             }
         },

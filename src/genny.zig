@@ -230,6 +230,10 @@ const Codegen = struct {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCb = .{ .dst_idx = dst_idx, .constant_idx = if (boolean) 0x80000000 else 0 } }, .s32));
     }
 
+    pub fn emitLoadConstNullSafePtr(self: *Codegen, dst_idx: u16) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LC_NULLsp = .{ .constant_idx = 0, .dst_idx = dst_idx } }, .void));
+    }
+
     pub fn emitSetObjectMember(self: *Codegen, src_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .SET_OBJ_MEMBER = .{
             .src_idx = src_idx,
@@ -454,6 +458,16 @@ fn compileExpression(
             const register = result_register orelse try codegen.register_allocator.allocate(.bool);
 
             try codegen.emitLoadConstBool(register[0], bool_literal);
+
+            break :blk register;
+        },
+        .null_literal_to_safe_ptr => blk: {
+            if (discard_result)
+                break :blk null;
+
+            const register = result_register orelse try codegen.register_allocator.allocate(.safe_ptr);
+
+            try codegen.emitLoadConstNullSafePtr(register[0]);
 
             break :blk register;
         },
@@ -721,6 +735,9 @@ fn compileExpression(
                 },
                 .float_literal => {
                     @panic("TODO: float literal comparison");
+                },
+                .null_literal => {
+                    @panic("TODO: null literal comparison");
                 },
             }
 

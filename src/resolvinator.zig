@@ -405,6 +405,9 @@ fn resolveExpression(
         .float_literal => {
             expression.type = .{ .resolved = .float_literal };
         },
+        .null_literal => {
+            expression.type = .{ .resolved = .null_literal };
+        },
         .assignment => |assignment| {
             //Resolve the type of the destination
             try resolveExpression(
@@ -930,7 +933,7 @@ fn resolveExpression(
 
 fn isNumberLike(resolved_type: Parser.Type.Resolved) bool {
     return switch (resolved_type) {
-        .type => false,
+        .type, .null_literal => false,
         .float_literal, .integer_literal => true,
         .runtime_type => |runtime_type| switch (runtime_type.machine_type) {
             .s32, .s64, .f32, .f64 => true,
@@ -1102,6 +1105,18 @@ fn coerceExpression(
 
         return .{
             .contents = .{ .bool_to_s32 = cast_target_expression },
+            .type = .{ .resolved = target_type },
+        };
+    }
+
+    // Null -> safe_ptr conversion
+    if (target_type.runtime_type.machine_type == .safe_ptr and expression_type == .null_literal) {
+        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+        const cast_target_expression = try allocator.create(Parser.Node.Expression);
+        cast_target_expression.* = expression.*;
+
+        return .{
+            .contents = .null_literal_to_safe_ptr,
             .type = .{ .resolved = target_type },
         };
     }

@@ -111,6 +111,7 @@ pub const Type = union(enum) {
         type: []const u8,
         integer_literal: void,
         float_literal: void,
+        null_literal: void,
 
         pub fn eql(self: Resolved, other: Resolved) bool {
             if (std.meta.activeTag(self) != std.meta.activeTag(other))
@@ -119,7 +120,7 @@ pub const Type = union(enum) {
             return switch (self) {
                 .runtime_type => |runtime_type| runtime_type.eql(other.runtime_type),
                 .type => |comptime_type| std.mem.eql(u8, comptime_type, other.type),
-                .integer_literal, .float_literal => true,
+                .integer_literal, .float_literal, .null_literal => true,
             };
         }
     };
@@ -278,6 +279,7 @@ pub const Node = union(NodeType) {
             integer_literal_to_f32: UnaryExpression,
             integer_literal_to_s64: UnaryExpression,
             integer_literal_to_f64: UnaryExpression,
+            null_literal_to_safe_ptr: void,
             float_literal: struct { base: LiteralBase, value: f64 },
             float_literal_to_f32: UnaryExpression,
             float_literal_to_f64: UnaryExpression,
@@ -285,6 +287,7 @@ pub const Node = union(NodeType) {
             bool_to_s32: UnaryExpression,
             guid_literal: u32,
             bool_literal: bool,
+            null_literal: void,
             ascii_string_literal: []const u8,
             wide_string_literal: []const u8,
             field_access: struct {
@@ -339,9 +342,11 @@ pub const Node = union(NodeType) {
                     .integer_literal_to_f32 => |literal| writer.print("expression_contents {{ .integer_literal_to_f32 = {d} }}", .{literal}),
                     .integer_literal_to_s64 => |literal| writer.print("expression_contents {{ .integer_literal_to_s64 = {d} }}", .{literal}),
                     .integer_literal_to_f64 => |literal| writer.print("expression_contents {{ .integer_literal_to_f64 = {d} }}", .{literal}),
+                    .null_literal_to_safe_ptr => writer.print("expression_contents {{ .null_literal_to_safe_ptr }}", .{}),
                     .float_literal => |literal| writer.print("expression_contents{{ .float_literal = {} }}", .{literal}),
                     .float_literal_to_f32 => |literal| writer.print("expression_contents {{ .float_literal_to_f32 = {d} }}", .{literal}),
                     .float_literal_to_f64 => |literal| writer.print("expression_contents {{ .float_literal_to_f64 = {d} }}", .{literal}),
+                    .null_literal => writer.print("expression_contents {{ .null_literal }}", .{}),
                     .bool_to_s32 => |literal| writer.print("expression_contents{{ .bool_to_s32 = {} }}", .{literal}),
                     .guid_literal => |literal| writer.print("expression_contents{{ .guid_literal = {d} }}", .{literal}),
                     .bool_literal => |literal| writer.print("expression_contents{{ .bool_literal = {} }}", .{literal}),
@@ -852,7 +857,14 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
                 return expression;
             },
             .null => {
-                @panic("TODO: null literals");
+                const expression = try allocator.create(Node.Expression);
+
+                expression.* = .{
+                    .contents = .null_literal,
+                    .type = .{ .parsed = .{ .name = "null", .dimension_count = 0 } },
+                };
+
+                return expression;
             },
         }
     }
