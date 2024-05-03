@@ -111,7 +111,9 @@ pub fn generateStubs(
             if (property.get_function == func_idx or property.set_function == func_idx)
                 continue :func;
 
-        const demangled_name = try MMTypes.demangleFunctionName(script.a_string_table.strings[function.name], false, allocator);
+        const function_name = script.a_string_table.strings[function.name];
+
+        const demangled_name = try MMTypes.demangleFunctionName(function_name, false, allocator);
         defer allocator.free(demangled_name);
 
         //Skip init functions

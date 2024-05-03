@@ -32,6 +32,10 @@ $ zishzingers generate_library -m blurayguids.map -o deploy_std/ -f game_data/ -
 ### `compile`
 Compiles an A# file into an LBP script file.
 
+Compilation options for games:
+- Vita `-r 0x3E2 -z 17457 -y 132`
+- LBP2 `-r 0x3E6`
+
 ```
 # Read the help file `zishzingers compile --help` for details on what these options do!
 # zishzingers compile compile samples/tweakegg.as -l lbpdeploy:deploy_std/ -i 1234

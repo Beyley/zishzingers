@@ -167,6 +167,8 @@ pub fn main() !void {
                 \\-l, --library <str>...           A library to import, with the syntax `name:path`
                 \\-i, --identifier <u32>           The GUID of the script being compiled,
                 \\-r, --revision <u32>             The revision of the asset to be serialized
+                \\-z, --branch-id <u16>            The branch ID of the asset to be serialized
+                \\-y, --branch-revision <u16>      The branch revision of the asset to be serialized
                 \\                                 this overrides the GUID specified in the file.
                 \\<str>                            The source file
                 \\
@@ -280,8 +282,8 @@ pub fn main() !void {
 
                 const revision = .{
                     .head = res.args.revision.?,
-                    .branch_revision = 0,
-                    .branch_id = 0,
+                    .branch_revision = res.args.@"branch-revision" orelse 0,
+                    .branch_id = res.args.@"branch-id" orelse 0,
                 };
 
                 var resource_stream = Stream.MMStream(ArrayListStreamSource){

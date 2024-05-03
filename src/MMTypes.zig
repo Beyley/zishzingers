@@ -46,7 +46,7 @@ pub const Script = struct {
 
 /// Demangles a function name
 pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std.mem.Allocator) ![]const u8 {
-    const sep_index = std.mem.indexOf(u8, orig, "__").?;
+    const sep_index = std.mem.lastIndexOf(u8, orig, "__").?;
 
     const name = orig[0..sep_index];
 
