@@ -360,7 +360,7 @@ pub fn main() !void {
 
             var output_dir = std.fs.cwd().openDir(res.args.output.?, .{}) catch |err| blk: {
                 if (err == error.FileNotFound) {
-                    try std.fs.cwd().makeDir(res.args.output.?);
+                    try std.fs.cwd().makePath(res.args.output.?);
 
                     break :blk try std.fs.cwd().openDir(res.args.output.?, .{});
                 }
