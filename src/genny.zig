@@ -350,6 +350,30 @@ const Codegen = struct {
             .src_b_idx = right_idx,
         } }, .void));
     }
+
+    pub fn emitBoolBitwiseAnd(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .BIT_ANDb = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
+
+    pub fn emitFloatGreaterThan(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .GTf = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
+
+    pub fn emitFloatLessThanOrEqual(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LTEf = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
 };
 
 const Register = struct { u16, MMTypes.MachineType };
@@ -436,6 +460,18 @@ fn compileExpression(
             const register = result_register orelse try codegen.register_allocator.allocate(.s32);
 
             try codegen.emitLoadConstInt(register[0], value);
+
+            break :blk register;
+        },
+        .integer_literal_to_f32 => |int_literal| blk: {
+            if (discard_result)
+                break :blk null;
+
+            const value: f32 = @floatFromInt(int_literal.contents.integer_literal.value);
+
+            const register = result_register orelse try codegen.register_allocator.allocate(.f32);
+
+            try codegen.emitLoadConstFloat(register[0], value);
 
             break :blk register;
         },
@@ -690,7 +726,7 @@ fn compileExpression(
 
             break :blk register;
         },
-        inline .not_equal, .bitwise_and => |binary, binary_type| blk: {
+        inline .not_equal, .bitwise_and, .greater_than, .less_than_or_equal => |binary, binary_type| blk: {
             //Assert the types are equal
             std.debug.assert(binary.lefthand.type.resolved.eql(binary.righthand.type.resolved));
 
@@ -721,7 +757,12 @@ fn compileExpression(
                         .s32 => switch (binary_type) {
                             .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
                             .bitwise_and => try codegen.emitIntBitwiseAnd(register[0], lefthand[0], righthand[0]),
-                            else => unreachable,
+                            else => std.debug.panic("TODO: {s} comparison type for s32", .{@tagName(binary_type)}),
+                        },
+                        .f32 => switch (binary_type) {
+                            .greater_than => try codegen.emitFloatGreaterThan(register[0], lefthand[0], righthand[0]),
+                            .less_than_or_equal => try codegen.emitFloatLessThanOrEqual(register[0], lefthand[0], righthand[0]),
+                            else => std.debug.panic("TODO: {s} comparison type for f32", .{@tagName(binary_type)}),
                         },
                         else => |tag| std.debug.panic("TODO: comparisons for machine type {s}", .{@tagName(tag)}),
                     }
@@ -747,6 +788,40 @@ fn compileExpression(
             }
 
             break :blk register;
+        },
+        .logical_and => |logical_and| blk: {
+            const lefthand = (try compileExpression(
+                codegen,
+                function_local_variables,
+                scope_local_variables,
+                logical_and.lefthand,
+                false,
+                null,
+            )).?;
+            std.debug.assert(lefthand[1] == .bool);
+
+            const righthand = (try compileExpression(
+                codegen,
+                function_local_variables,
+                scope_local_variables,
+                logical_and.righthand,
+                false,
+                null,
+            )).?;
+            std.debug.assert(righthand[1] == .bool);
+
+            if (!discard_result) {
+                const register = result_register orelse try codegen.register_allocator.allocate(.bool);
+
+                try codegen.emitBoolBitwiseAnd(register[0], lefthand[0], righthand[0]);
+
+                break :blk register;
+            }
+
+            try codegen.register_allocator.free(lefthand);
+            try codegen.register_allocator.free(righthand);
+
+            break :blk null;
         },
         else => |tag| std.debug.panic("cant codegen for expression {s} yet\n", .{@tagName(tag)}),
     };

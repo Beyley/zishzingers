@@ -20,8 +20,10 @@ This is a document describing the variant of the A# language used by the zishzin
 
 ```
 expression          → assignment ;
-assignment          → equality "=" assignment
-                    | equality ;
+assignment          → logical_or "=" assignment
+                    | logical_or ;
+logical_or            → logical_and ( "||" logical_and )* ;
+logical_and           → equality ( "&&" equality ) ;
 equality            → comparison ( ( "!=" | "==" ) comparison )* ;
 comparison          → bitwise ( ( ">" | ">=" | "<" | "<=" ) bitwise )* ;
 bitwise             → term ( ( "&" | "^" | "|" ) term )* ;

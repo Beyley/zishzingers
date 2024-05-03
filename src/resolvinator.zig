@@ -841,6 +841,27 @@ fn resolveExpression(
 
             expression.type = vec2Type();
         },
+        .less_than, .less_than_or_equal, .greater_than, .greater_than_or_equal => |comparison| {
+            try resolveExpression(
+                comparison.lefthand,
+                null,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            try resolveExpression(
+                comparison.righthand,
+                comparison.lefthand.type,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            expression.type = boolType();
+        },
         .bitwise_and => |bitwise_and| {
             //Resolve the lefthand expression to whatever type it naturally wants to be
             try resolveExpression(
@@ -896,6 +917,27 @@ fn resolveExpression(
             try resolveExpression(
                 not_equal.righthand,
                 not_equal.lefthand.type,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            expression.type = boolType();
+        },
+        .logical_and, .logical_or => |logical_op| {
+            try resolveExpression(
+                logical_op.lefthand,
+                boolType(),
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            try resolveExpression(
+                logical_op.righthand,
+                boolType(),
                 script,
                 script_table,
                 a_string_table,

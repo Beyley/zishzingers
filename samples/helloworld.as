@@ -8,6 +8,6 @@ class HelloWorld extends Thing
 {
     pub fn OnCreate()
     {
-        GameMessagingManager.Messaging_NewMessage(0, L'yo', L'man', L'why are there 3 of these', null);
+        GameMessagingManager.Messaging_NewMessage(26, L'Top message', L'left button', L'right button', null);
     }
 }

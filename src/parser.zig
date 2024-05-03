@@ -331,6 +331,8 @@ pub const Node = union(NodeType) {
             subtraction: BinaryExpression,
             multiplication: BinaryExpression,
             division: BinaryExpression,
+            logical_or: BinaryExpression,
+            logical_and: BinaryExpression,
             vec2_construction: [2]*Expression,
             vec3_construction: [3]*Expression,
             vec4_construction: [4]*Expression,
@@ -375,6 +377,8 @@ pub const Node = union(NodeType) {
                     .subtraction => |literal| writer.print("expression_contents{{ .subtraction = {{ .lefthand = {}, .righthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
                     .multiplication => |literal| writer.print("expression_contents{{ .multiplication = {{ .lefthand = {}, .righthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
                     .division => |literal| writer.print("expression_contents{{ .division = {{ .lefthand = {}, .righthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
+                    .logical_and => |literal| writer.print("expression_contents{{ .logical_and = {{ .lefthand = {}, .righthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
+                    .logical_or => |literal| writer.print("expression_contents{{ .logical_or = {{ .lefthand = {}, .righthand = {} }} }}", .{ literal.lefthand, literal.righthand }),
                     .vec2_construction => |literal| writer.print("expression_contents {{ .vec2_construction = {d} }}", .{literal}),
                     .vec3_construction => |literal| writer.print("expression_contents {{ .vec3_construction = {d} }}", .{literal}),
                     .vec4_construction => |literal| writer.print("expression_contents {{ .vec4_construction = {d} }}", .{literal}),
@@ -1236,8 +1240,52 @@ fn consumeEqualityExpression(allocator: std.mem.Allocator, iter: *SliceIterator(
     return node;
 }
 
+fn consumeLogicalAndExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    var node = try consumeEqualityExpression(allocator, iter);
+
+    while (consumeArbitraryLexemeIfAvailable(iter, "&&")) {
+        const logical_and = try allocator.create(Node.Expression);
+
+        logical_and.* = .{
+            .contents = .{
+                .logical_and = .{
+                    .lefthand = node,
+                    .righthand = try consumeEqualityExpression(allocator, iter),
+                },
+            },
+            .type = .{ .parsed = Type.Parsed.Bool },
+        };
+
+        node = logical_and;
+    }
+
+    return node;
+}
+
+fn consumeLogicalOrExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    var node = try consumeLogicalAndExpression(allocator, iter);
+
+    while (consumeArbitraryLexemeIfAvailable(iter, "||")) {
+        const logical_or = try allocator.create(Node.Expression);
+
+        logical_or.* = .{
+            .contents = .{
+                .logical_or = .{
+                    .lefthand = node,
+                    .righthand = try consumeLogicalAndExpression(allocator, iter),
+                },
+            },
+            .type = .{ .parsed = Type.Parsed.Bool },
+        };
+
+        node = logical_or;
+    }
+
+    return node;
+}
+
 fn consumeAssignmentExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    const destination = try consumeEqualityExpression(allocator, iter);
+    const destination = try consumeLogicalOrExpression(allocator, iter);
 
     if (consumeArbitraryLexemeIfAvailable(iter, "=")) {
         const value = try consumeAssignmentExpression(allocator, iter);
