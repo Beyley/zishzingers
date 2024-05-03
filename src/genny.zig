@@ -1068,8 +1068,19 @@ pub fn generate(self: *Genny) !MMTypes.Script {
             .super_class_script = if (class.base_class == .resolved) class.base_class.resolved.ident else null,
             //TODO: implement modifiers
             .modifiers = .{},
-            //TODO: is this even needed to be specified?
-            .depending_guids = &.{},
+            // Convert all the GUID type references into the list of depening GUIDs
+            .depending_guids = blk: {
+                var depending_guids = std.ArrayList(u32).init(self.ast.allocator);
+
+                for (self.type_references.keys()) |type_reference|
+                    if (type_reference.script) |script|
+                        switch (script) {
+                            .guid => |guid| try depending_guids.append(guid),
+                            .hash => {},
+                        };
+
+                break :blk depending_guids.items;
+            },
             .functions = functions,
             .bytecode = self.bytecode.items,
             .arguments = self.arguments.items,

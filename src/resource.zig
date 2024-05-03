@@ -271,7 +271,7 @@ pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !Resourc
     }
 }
 
-const Dependency = struct {
+pub const Dependency = struct {
     type: MMTypes.ResourceType,
     ident: MMTypes.ResourceIdentifier,
 };

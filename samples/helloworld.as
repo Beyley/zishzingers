@@ -1,10 +1,10 @@
-using library 'lbpdeploy';
+using library 'lbp2';
 
-import 'std:object';
+import 'std:thing';
 import 'std:gamemessagingmanager';
 import 'std:string';
 
-class HelloWorld extends Object
+class HelloWorld extends Thing
 {
     pub fn OnCreate()
     {

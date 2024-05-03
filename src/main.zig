@@ -144,6 +144,12 @@ pub fn main() !void {
                     var resource = try Resource.readResource(file_contents, allocator);
                     defer resource.deinit();
 
+                    if (resource.dependencies) |dependencies| {
+                        for (dependencies) |dependency| {
+                            try stdout.print("Script has dependency {}\n", .{dependency.ident});
+                        }
+                    }
+
                     std.debug.print("compression {}\n", .{resource.stream.compression_flags});
                     std.debug.print("revision {}\n", .{resource.stream.revision});
 
@@ -290,16 +296,28 @@ pub fn main() !void {
 
                 try resource_stream.writeScript(script, allocator);
 
+                var dependencies = std.AutoArrayHashMap(Resource.Dependency, void).init(allocator);
+                defer dependencies.deinit();
+
+                for (script.type_references) |type_reference| {
+                    if (type_reference.script) |script_depentency| {
+                        try dependencies.put(.{ .ident = script_depentency, .type = .script }, {});
+                    }
+                }
                 var file_stream: std.io.StreamSource = .{ .file = out };
                 try Resource.writeResource(
                     .script,
                     compression_flags,
-                    &.{}, //TODO: write out dependencies by pulling referenced files
+                    dependencies.keys(), //TODO: write out dependencies by pulling referenced files
                     revision,
                     &file_stream,
                     resource_stream.stream.array_list.items,
                     allocator,
                 );
+
+                for (dependencies.keys()) |dependency| {
+                    try stdout.print("Script has dependency {}\n", .{dependency.ident});
+                }
 
                 try Disasm.disassembleScript(stdout, script);
             }
