@@ -766,7 +766,7 @@ pub fn MMStream(comptime Stream: type) type {
 
             for (0..count) |_| {
                 //Read the path, length is i16 on LBP3, i32 on LBP1/2/Vita
-                const path = try allocator.alloc(u8, if (db_type == .lbp3) try self.readInt(u16) else try self.readInt(u32));
+                var path = try allocator.alloc(u8, if (db_type == .lbp3) try self.readInt(u16) else try self.readInt(u32));
                 _ = try self.readBytes(path);
 
                 //Skip 4 bytes on non lbp3
@@ -779,6 +779,29 @@ pub fn MMStream(comptime Stream: type) type {
 
                 const hash = try self.readSha1();
                 const guid = try self.readInt(u32);
+
+                // On LBPVita filenames are not preserved in some archives, so lets prepend the hash name
+                if (path[0] == '.' and db_type == .vita) {
+                    const new_path = try allocator.alloc(u8, (hash.len * 2) + path.len);
+
+                    var stream = std.io.fixedBufferStream(new_path);
+                    const writer = stream.writer();
+
+                    for (hash) |hash_byte| {
+                        try std.fmt.formatInt(
+                            hash_byte,
+                            16,
+                            .lower,
+                            .{ .width = 2, .fill = '0' },
+                            writer,
+                        );
+                    }
+                    @memcpy(new_path[hash.len * 2 ..], path);
+
+                    allocator.free(path);
+
+                    path = new_path;
+                }
 
                 const entry: MMTypes.FileDB.Entry = .{
                     .path = path,
