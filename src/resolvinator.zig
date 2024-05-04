@@ -924,8 +924,8 @@ fn resolveExpression(
             );
 
             switch (not_equal.lefthand.type.resolved.runtime_type.machine_type) {
-                //NEb   NEc    NEi   NEf   NEs64 NErp      NEo
-                .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref => {},
+                //NEb   NEc    NEi   NEf   NEs64 NErp      NEo          NEsp
+                .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref, .safe_ptr => {},
                 else => |tag| std.debug.panic(
                     "lefthand side of not equal must be .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref, currently is {s}",
                     .{@tagName(tag)},
@@ -1056,6 +1056,16 @@ fn resolveComptimeInteger(expression: *Parser.Node.Expression) !void {
     switch (expression.contents) {
         // Do nothing if its already just an integer literal
         .integer_literal => {},
+        .numeric_negation => |negation| {
+            try resolveComptimeInteger(negation);
+
+            const literal = negation.contents.integer_literal;
+            expression.contents = .{ .integer_literal = .{
+                .base = literal.base,
+                .value = -literal.value,
+            } };
+            expression.type = negation.type;
+        },
         else => |tag| std.debug.panic("cannot resolve integer expression type {s}", .{@tagName(tag)}),
     }
 }

@@ -377,6 +377,17 @@ const Codegen = struct {
         } }, .void));
     }
 
+    pub fn emitSafePtrNotEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
+        ensureAlignment(left_idx, .safe_ptr);
+        ensureAlignment(right_idx, .safe_ptr);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .NEsp = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = left_idx,
+            .src_b_idx = right_idx,
+        } }, .void));
+    }
+
     pub fn emitIntBitwiseAnd(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
         ensureAlignment(left_idx, .s32);
         ensureAlignment(right_idx, .s32);
@@ -844,6 +855,10 @@ fn compileExpression(
                             .less_than_or_equal => try codegen.emitFloatLessThanOrEqual(register[0], lefthand[0], righthand[0]),
                             .addition => try codegen.emitAddFloat(register[0], lefthand[0], righthand[0]),
                             else => std.debug.panic("TODO: {s} binary op type for f32", .{@tagName(binary_type)}),
+                        },
+                        .safe_ptr => switch (binary_type) {
+                            .not_equal => try codegen.emitSafePtrNotEqual(register[0], lefthand[0], righthand[0]),
+                            else => std.debug.panic("TODO: {s} binary op type for safe_ptr", .{@tagName(binary_type)}),
                         },
                         else => |tag| std.debug.panic("TODO: comparisons for machine type {s}", .{@tagName(tag)}),
                     }
