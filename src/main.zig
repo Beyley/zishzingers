@@ -263,7 +263,13 @@ pub fn main() !void {
                 };
                 try debug.dumpAst(ast);
 
-                var genny = Genny.init(ast, &a_string_table, &w_string_table);
+                const revision = .{
+                    .head = res.args.revision.?,
+                    .branch_revision = res.args.@"branch-revision" orelse 0,
+                    .branch_id = res.args.@"branch-id" orelse 0,
+                };
+
+                var genny = Genny.init(ast, &a_string_table, &w_string_table, revision);
                 defer genny.deinit();
 
                 const script = try genny.generate();
@@ -278,12 +284,6 @@ pub fn main() !void {
                     .compressed_integers = true,
                     .compressed_matrices = true,
                     .compressed_vectors = true,
-                };
-
-                const revision = .{
-                    .head = res.args.revision.?,
-                    .branch_revision = res.args.@"branch-revision" orelse 0,
-                    .branch_id = res.args.@"branch-id" orelse 0,
                 };
 
                 var resource_stream = Stream.MMStream(ArrayListStreamSource){

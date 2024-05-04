@@ -33,11 +33,13 @@ bytecode: BytecodeList,
 arguments: ArgumentList,
 line_numbers: LineNumberList,
 local_variables: LocalVariableList,
+revision: MMTypes.Revision,
 
 pub fn init(
     ast: Parser.Tree,
     a_string_table: *Resolvinator.AStringTable,
     w_string_table: *Resolvinator.WStringTable,
+    revision: MMTypes.Revision,
 ) Genny {
     return .{
         .ast = ast,
@@ -52,6 +54,7 @@ pub fn init(
         .local_variables = LocalVariableList.init(ast.allocator),
         .function_references = FunctionReferenceTable.init(ast.allocator),
         .field_references = FieldReferenceTable.init(ast.allocator),
+        .revision = revision,
     };
 }
 
@@ -83,8 +86,9 @@ const Codegen = struct {
         free_spaces: FreeSpaceList,
         /// The highest register in use
         highest_register: u16,
+        revision: MMTypes.Revision,
 
-        pub fn init(allocator: std.mem.Allocator) !RegisterAllocator {
+        pub fn init(allocator: std.mem.Allocator, revision: MMTypes.Revision) !RegisterAllocator {
             var free_spaces = FreeSpaceList{};
 
             //Add the initial block of free space
@@ -101,25 +105,46 @@ const Codegen = struct {
                 .free_spaces = free_spaces,
                 .highest_register = 0,
                 .allocator = allocator,
+                .revision = revision,
             };
         }
 
         /// Allocates a regester from the memory space, and returns the start register for the passed data type
         pub fn allocate(self: *RegisterAllocator, machine_type: MMTypes.MachineType) !Register {
-            //TODO: align vec4 to a 16 byte boundary
-
             const size = machine_type.size();
 
             var item = self.free_spaces.first;
             while (item) |node| : (item = node.next) {
+                const node_start = node.data.start;
+
+                //Calculate the amount of alignment needed, since we need to align all registers to the size of the underlying data type
+                const alignment_needed = blk: {
+                    if (node_start % size == 0) {
+                        break :blk 0;
+                    }
+
+                    break :blk size - (node_start % size);
+                };
+
                 //Skip spaces which are too small to fit our data
-                if (node.data.size < size)
+                if (node.data.size < size + alignment_needed)
                     continue;
 
-                const start = node.data.start;
+                if (alignment_needed != 0) {
+                    const new_node = try self.allocator.create(FreeSpaceList.Node);
+                    new_node.* = .{
+                        .data = .{
+                            .start = node_start,
+                            .size = alignment_needed,
+                        },
+                    };
+                    self.free_spaces.insertBefore(node, new_node);
+                }
 
-                node.data.start += size;
-                node.data.size -= size;
+                const start = node_start + alignment_needed;
+
+                node.data.start += size + alignment_needed;
+                node.data.size -= size + alignment_needed;
 
                 self.highest_register = @max(self.highest_register, start + size - 1);
 
@@ -139,52 +164,7 @@ const Codegen = struct {
             _ = register; // autofix
             _ = self; // autofix
 
-            //TODO: once the code we generate is good, then we can worry about this.
-
-            // const freeing_start = register[0];
-            // const data_type = register[1];
-
-            // const size = data_type.size();
-
-            // const freeing_end = freeing_start + size;
-
-            // var item_before: ?*FreeSpaceList.Node = null;
-
-            // var item = self.free_spaces.first;
-            // while (item) |node| : (item = node.next) {
-            //     const start = node.data.start;
-            //     const end = start + node.data.size;
-
-            //     if (freeing_start >= start and freeing_end <= end) {
-            //         std.debug.panic("freeing already freed range, bad.", .{});
-            //     }
-
-            //     //Find if our end is directly before the start boundary of another free space, if so we can just extend that one
-            //     if (freeing_end == start) {
-            //         node.data.start -= size;
-            //         node.data.size += size;
-            //         return;
-            //     }
-
-            //     //Find if our start is directly after the end boundary of another free space, if so we can just extend that one
-            //     if (freeing_start == end) {
-            //         node.data.size += size;
-            //         return;
-            //     }
-
-            //     if (start <= freeing_start)
-            //         item_before = item;
-            // }
-
-            // const new_space = try self.allocator.create(FreeSpaceList.Node);
-            // new_space.* = .{
-            //     .data = .{
-            //         .start = freeing_start,
-            //         .size = size,
-            //     },
-            // };
-
-            // self.free_spaces.insertAfter(item_before.?, new_space);
+            // TODO: register re-use
         }
     };
 
@@ -192,6 +172,17 @@ const Codegen = struct {
     line_numbers: LineNumberList,
     register_allocator: RegisterAllocator,
     genny: *Genny,
+    revision: MMTypes.Revision,
+
+    fn ensureAlignment(address: u16, machine_type: MMTypes.MachineType) void {
+        // 0 % 4 is UB
+        if (machine_type.size() == 0)
+            return;
+
+        if (address % machine_type.size() > 0) {
+            std.debug.panic("BUG: Bad alignment! Memory address {d} fails alignment check {d}!", .{ address, machine_type.size() });
+        }
+    }
 
     fn appendBytecode(self: *Codegen, bytecode: MMTypes.Bytecode) !void {
         try self.bytecode.append(bytecode);
@@ -200,6 +191,8 @@ const Codegen = struct {
     }
 
     pub fn emitLoadConstStringWide(self: *Codegen, dst_idx: u16, str: []const u16) !void {
+        ensureAlignment(dst_idx, .object_ref);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCsw = .{
             .constant_idx = @intCast((try self.genny.w_string_table.getOrPut(str)).index),
             .dst_idx = dst_idx,
@@ -207,22 +200,33 @@ const Codegen = struct {
     }
 
     pub fn emitAssert(self: *Codegen, src_idx: u16) !void {
+        ensureAlignment(src_idx, .object_ref);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .ASSERT = .{ .src_idx = src_idx } }, .void));
     }
 
-    pub fn emitCallVo(self: *Codegen, dst_idx: u16, call_idx: u16) !void {
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALLVo = .{ .dst_idx = dst_idx, .call_idx = call_idx } }, .void));
+    pub fn emitCallVo(self: *Codegen, dst_idx: u16, call_idx: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(dst_idx, machine_type);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALLVo = .{ .dst_idx = dst_idx, .call_idx = call_idx } }, machine_type));
     }
 
     pub fn emitArg(self: *Codegen, arg_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(arg_idx, machine_type);
+        ensureAlignment(src_idx, machine_type);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .ARG = .{ .src_idx = src_idx, .arg_idx = arg_idx } }, machine_type));
     }
 
     pub fn emitCall(self: *Codegen, dst_idx: u16, call_idx: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(dst_idx, machine_type);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALL = .{ .dst_idx = dst_idx, .call_idx = call_idx } }, machine_type));
     }
 
     pub fn emitLoadConstInt(self: *Codegen, dst_idx: u16, s32: i32) !void {
+        ensureAlignment(dst_idx, .s32);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCi = .{ .dst_idx = dst_idx, .constant_idx = @bitCast(s32) } }, .s32));
     }
 
@@ -231,10 +235,15 @@ const Codegen = struct {
     }
 
     pub fn emitLoadConstNullSafePtr(self: *Codegen, dst_idx: u16) !void {
+        ensureAlignment(dst_idx, .safe_ptr);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LC_NULLsp = .{ .constant_idx = 0, .dst_idx = dst_idx } }, .void));
     }
 
     pub fn emitSetObjectMember(self: *Codegen, src_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(src_idx, machine_type);
+        ensureAlignment(base_idx, .object_ref);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .SET_OBJ_MEMBER = .{
             .src_idx = src_idx,
             .base_idx = base_idx,
@@ -243,6 +252,9 @@ const Codegen = struct {
     }
 
     pub fn emitGetObjectMember(self: *Codegen, dst_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(dst_idx, machine_type);
+        ensureAlignment(base_idx, .object_ref);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .GET_OBJ_MEMBER = .{
             .dst_idx = dst_idx,
             .base_idx = base_idx,
@@ -251,10 +263,14 @@ const Codegen = struct {
     }
 
     pub fn emitBoolToS32(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
+        ensureAlignment(dst_idx, .s32);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .INTb = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
     }
 
     pub fn emitRet(self: *Codegen, src_idx: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(src_idx, machine_type);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .RET = .{ .src_idx = src_idx } }, machine_type));
     }
 
@@ -296,6 +312,8 @@ const Codegen = struct {
     }
 
     pub fn emitLoadConstFloat(self: *Codegen, dst_idx: u16, value: f32) !void {
+        ensureAlignment(dst_idx, .f32);
+
         try self.appendBytecode(MMTypes.Bytecode.init(
             .{ .LCf = .{ .constant_idx = @bitCast(value), .dst_idx = dst_idx } },
             .void,
@@ -303,6 +321,8 @@ const Codegen = struct {
     }
 
     pub fn emitLoadConstVector4(self: *Codegen, dst_idx: u16, value: [4]f32) !void {
+        ensureAlignment(dst_idx, .v4);
+
         const constant_idx: u32 = @intCast((try self.genny.f32_constants.getOrPut(value)).index);
 
         try self.appendBytecode(MMTypes.Bytecode.init(
@@ -315,6 +335,9 @@ const Codegen = struct {
     }
 
     pub fn emitSetVectorElement(self: *Codegen, dst_idx: u16, element: u2, src_idx: u16) !void {
+        ensureAlignment(dst_idx, .v4);
+        ensureAlignment(src_idx, .f32);
+
         switch (element) {
             inline else => |element_val| {
                 const tag_name = comptime switch (element_val) {
@@ -336,6 +359,9 @@ const Codegen = struct {
     }
 
     pub fn emitIntNotEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
+        ensureAlignment(left_idx, .s32);
+        ensureAlignment(right_idx, .s32);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .NEi = .{
             .dst_idx = dst_idx,
             .src_a_idx = left_idx,
@@ -344,6 +370,9 @@ const Codegen = struct {
     }
 
     pub fn emitIntBitwiseAnd(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
+        ensureAlignment(left_idx, .s32);
+        ensureAlignment(right_idx, .s32);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .BIT_ANDi = .{
             .dst_idx = dst_idx,
             .src_a_idx = left_idx,
@@ -360,6 +389,9 @@ const Codegen = struct {
     }
 
     pub fn emitFloatGreaterThan(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(lefthand, .f32);
+        ensureAlignment(righthand, .f32);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .GTf = .{
             .dst_idx = dst_idx,
             .src_a_idx = lefthand,
@@ -368,6 +400,9 @@ const Codegen = struct {
     }
 
     pub fn emitFloatLessThanOrEqual(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(lefthand, .f32);
+        ensureAlignment(righthand, .f32);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LTEf = .{
             .dst_idx = dst_idx,
             .src_a_idx = lefthand,
@@ -998,7 +1033,8 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
     var codegen: Codegen = .{
         .bytecode = BytecodeList.init(self.ast.allocator),
         .line_numbers = LineNumberList.init(self.ast.allocator),
-        .register_allocator = try Codegen.RegisterAllocator.init(self.ast.allocator),
+        .register_allocator = try Codegen.RegisterAllocator.init(self.ast.allocator, self.revision),
+        .revision = self.revision,
         .genny = self,
     };
     _ = &codegen;
@@ -1064,7 +1100,7 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         try codegen.emitLoadConstInt(call_idx[0], 0);
 
         // Emit a call instruction which uses a nonsense target and 0 source, causing a script exception
-        try codegen.emitCallVo(call_idx[0], 0);
+        try codegen.emitCallVo(call_idx[0], 0, .void);
 
         try codegen.register_allocator.free(call_idx);
     }
