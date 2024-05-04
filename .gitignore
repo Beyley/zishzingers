@@ -3,5 +3,6 @@ zig-out/
 
 alear/
 std/
+scripts/
 *.disasm
 *.ff

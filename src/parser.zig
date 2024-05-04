@@ -18,6 +18,7 @@ pub const NodeType = enum {
     variable_declaration,
     return_statement,
     if_statement,
+    while_statement,
 };
 
 pub const FromImportWanted = union(enum) {
@@ -418,6 +419,15 @@ pub const Node = union(NodeType) {
         }
     };
 
+    pub const WhileStatement = struct {
+        condition: *Expression,
+        body: *Expression,
+
+        pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
+            return writer.print("while_statement{{ condition = {}, body = {} }}", .{ value.condition, value.body });
+        }
+    };
+
     using: *Using,
     import: *Import,
     from_import: *FromImport,
@@ -430,6 +440,7 @@ pub const Node = union(NodeType) {
     variable_declaration: *VariableDeclaration,
     return_statement: *ReturnStatement,
     if_statement: *IfStatement,
+    while_statement: *WhileStatement,
 };
 
 pub const Tree = struct {
@@ -793,6 +804,12 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
                     // std.debug.print("ff {}\n", .{if_statement});
 
                     try body.append(if_statement);
+                    break :blk true;
+                },
+                hashKeyword("while") => {
+                    const while_statement = try consumeWhileStatement(allocator, iter);
+
+                    try body.append(while_statement);
                     break :blk true;
                 },
                 else => {
@@ -1487,6 +1504,25 @@ fn isAsciiStringLiteral(lexeme: Lexeme) ?[]const u8 {
 
     //Strip to just the contents
     return lexeme[1 .. lexeme.len - 1];
+}
+
+fn consumeWhileStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
+    const node = try allocator.create(Node.WhileStatement);
+
+    consumeArbitraryLexeme(iter, "while");
+
+    consumeArbitraryLexeme(iter, "(");
+    const condition = try consumeExpression(allocator, iter);
+    consumeArbitraryLexeme(iter, ")");
+
+    const body = try consumeBlockExpression(allocator, iter);
+
+    node.* = .{
+        .condition = condition,
+        .body = body,
+    };
+
+    return .{ .while_statement = node };
 }
 
 fn consumeIfStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {

@@ -175,7 +175,7 @@ const Codegen = struct {
     revision: MMTypes.Revision,
 
     fn ensureAlignment(address: u16, machine_type: MMTypes.MachineType) void {
-        // 0 % 4 is UB
+        // 4 % 0 is UB
         if (machine_type.size() == 0)
             return;
 
@@ -188,6 +188,14 @@ const Codegen = struct {
         try self.bytecode.append(bytecode);
         //TODO: pass line numbers all the way down
         try self.line_numbers.append(0);
+    }
+
+    pub fn lastEmitBytecodeIndex(self: *Codegen) usize {
+        return self.bytecode.items.len - 1;
+    }
+
+    pub fn nextEmitBytecodeIndex(self: *Codegen) usize {
+        return self.bytecode.items.len;
     }
 
     pub fn emitLoadConstStringWide(self: *Codegen, dst_idx: u16, str: []const u16) !void {
@@ -409,6 +417,18 @@ const Codegen = struct {
             .src_b_idx = righthand,
         } }, .void));
     }
+
+    pub fn emitAddFloat(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(dst_idx, .f32);
+        ensureAlignment(lefthand, .f32);
+        ensureAlignment(righthand, .f32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .ADDf = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
 };
 
 const Register = struct { u16, MMTypes.MachineType };
@@ -426,8 +446,20 @@ fn compileExpression(
         .assignment => |assignment| blk: {
             switch (assignment.destination.contents) {
                 .variable_access => |variable_access| {
-                    _ = variable_access; // autofix
-                    @panic("TODO: codgen for assignment to variable access");
+                    const variable = scope_local_variables.get(variable_access) orelse std.debug.panic("missing variable {s}", .{variable_access});
+
+                    const register: Register = .{ @intCast(variable.offset), codegen.genny.type_references.keys()[variable.type_reference].machine_type };
+
+                    _ = try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        assignment.value,
+                        false,
+                        register,
+                    );
+
+                    break :blk if (discard_result) null else register;
                 },
                 .field_access => |field_access| {
                     const source_variable = scope_local_variables.get(field_access.source.contents.variable_access).?;
@@ -628,9 +660,14 @@ fn compileExpression(
             }
 
             for (parameter_registers) |parameter_register| {
+                const parameter_size = parameter_register[1].size();
+
+                // Align to machine type
+                curr_arg_register += (parameter_size - (curr_arg_register % parameter_size)) % parameter_size;
+
                 try codegen.emitArg(curr_arg_register, parameter_register[0], parameter_register[1]);
 
-                curr_arg_register += parameter_register[1].size();
+                curr_arg_register += parameter_size;
             }
 
             const call_result_register = if (result_register) |result_register_idx|
@@ -761,13 +798,18 @@ fn compileExpression(
 
             break :blk register;
         },
-        inline .not_equal, .bitwise_and, .greater_than, .less_than_or_equal => |binary, binary_type| blk: {
+        inline .bitwise_and, .addition, .not_equal, .greater_than, .less_than_or_equal => |binary, binary_type| blk: {
             //Assert the types are equal
             std.debug.assert(binary.lefthand.type.resolved.eql(binary.righthand.type.resolved));
 
             const hand_type = binary.lefthand.type.resolved;
 
-            const register = result_register orelse try codegen.register_allocator.allocate(.bool);
+            // Allocate a result register, in the case of bitwise ops, we need to use the machine type, else use a bool as the result
+            const register = result_register orelse try codegen.register_allocator.allocate(switch (binary_type) {
+                .bitwise_and, .addition => binary.lefthand.type.resolved.runtime_type.machine_type,
+                .not_equal, .greater_than, .less_than_or_equal => .bool,
+                else => @compileError("Missing register type resolution"),
+            });
 
             switch (hand_type) {
                 .runtime_type => |runtime_type| {
@@ -788,16 +830,20 @@ fn compileExpression(
                         null,
                     )).?;
 
+                    std.debug.assert(lefthand[1] == righthand[1]);
+                    std.debug.assert(lefthand[1] == runtime_type.machine_type);
+
                     switch (runtime_type.machine_type) {
                         .s32 => switch (binary_type) {
                             .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
                             .bitwise_and => try codegen.emitIntBitwiseAnd(register[0], lefthand[0], righthand[0]),
-                            else => std.debug.panic("TODO: {s} comparison type for s32", .{@tagName(binary_type)}),
+                            else => std.debug.panic("TODO: {s} binary op type for s32", .{@tagName(binary_type)}),
                         },
                         .f32 => switch (binary_type) {
                             .greater_than => try codegen.emitFloatGreaterThan(register[0], lefthand[0], righthand[0]),
                             .less_than_or_equal => try codegen.emitFloatLessThanOrEqual(register[0], lefthand[0], righthand[0]),
-                            else => std.debug.panic("TODO: {s} comparison type for f32", .{@tagName(binary_type)}),
+                            .addition => try codegen.emitAddFloat(register[0], lefthand[0], righthand[0]),
+                            else => std.debug.panic("TODO: {s} binary op type for f32", .{@tagName(binary_type)}),
                         },
                         else => |tag| std.debug.panic("TODO: comparisons for machine type {s}", .{@tagName(tag)}),
                     }
@@ -996,6 +1042,54 @@ fn compileBlock(
                     codegen.bytecode.items[skip_else_instruction.?].params.B.branch_offset =
                         @intCast(codegen.bytecode.items.len - skip_else_instruction.?);
                 }
+            },
+            //
+            // alloc condition register
+            // start: calculate condition
+            // if(!condition) goto end;
+            // body;
+            // goto start;
+            // end:
+            // free condition register
+            //
+            .while_statement => |while_statement| {
+                // Get the index which starts the condition check
+                const condition_start = codegen.nextEmitBytecodeIndex();
+
+                const condition_register = (try compileExpression(
+                    codegen,
+                    function_local_variables,
+                    scope_local_variables,
+                    while_statement.condition,
+                    false,
+                    null,
+                )).?;
+                std.debug.assert(condition_register[1] == .bool);
+
+                // Emit the branch which will conditionally skip to after the loop if the condition is zero
+                const skip_to_end_instruction = try codegen.emitBranchEqualZero(condition_register[0]);
+
+                // Emit the body of the while loop
+                std.debug.assert(try compileExpression(
+                    codegen,
+                    function_local_variables,
+                    scope_local_variables,
+                    while_statement.body,
+                    true,
+                    null,
+                ) == null);
+
+                std.debug.print("HASNEOSHANEO {d} - {d}\n", .{ codegen.nextEmitBytecodeIndex(), condition_start });
+
+                // Generate a branch which branches directly back to the condition check
+                codegen.bytecode.items[try codegen.emitBranch()].params.B.branch_offset =
+                    @as(i32, @intCast(condition_start)) - @as(i32, @intCast(codegen.nextEmitBytecodeIndex()));
+
+                // Update the "skip to end" jump to go to the next instruction emit
+                codegen.bytecode.items[skip_to_end_instruction].params.BEZ.branch_offset =
+                    @intCast(codegen.nextEmitBytecodeIndex() - skip_to_end_instruction);
+
+                try codegen.register_allocator.free(condition_register);
             },
             else => |tag| std.debug.panic("cant codegen for block {s} yet\n", .{@tagName(tag)}),
         }

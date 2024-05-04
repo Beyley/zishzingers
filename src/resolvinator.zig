@@ -822,6 +822,25 @@ fn resolveExpression(
                             );
                         }
                     },
+                    .while_statement => |while_statement| {
+                        try resolveExpression(
+                            while_statement.condition,
+                            boolType(),
+                            script,
+                            script_table,
+                            a_string_table,
+                            function_variable_stack,
+                        );
+
+                        try resolveExpression(
+                            while_statement.body,
+                            null,
+                            script,
+                            script_table,
+                            a_string_table,
+                            function_variable_stack,
+                        );
+                    },
                     else => |node_type| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(node_type)}),
                 }
             }
@@ -945,6 +964,27 @@ fn resolveExpression(
             );
 
             expression.type = boolType();
+        },
+        .addition => |math_op| {
+            try resolveExpression(
+                math_op.lefthand,
+                null,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            try resolveExpression(
+                math_op.righthand,
+                math_op.lefthand.type,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            expression.type = math_op.lefthand.type;
         },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }
