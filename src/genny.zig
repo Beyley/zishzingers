@@ -440,6 +440,30 @@ const Codegen = struct {
             .src_b_idx = righthand,
         } }, .void));
     }
+
+    pub fn emitAddInt(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(dst_idx, .s32);
+        ensureAlignment(lefthand, .s32);
+        ensureAlignment(righthand, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .ADDi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
+
+    pub fn emitSubtractInt(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(dst_idx, .s32);
+        ensureAlignment(lefthand, .s32);
+        ensureAlignment(righthand, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .SUBi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
 };
 
 const Register = struct { u16, MMTypes.MachineType };
@@ -809,7 +833,7 @@ fn compileExpression(
 
             break :blk register;
         },
-        inline .bitwise_and, .addition, .not_equal, .greater_than, .less_than_or_equal => |binary, binary_type| blk: {
+        inline .bitwise_and, .addition, .subtraction, .not_equal, .greater_than, .less_than_or_equal => |binary, binary_type| blk: {
             //Assert the types are equal
             std.debug.assert(binary.lefthand.type.resolved.eql(binary.righthand.type.resolved));
 
@@ -817,7 +841,7 @@ fn compileExpression(
 
             // Allocate a result register, in the case of bitwise ops, we need to use the machine type, else use a bool as the result
             const register = result_register orelse try codegen.register_allocator.allocate(switch (binary_type) {
-                .bitwise_and, .addition => binary.lefthand.type.resolved.runtime_type.machine_type,
+                .bitwise_and, .addition, .subtraction => binary.lefthand.type.resolved.runtime_type.machine_type,
                 .not_equal, .greater_than, .less_than_or_equal => .bool,
                 else => @compileError("Missing register type resolution"),
             });
@@ -848,6 +872,8 @@ fn compileExpression(
                         .s32 => switch (binary_type) {
                             .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
                             .bitwise_and => try codegen.emitIntBitwiseAnd(register[0], lefthand[0], righthand[0]),
+                            .addition => try codegen.emitAddInt(register[0], lefthand[0], righthand[0]),
+                            .subtraction => try codegen.emitSubtractInt(register[0], lefthand[0], righthand[0]),
                             else => std.debug.panic("TODO: {s} binary op type for s32", .{@tagName(binary_type)}),
                         },
                         .f32 => switch (binary_type) {

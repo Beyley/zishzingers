@@ -965,7 +965,7 @@ fn resolveExpression(
 
             expression.type = boolType();
         },
-        .addition => |math_op| {
+        .addition, .subtraction => |math_op| {
             try resolveExpression(
                 math_op.lefthand,
                 null,
