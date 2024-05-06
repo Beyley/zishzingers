@@ -440,6 +440,18 @@ const Codegen = struct {
             .src_b_idx = righthand,
         } }, .void));
     }
+
+    pub fn emitAddInt(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(dst_idx, .s32);
+        ensureAlignment(lefthand, .s32);
+        ensureAlignment(righthand, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .ADDi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
 };
 
 const Register = struct { u16, MMTypes.MachineType };
@@ -848,6 +860,7 @@ fn compileExpression(
                         .s32 => switch (binary_type) {
                             .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
                             .bitwise_and => try codegen.emitIntBitwiseAnd(register[0], lefthand[0], righthand[0]),
+                            .addition => try codegen.emitAddInt(register[0], lefthand[0], righthand[0]),
                             else => std.debug.panic("TODO: {s} binary op type for s32", .{@tagName(binary_type)}),
                         },
                         .f32 => switch (binary_type) {
