@@ -109,7 +109,12 @@ pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
                             MMTypes.NewArrayClass => try std.fmt.format(writer, "r{d}, t{d}[r{d}]", .{ params.dst_idx, params.type_idx, params.size_idx }),
                             MMTypes.WriteClass => try std.fmt.format(writer, "r{d}", .{params.src_idx}),
                             MMTypes.ArgClass => try std.fmt.format(writer, "a{d}, r{d}", .{ params.arg_idx, params.src_idx }),
-                            MMTypes.CallClass => try std.fmt.format(writer, "r{d}, {s}", .{ params.dst_idx, script.a_string_table.strings[script.function_references[params.call_idx].name] }),
+                            MMTypes.CallClass => {
+                                if (params.call_idx >= script.function_references.len)
+                                    try std.fmt.format(writer, "r{d}, ??? {d}", .{ params.dst_idx, params.call_idx })
+                                else
+                                    try std.fmt.format(writer, "r{d}, {s}", .{ params.dst_idx, script.a_string_table.strings[script.function_references[params.call_idx].name] });
+                            },
                             MMTypes.ReturnClass => try std.fmt.format(writer, "r{d}", .{params.src_idx}),
                             MMTypes.BranchClass => try std.fmt.format(writer, "r{d}, @{d}", .{ params.src_idx, params.branch_offset + @as(i32, @intCast(i)) }),
                             MMTypes.CastClass => try std.fmt.format(writer, "r{d}, t{d}, r{d}", .{ params.dst_idx, params.type_idx, params.src_idx }),
