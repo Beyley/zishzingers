@@ -277,7 +277,7 @@ pub fn main() !void {
                 //TODO: actually use `output` parameter
                 const out_path = try std.fmt.allocPrint(allocator, "{s}.ff", .{std.fs.path.stem(source_file)});
                 defer allocator.free(out_path);
-                const out = try std.fs.cwd().createFile(out_path, .{});
+                const out = try std.fs.cwd().createFile(res.args.@"out-file" orelse out_path, .{});
                 defer out.close();
 
                 const compression_flags = .{
