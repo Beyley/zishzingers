@@ -248,6 +248,12 @@ const Codegen = struct {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LC_NULLsp = .{ .constant_idx = 0, .dst_idx = dst_idx } }, .void));
     }
 
+    pub fn emitLoadConstNullObjectPtr(self: *Codegen, dst_idx: u16) !void {
+        ensureAlignment(dst_idx, .object_ref);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LC_NULLo = .{ .constant_idx = 0, .dst_idx = dst_idx } }, .void));
+    }
+
     pub fn emitSetObjectMember(self: *Codegen, src_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
         ensureAlignment(src_idx, machine_type);
         ensureAlignment(base_idx, .object_ref);
@@ -382,6 +388,17 @@ const Codegen = struct {
         ensureAlignment(right_idx, .safe_ptr);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .NEsp = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = left_idx,
+            .src_b_idx = right_idx,
+        } }, .void));
+    }
+
+    pub fn emitObjectPtrNotEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
+        ensureAlignment(left_idx, .object_ref);
+        ensureAlignment(right_idx, .object_ref);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .NEo = .{
             .dst_idx = dst_idx,
             .src_a_idx = left_idx,
             .src_b_idx = right_idx,
@@ -606,6 +623,16 @@ fn compileExpression(
             const register = result_register orelse try codegen.register_allocator.allocate(.safe_ptr);
 
             try codegen.emitLoadConstNullSafePtr(register[0]);
+
+            break :blk register;
+        },
+        .null_literal_to_object_ptr => blk: {
+            if (discard_result)
+                break :blk null;
+
+            const register = result_register orelse try codegen.register_allocator.allocate(.object_ref);
+
+            try codegen.emitLoadConstNullObjectPtr(register[0]);
 
             break :blk register;
         },
@@ -885,6 +912,10 @@ fn compileExpression(
                         .safe_ptr => switch (binary_type) {
                             .not_equal => try codegen.emitSafePtrNotEqual(register[0], lefthand[0], righthand[0]),
                             else => std.debug.panic("TODO: {s} binary op type for safe_ptr", .{@tagName(binary_type)}),
+                        },
+                        .object_ref => switch (binary_type) {
+                            .not_equal => try codegen.emitObjectPtrNotEqual(register[0], lefthand[0], righthand[0]),
+                            else => std.debug.panic("TODO: {s} binary op type for object_ptr", .{@tagName(binary_type)}),
                         },
                         else => |tag| std.debug.panic("TODO: comparisons for machine type {s}", .{@tagName(tag)}),
                     }
