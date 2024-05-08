@@ -177,6 +177,7 @@ pub const Node = union(NodeType) {
         properties: []const *Property,
         functions: []const *Function,
         constructors: ?[]const *const Constructor,
+        modifiers: MMTypes.Modifiers,
 
         type_reference: ?MMTypes.TypeReference,
 
@@ -281,6 +282,7 @@ pub const Node = union(NodeType) {
             integer_literal_to_s64: UnaryExpression,
             integer_literal_to_f64: UnaryExpression,
             null_literal_to_safe_ptr: void,
+            null_literal_to_object_ptr: void,
             float_literal: struct { base: LiteralBase, value: f64 },
             float_literal_to_f32: UnaryExpression,
             float_literal_to_f64: UnaryExpression,
@@ -346,6 +348,7 @@ pub const Node = union(NodeType) {
                     .integer_literal_to_s64 => |literal| writer.print("expression_contents {{ .integer_literal_to_s64 = {d} }}", .{literal}),
                     .integer_literal_to_f64 => |literal| writer.print("expression_contents {{ .integer_literal_to_f64 = {d} }}", .{literal}),
                     .null_literal_to_safe_ptr => writer.print("expression_contents {{ .null_literal_to_safe_ptr }}", .{}),
+                    .null_literal_to_object_ptr => writer.print("expression_contents {{ .null_literal_to_object_ptr }}", .{}),
                     .float_literal => |literal| writer.print("expression_contents{{ .float_literal = {} }}", .{literal}),
                     .float_literal_to_f32 => |literal| writer.print("expression_contents {{ .float_literal_to_f32 = {d} }}", .{literal}),
                     .float_literal_to_f64 => |literal| writer.print("expression_contents {{ .float_literal_to_f64 = {d} }}", .{literal}),
@@ -529,13 +532,17 @@ fn hashKeyword(keyword: []const u8) KeywordHash {
 }
 
 fn consumeTopLevel(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
-    while (iter.next()) |lexeme| {
+    while (iter.peek() != null) {
+        const modifiers = consumeModifiers(iter);
+
+        const lexeme = iter.next().?;
+
         switch (hashKeyword(lexeme)) {
             hashKeyword("using") => try consumeUsingStatement(tree, iter),
             hashKeyword("import") => try consumeImportStatement(tree, iter),
             hashKeyword("from") => try consumeFromImportStatement(tree, iter),
             //TODO: classes can be abstract and divergent
-            hashKeyword("class") => try consumeClassStatement(tree, iter),
+            hashKeyword("class") => try consumeClassStatement(tree, iter, modifiers),
             else => {
                 std.debug.panic("Unexpected top level lexeme \"{s}\"", .{lexeme});
             },
@@ -543,7 +550,7 @@ fn consumeTopLevel(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     }
 }
 
-fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
+fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifiers: MMTypes.Modifiers) !void {
     const node = try tree.allocator.create(Node.Class);
     errdefer tree.allocator.destroy(node);
 
@@ -645,6 +652,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
         .properties = try properties.toOwnedSlice(),
         .identifier = identifier,
         .type_reference = null,
+        .modifiers = class_modifiers,
     };
 
     try tree.root_elements.append(tree.allocator, .{ .class = node });
@@ -1615,7 +1623,7 @@ fn consumeModifiers(iter: *SliceIterator(Lexeme)) MMTypes.Modifiers {
     var current_modifiers: MMTypes.Modifiers = .{};
 
     while (true) {
-        const lexeme = iter.peek() orelse std.debug.panic("unexpected EOF when parsing class body", .{});
+        const lexeme = iter.peek() orelse std.debug.panic("unexpected EOF when parsing modifiers", .{});
 
         const modifiers_type_info: std.builtin.Type = @typeInfo(MMTypes.Modifiers);
 

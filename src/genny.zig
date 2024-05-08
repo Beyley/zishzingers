@@ -1343,8 +1343,7 @@ pub fn generate(self: *Genny) !MMTypes.Script {
             .up_to_date_script = null,
             .class_name = class.name,
             .super_class_script = if (class.base_class == .resolved) class.base_class.resolved.ident else null,
-            //TODO: implement modifiers
-            .modifiers = .{},
+            .modifiers = class.modifiers,
             // Convert all the GUID type references into the list of depening GUIDs
             .depending_guids = blk: {
                 var depending_guids = std.ArrayList(u32).init(self.ast.allocator);
