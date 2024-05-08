@@ -1213,6 +1213,18 @@ fn coerceExpression(
         };
     }
 
+    // Null -> object_ptr conversion
+    if (target_type.runtime_type.machine_type == .object_ref and expression_type == .null_literal) {
+        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+        const cast_target_expression = try allocator.create(Parser.Node.Expression);
+        cast_target_expression.* = expression.*;
+
+        return .{
+            .contents = .null_literal_to_object_ptr,
+            .type = .{ .resolved = target_type },
+        };
+    }
+
     return null;
 }
 
