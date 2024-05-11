@@ -24,8 +24,8 @@ pub fn generateStubs(
         try script_references.putNoClobber(super_script.guid, script_lookup.get(super_script.guid).?.class_name);
     }
 
-    for (script.type_references) |type_references| {
-        if (type_references.script) |referenced_script| {
+    for (script.type_references) |type_reference| {
+        if (type_reference.script) |referenced_script| {
             switch (referenced_script) {
                 .guid => |reference_guid| try script_references.put(reference_guid, script_lookup.get(reference_guid).?.class_name),
                 .hash => std.debug.panic("Unable to resolve reference to hashed script.", .{}),
@@ -58,6 +58,27 @@ pub fn generateStubs(
     try writer.writeByte('\n');
 
     try writer.writeAll("{\n");
+
+    for (script.type_references) |type_reference|
+        // If it has a name and is not an object ref or safe ptr, then its probably an enum
+        if (type_reference.type_name != 0xFFFFFFFF and
+            type_reference.fish_type != .void)
+        {
+            const type_name = script.a_string_table.strings[type_reference.type_name];
+
+            // If the type name starts with `.`
+            if (std.mem.startsWith(u8, type_name, script.class_name) and
+                type_name[script.class_name.len] == '.')
+            {
+                const enum_name = type_name[script.class_name.len + 1 ..];
+
+                std.debug.print("found enum {s} ({s})\n", .{ enum_name, type_name });
+
+                // We cant really guess at the enum *contents*, but we can just emit an empty enum and im sure its fine
+                try writer.print("    pub enum {s} : {s} {{}}\n", .{ enum_name, @tagName(type_reference.fish_type) });
+            }
+        };
+    try writer.writeByte('\n');
 
     for (script.field_definitions) |field| {
         try writer.print("    {} {s}: ", .{
@@ -231,6 +252,11 @@ fn typeBaseName(script_lookup: std.AutoHashMap(u32, MMTypes.Script), script: MMT
             }
         }
 
+        return script.a_string_table.strings[type_reference.type_name];
+    }
+
+    // i dont know what this will break, but this will resolve the names for enums
+    if (type_reference.type_name != 0xFFFFFFFF) {
         return script.a_string_table.strings[type_reference.type_name];
     }
 

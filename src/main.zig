@@ -420,7 +420,7 @@ pub fn main() !void {
                 if (!std.mem.endsWith(u8, entry.value_ptr.path, ".ff"))
                     continue;
 
-                std.debug.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
+                // std.debug.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
                 // try stdout.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
 
                 const file_data = try game_data_dir.readFileAlloc(allocator, entry.value_ptr.path, std.math.maxInt(usize));
@@ -448,6 +448,7 @@ pub fn main() !void {
                 const out_file = try output_dir.createFile(out_name, .{});
                 defer out_file.close();
 
+                // std.debug.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.class_name });
                 try Stubinator.generateStubs(
                     out_file.writer(),
                     allocator,

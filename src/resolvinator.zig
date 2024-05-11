@@ -518,7 +518,7 @@ fn resolveExpression(
         .bool_literal => {
             expression.type = .{
                 .resolved = try resolveParsedType(
-                    Parser.Type.Parsed.Bool,
+                    Parser.Type.Parsed.fromFishType(.bool),
                     script,
                     script_table,
                     a_string_table,
@@ -672,7 +672,7 @@ fn resolveExpression(
         .block => |block| {
             expression.type = .{
                 .resolved = try resolveParsedType(
-                    Parser.Type.Parsed.Void,
+                    Parser.Type.Parsed.fromFishType(.void),
                     script,
                     script_table,
                     a_string_table,
@@ -1029,12 +1029,12 @@ fn typeFromName(name: []const u8) Parser.Type {
 }
 
 fn boolType() Parser.Type {
-    return comptime .{ .resolved = resolveParsedType(Parser.Type.Parsed.Bool, null, null, null) catch unreachable };
+    return comptime .{ .resolved = resolveParsedType(Parser.Type.Parsed.fromFishType(.bool), null, null, null) catch unreachable };
 }
 
 fn vec2Type() Parser.Type {
     return .{ .resolved = resolveParsedType(
-        Parser.Type.Parsed.Vec2,
+        Parser.Type.Parsed.fromFishType(.vec2),
         null,
         null,
         null,
@@ -1043,7 +1043,7 @@ fn vec2Type() Parser.Type {
 
 fn f32Type() Parser.Type {
     return .{ .resolved = resolveParsedType(
-        Parser.Type.Parsed.F32,
+        Parser.Type.Parsed.fromFishType(.f32),
         null,
         null,
         null,
@@ -1461,21 +1461,68 @@ fn resolveParsedType(
                 },
         };
     } else {
-        var iter = script.?.imported_types.keyIterator();
-        while (iter.next()) |imported_type| {
-            if (std.mem.eql(u8, parsed_type.name, imported_type.*)) {
-                const referenced_script = script_table.?.get(imported_type.*).?;
+        if (parsed_type.base_type) |base_type| {
+            if (script.?.imported_types.get(base_type) != null) {
+                const referenced_script = script_table.?.get(base_type).?;
 
-                return try typeReferenceFromScript(
-                    referenced_script,
-                    parsed_type.dimension_count,
-                    a_string_table.?,
-                );
+                const class = getScriptClassNode(referenced_script.ast);
+
+                for (class.enums) |enumeration| {
+                    if (std.mem.eql(u8, enumeration.name, parsed_type.name)) {
+                        return try typeReferenceFromScriptEnum(
+                            referenced_script,
+                            enumeration,
+                            parsed_type.dimension_count,
+                            a_string_table.?,
+                        );
+                    }
+                }
             }
+        } else if (script.?.imported_types.get(parsed_type.name) != null) {
+            const referenced_script = script_table.?.get(parsed_type.name).?;
+
+            return try typeReferenceFromScript(
+                referenced_script,
+                parsed_type.dimension_count,
+                a_string_table.?,
+            );
         }
 
-        std.debug.panic("no script {s} found in import table for script {s}", .{ parsed_type.name, script.?.class_name });
+        std.debug.panic("no script {s} ({?s}) found in import table for script {s}", .{ parsed_type.name, parsed_type.base_type, script.?.class_name });
     }
+}
+
+pub fn typeReferenceFromScriptEnum(script: *const ParsedScript, enumeration: *Parser.Node.Enum, dimension_count: u8, a_string_table: *AStringTable) Error!Parser.Type.Resolved {
+    //Qualify the name
+    const qualified_name = try std.fmt.allocPrint(script.ast.allocator, "{s}.{s}", .{ script.class_name, enumeration.name });
+
+    //Get the string table index of the name of this enum
+    const name_idx = try a_string_table.getOrPut(qualified_name);
+
+    // Resolve the enumeration's backing type, if needed
+    if (enumeration.backing_type == .parsed)
+        enumeration.backing_type = .{ .resolved = try resolveParsedType(enumeration.backing_type.parsed, null, null, a_string_table) };
+
+    const base_type = enumeration.backing_type.resolved.runtime_type;
+
+    return .{ .runtime_type = if (dimension_count > 0)
+        MMTypes.TypeReference{
+            .array_base_machine_type = base_type.machine_type,
+            .dimension_count = dimension_count,
+            .fish_type = .void,
+            .machine_type = .object_ref,
+            .type_name = @intCast(name_idx.index),
+            .script = null,
+        }
+    else
+        MMTypes.TypeReference{
+            .array_base_machine_type = .void,
+            .dimension_count = 0,
+            .fish_type = base_type.fish_type,
+            .machine_type = base_type.machine_type,
+            .type_name = @intCast(name_idx.index),
+            .script = null,
+        } };
 }
 
 pub fn typeReferenceFromScript(script: *ParsedScript, dimension_count: u8, a_string_table: *AStringTable) Error!Parser.Type.Resolved {
@@ -1568,22 +1615,22 @@ pub fn mangleFunctionName(
 
     for (parameters) |parameter| {
         const parameter_type = parameter.type.resolved.runtime_type;
-        switch (parameter_type.fish_type) {
-            .void => {
-                const type_name = a_string_table.keys()[parameter_type.type_name];
 
-                try writer.writeByte('Q');
-                try std.fmt.formatInt(
-                    type_name.len,
-                    10,
-                    .lower,
-                    .{},
-                    writer,
-                );
+        if (parameter_type.type_name != 0xFFFFFFFF) {
+            const type_name = a_string_table.keys()[parameter_type.type_name];
 
-                try writer.writeAll(type_name);
-            },
-            else => try writer.writeByte(parameter_type.fish_type.toMangledId()),
+            try writer.writeByte('Q');
+            try std.fmt.formatInt(
+                type_name.len,
+                10,
+                .lower,
+                .{},
+                writer,
+            );
+
+            try writer.writeAll(type_name);
+        } else {
+            try writer.writeByte(parameter_type.fish_type.toMangledId());
         }
     }
 }

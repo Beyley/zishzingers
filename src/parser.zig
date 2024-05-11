@@ -5,22 +5,6 @@ pub const UsingType = enum {
     library,
 };
 
-pub const NodeType = enum {
-    using,
-    import,
-    from_import,
-    class,
-    field,
-    property,
-    expression,
-    function,
-    constructor,
-    variable_declaration,
-    return_statement,
-    if_statement,
-    while_statement,
-};
-
 pub const FromImportWanted = union(enum) {
     pub const ImportedFunction = struct {
         name: []const u8,
@@ -52,56 +36,31 @@ pub const FromImportWanted = union(enum) {
 
 pub const Type = union(enum) {
     pub const Parsed = struct {
+        base_type: ?[]const u8,
         name: []const u8,
         dimension_count: u8,
 
-        pub const Void: Parsed = .{
-            .name = "void",
-            .dimension_count = 0,
-        };
-
-        pub const S32: Parsed = .{
-            .name = "s32",
-            .dimension_count = 0,
-        };
-
-        pub const S64: Parsed = .{
-            .name = "s64",
-            .dimension_count = 0,
-        };
-
-        pub const F32: Parsed = .{
-            .name = "f32",
-            .dimension_count = 0,
-        };
-
-        pub const F64: Parsed = .{
-            .name = "f64",
-            .dimension_count = 0,
-        };
-
-        pub const Vec2: Parsed = .{
-            .name = "vec2",
-            .dimension_count = 0,
-        };
-
-        pub const Vec3: Parsed = .{
-            .name = "vec3",
-            .dimension_count = 0,
-        };
-
-        pub const Vec4: Parsed = .{
-            .name = "vec4",
-            .dimension_count = 0,
-        };
-
-        pub const Bool: Parsed = .{
-            .name = "bool",
-            .dimension_count = 0,
-        };
+        pub fn fromFishType(fish_type: MMTypes.FishType) Parsed {
+            return .{ .name = @tagName(fish_type), .dimension_count = 0, .base_type = null };
+        }
 
         pub fn eql(self: Parsed, other: Parsed) bool {
-            return self.dimension_count == other.dimension_count and std.mem.eql(u8, self.name, other.name);
+            if (self.base_type) |base_type| {
+                if (other.base_type == null)
+                    return false;
+
+                if (!std.mem.eql(u8, base_type, other.base_type.?))
+                    return false;
+            } else if (other.base_type) |base_type| {
+                if (self.base_type == null)
+                    return false;
+
+                if (!std.mem.eql(u8, base_type, self.base_type.?))
+                    return false;
+            }
+
+            return self.dimension_count == other.dimension_count and
+                std.mem.eql(u8, self.name, other.name);
         }
     };
 
@@ -134,7 +93,7 @@ pub const Type = union(enum) {
     resolved: Resolved,
 };
 
-pub const Node = union(NodeType) {
+pub const Node = union(enum) {
     pub const Using = struct {
         type: UsingType,
         target: []const u8,
@@ -175,6 +134,7 @@ pub const Node = union(NodeType) {
 
         fields: []const *Field,
         properties: []const *Property,
+        enums: []const *Enum,
         functions: []const *Function,
         constructors: ?[]const *const Constructor,
         modifiers: MMTypes.Modifiers,
@@ -190,6 +150,18 @@ pub const Node = union(NodeType) {
         body: ?*const Node.Expression,
         parameters: []Function.Parameter,
         modifiers: MMTypes.Modifiers,
+    };
+
+    pub const Enum = struct {
+        pub const Member = struct {
+            name: []const u8,
+            value: *Node.Expression,
+        };
+
+        name: []const u8,
+        modifiers: MMTypes.Modifiers,
+        backing_type: Type,
+        members: []const Member,
     };
 
     pub const Field = struct {
@@ -436,6 +408,7 @@ pub const Node = union(NodeType) {
     from_import: *FromImport,
     class: *Class,
     field: *Field,
+    enumeration: *Enum,
     property: *Property,
     expression: *Expression,
     function: *Function,
@@ -593,6 +566,8 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifi
     defer fields.deinit();
     var properties = std.ArrayList(*Node.Property).init(tree.allocator);
     defer properties.deinit();
+    var enums = std.ArrayList(*Node.Enum).init(tree.allocator);
+    defer enums.deinit();
 
     var constructors = std.ArrayList(*Node.Constructor).init(tree.allocator);
     defer constructors.deinit();
@@ -621,6 +596,8 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifi
             consumeArbitraryLexeme(iter, "fn");
 
             try functions.append(try consumeFunction(tree.allocator, iter, modifiers));
+        } else if (next_keyword == comptime hashKeyword("enum")) {
+            try enums.append(try consumeEnum(tree.allocator, iter, modifiers));
         }
         // Else, we are consuming a field, property, or constructor
         else blk: {
@@ -650,12 +627,41 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifi
         .functions = try functions.toOwnedSlice(),
         .fields = try fields.toOwnedSlice(),
         .properties = try properties.toOwnedSlice(),
+        .enums = try enums.toOwnedSlice(),
         .identifier = identifier,
         .type_reference = null,
         .modifiers = class_modifiers,
     };
 
     try tree.root_elements.append(tree.allocator, .{ .class = node });
+}
+
+fn consumeEnum(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modifiers: MMTypes.Modifiers) !*Node.Enum {
+    const node = try allocator.create(Node.Enum);
+    errdefer allocator.destroy(node);
+
+    consumeArbitraryLexeme(iter, "enum");
+
+    const name = iter.next() orelse @panic("EOF");
+
+    const backing_type = if (consumeArbitraryLexemeIfAvailable(iter, ":"))
+        consumeTypeName(iter)
+    else
+        Type{ .parsed = .{ .name = "s32", .dimension_count = 0, .base_type = null } };
+
+    consumeArbitraryLexeme(iter, "{");
+
+    consumeArbitraryLexeme(iter, "}");
+
+    node.* = .{
+        .modifiers = modifiers,
+        .backing_type = backing_type,
+        .name = name,
+        //TODO: enum members
+        .members = &.{},
+    };
+
+    return node;
 }
 
 fn consumeConstructor(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), class_name: []const u8, modifiers: MMTypes.Modifiers) !*Node.Constructor {
@@ -880,7 +886,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
 
                 expression.* = .{
                     .contents = .{ .bool_literal = match == .true },
-                    .type = .{ .parsed = Type.Parsed.Bool },
+                    .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
                 };
 
                 return expression;
@@ -890,7 +896,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
 
                 expression.* = .{
                     .contents = .null_literal,
-                    .type = .{ .parsed = .{ .name = "null", .dimension_count = 0 } },
+                    .type = .{ .parsed = .{ .name = "null", .dimension_count = 0, .base_type = null } },
                 };
 
                 return expression;
@@ -964,7 +970,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
 
                     expression.* = .{
                         .contents = .{ .vec2_construction = parameters[0..2].* },
-                        .type = .{ .parsed = Type.Parsed.Vec2 },
+                        .type = .{ .parsed = Type.Parsed.fromFishType(.vec2) },
                     };
 
                     return expression;
@@ -975,7 +981,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
 
                     expression.* = .{
                         .contents = .{ .vec3_construction = parameters[0..3].* },
-                        .type = .{ .parsed = Type.Parsed.Vec3 },
+                        .type = .{ .parsed = Type.Parsed.fromFishType(.vec3) },
                     };
 
                     return expression;
@@ -986,7 +992,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
 
                     expression.* = .{
                         .contents = .{ .vec4_construction = parameters[0..4].* },
-                        .type = .{ .parsed = Type.Parsed.Vec4 },
+                        .type = .{ .parsed = Type.Parsed.fromFishType(.vec4) },
                     };
 
                     return expression;
@@ -1094,7 +1100,7 @@ fn consumeUnaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
                 .contents = .{
                     .logical_negation = try consumeUnaryExpression(allocator, iter),
                 },
-                .type = .{ .parsed = Type.Parsed.Bool },
+                .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
             },
             .@"-" => .{
                 .contents = .{
@@ -1226,7 +1232,7 @@ fn consumeComparisonExpression(allocator: std.mem.Allocator, iter: *SliceIterato
                             .righthand = try consumeBitwiseExpression(allocator, iter),
                         },
                     ),
-                    .type = .{ .parsed = Type.Parsed.Bool },
+                    .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
                 };
 
                 break :blk comparison;
@@ -1254,7 +1260,7 @@ fn consumeEqualityExpression(allocator: std.mem.Allocator, iter: *SliceIterator(
                             .righthand = try consumeComparisonExpression(allocator, iter),
                         },
                     ),
-                    .type = .{ .parsed = Type.Parsed.Bool },
+                    .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
                 };
 
                 break :blk equality;
@@ -1278,7 +1284,7 @@ fn consumeLogicalAndExpression(allocator: std.mem.Allocator, iter: *SliceIterato
                     .righthand = try consumeEqualityExpression(allocator, iter),
                 },
             },
-            .type = .{ .parsed = Type.Parsed.Bool },
+            .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
         };
 
         node = logical_and;
@@ -1300,7 +1306,7 @@ fn consumeLogicalOrExpression(allocator: std.mem.Allocator, iter: *SliceIterator
                     .righthand = try consumeLogicalAndExpression(allocator, iter),
                 },
             },
-            .type = .{ .parsed = Type.Parsed.Bool },
+            .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
         };
 
         node = logical_or;
@@ -1413,7 +1419,15 @@ fn consumeFunctionCallParameters(allocator: std.mem.Allocator, iter: *SliceItera
 }
 
 fn consumeTypeName(iter: *SliceIterator(Lexeme)) Type {
-    const name = iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{});
+    const name, const base_type: ?[]const u8 = blk: {
+        const name = iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{});
+
+        if (consumeArbitraryLexemeIfAvailable(iter, ".")) {
+            break :blk .{ iter.next().?, name };
+        }
+
+        break :blk .{ name, null };
+    };
 
     var dimension_count: u8 = 0;
 
@@ -1429,7 +1443,11 @@ fn consumeTypeName(iter: *SliceIterator(Lexeme)) Type {
         }
     }
 
-    return .{ .parsed = .{ .name = name, .dimension_count = dimension_count } };
+    return .{ .parsed = .{
+        .name = name,
+        .dimension_count = dimension_count,
+        .base_type = base_type,
+    } };
 }
 
 fn consumeFunctionParameters(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) ![]Node.Function.Parameter {
@@ -1469,7 +1487,7 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
             break :blk consumeTypeName(iter);
         }
 
-        break :blk .{ .parsed = Type.Parsed.Void };
+        break :blk .{ .parsed = Type.Parsed.fromFishType(.void) };
     };
 
     const body: ?*Node.Expression = if (!consumeArbitraryLexemeIfAvailable(iter, ";"))

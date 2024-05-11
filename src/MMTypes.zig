@@ -1474,6 +1474,8 @@ pub const MachineType = enum(u8) {
 /// These types represent all the types builtin to the compiler,
 /// which do not require another file/script to be imported.
 /// When the field/parameter type is a non-builtin type, this type is set to `void`
+///
+/// In the case of enums, the fish type is set to the enum's underlying type
 pub const FishType = enum(u8) {
     void = 0x0,
     bool = 0x1,
