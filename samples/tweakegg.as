@@ -93,7 +93,7 @@ class TweakEgg(g27432) extends TriggerCollectItem
         }
 
         Poppet.DoSectionBreak(gooey, Translate(0x110E4CFC), true);
-		this.DoTweakWidget(gooey, poppet, this.GetThingUID(), 105);
+        this.DoTweakWidget(gooey, poppet, this.GetThingUID(), 105);
 
         this.EndTweakFrame(gooey, poppet);
     }
