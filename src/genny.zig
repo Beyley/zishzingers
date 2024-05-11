@@ -87,8 +87,15 @@ const Codegen = struct {
         /// The highest register in use
         highest_register: u16,
         revision: MMTypes.Revision,
+        local_variables: *LocalVariableTable,
+        genny: *Genny,
 
-        pub fn init(allocator: std.mem.Allocator, revision: MMTypes.Revision) !RegisterAllocator {
+        pub fn init(
+            allocator: std.mem.Allocator,
+            revision: MMTypes.Revision,
+            local_variables: *LocalVariableTable,
+            genny: *Genny,
+        ) !RegisterAllocator {
             var free_spaces = FreeSpaceList{};
 
             //Add the initial block of free space
@@ -106,11 +113,21 @@ const Codegen = struct {
                 .highest_register = 0,
                 .allocator = allocator,
                 .revision = revision,
+                .local_variables = local_variables,
+                .genny = genny,
             };
         }
 
-        /// Allocates a regester from the memory space, and returns the start register for the passed data type
         pub fn allocate(self: *RegisterAllocator, machine_type: MMTypes.MachineType) !Register {
+            return allocateInternal(self, machine_type, true);
+        }
+
+        pub fn allocateArgument(self: *RegisterAllocator, machine_type: MMTypes.MachineType) !Register {
+            return allocateInternal(self, machine_type, false);
+        }
+
+        /// Allocates a regester from the memory space, and returns the start register for the passed data type
+        fn allocateInternal(self: *RegisterAllocator, machine_type: MMTypes.MachineType, create_local_vars: bool) !Register {
             const size = machine_type.size();
 
             var item = self.free_spaces.first;
@@ -154,6 +171,28 @@ const Codegen = struct {
                     self.allocator.destroy(node);
                 }
 
+                if (create_local_vars and machine_type == .object_ref or machine_type == .safe_ptr) {
+                    //TODO: make this optional under a debug option
+                    const name = try std.fmt.allocPrint(self.local_variables.allocator, "r{d}", .{start});
+
+                    try self.local_variables.put(
+                        name,
+                        MMTypes.LocalVariable{
+                            .modifiers = .{},
+                            .name = @intCast((try self.genny.a_string_table.getOrPut(name)).index),
+                            .offset = start,
+                            .type_reference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
+                                .type_name = 0xFFFFFFFF,
+                                .array_base_machine_type = .void,
+                                .dimension_count = 0,
+                                .fish_type = .void,
+                                .machine_type = machine_type,
+                                .script = null,
+                            })).index),
+                        },
+                    );
+                }
+
                 return .{ start, machine_type };
             }
 
@@ -185,9 +224,10 @@ const Codegen = struct {
     }
 
     fn appendBytecode(self: *Codegen, bytecode: MMTypes.Bytecode) !void {
+        //TODO: pass line numbers all the way down from the parser (ouch)
+        try self.line_numbers.append(@intCast(self.bytecode.items.len));
+
         try self.bytecode.append(bytecode);
-        //TODO: pass line numbers all the way down
-        try self.line_numbers.append(0);
     }
 
     pub fn lastEmitBytecodeIndex(self: *Codegen) usize {
@@ -265,11 +305,33 @@ const Codegen = struct {
         } }, machine_type));
     }
 
+    pub fn emitSetSafePtrMember(self: *Codegen, src_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(src_idx, machine_type);
+        ensureAlignment(base_idx, .safe_ptr);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .SET_SP_MEMBER = .{
+            .src_idx = src_idx,
+            .base_idx = base_idx,
+            .field_ref = field_ref,
+        } }, machine_type));
+    }
+
     pub fn emitGetObjectMember(self: *Codegen, dst_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
         ensureAlignment(dst_idx, machine_type);
         ensureAlignment(base_idx, .object_ref);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .GET_OBJ_MEMBER = .{
+            .dst_idx = dst_idx,
+            .base_idx = base_idx,
+            .field_ref = field_ref,
+        } }, machine_type));
+    }
+
+    pub fn emitGetSafePtrMember(self: *Codegen, dst_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(dst_idx, machine_type);
+        ensureAlignment(base_idx, .safe_ptr);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .GET_SP_MEMBER = .{
             .dst_idx = dst_idx,
             .base_idx = base_idx,
             .field_ref = field_ref,
@@ -548,6 +610,14 @@ fn compileExpression(
                                 machine_type,
                             );
                         },
+                        .safe_ptr => {
+                            try codegen.emitSetSafePtrMember(
+                                register[0],
+                                @intCast(source_variable.offset),
+                                field_reference,
+                                machine_type,
+                            );
+                        },
                         else => |tag| std.debug.panic("unable to do field access on machine type {s}", .{@tagName(tag)}),
                     }
 
@@ -790,6 +860,14 @@ fn compileExpression(
             switch (source_variable_type.machine_type) {
                 .object_ref => {
                     try codegen.emitGetObjectMember(
+                        register[0],
+                        @intCast(source_variable.offset),
+                        field_reference,
+                        machine_type,
+                    );
+                },
+                .safe_ptr => {
+                    try codegen.emitGetSafePtrMember(
                         register[0],
                         @intCast(source_variable.offset),
                         field_reference,
@@ -1190,23 +1268,25 @@ fn compileBlock(
 
 fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser.Node.Class) !MMTypes.FunctionDefinition {
     var arguments = ArgumentList.init(self.ast.allocator);
-    _ = &arguments;
     var local_variables = LocalVariableTable.init(self.ast.allocator);
     var scope_local_variables = LocalVariableTable.init(self.ast.allocator);
-    _ = &local_variables;
 
     var codegen: Codegen = .{
         .bytecode = BytecodeList.init(self.ast.allocator),
         .line_numbers = LineNumberList.init(self.ast.allocator),
-        .register_allocator = try Codegen.RegisterAllocator.init(self.ast.allocator, self.revision),
+        .register_allocator = try Codegen.RegisterAllocator.init(
+            self.ast.allocator,
+            self.revision,
+            &local_variables,
+            self,
+        ),
         .revision = self.revision,
         .genny = self,
     };
-    _ = &codegen;
 
     //If the function isnt static, then we need to allocate `r0-r3` for the `this` reference
     if (!function.modifiers.static) {
-        const self_reg = try codegen.register_allocator.allocate(.object_ref);
+        const self_reg = try codegen.register_allocator.allocateArgument(.object_ref);
 
         std.debug.assert(self_reg[0] == 0);
 
@@ -1224,7 +1304,7 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
     }
 
     for (function.parameters) |parameter| {
-        const register = try codegen.register_allocator.allocate(parameter.type.resolved.runtime_type.machine_type);
+        const register = try codegen.register_allocator.allocateArgument(parameter.type.resolved.runtime_type.machine_type);
         const type_reference: u32 = @intCast((try self.type_references.getOrPut(parameter.type.resolved.runtime_type)).index);
 
         const parameter_variable: MMTypes.LocalVariable = .{
@@ -1363,8 +1443,35 @@ pub fn generate(self: *Genny) !MMTypes.Script {
             .function_references = self.function_references.values(),
             .constant_table_s64 = self.s64_constants.keys(),
             .constant_table_float = std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(self.f32_constants.keys())),
-            .type_references = self.type_references.keys(),
             .field_references = self.field_references.keys(),
+            .field_definitions = blk: {
+                var field_definitions = std.ArrayList(MMTypes.FieldDefinition).init(self.ast.allocator);
+
+                for (class.fields) |field| {
+                    try field_definitions.append(.{
+                        .name = @intCast((try self.a_string_table.getOrPut(field.name)).index),
+                        .type_reference = @intCast((try self.type_references.getOrPut(field.type.resolved.runtime_type)).index),
+                        .modifiers = field.modifiers,
+                    });
+                }
+
+                break :blk try field_definitions.toOwnedSlice();
+            },
+            .property_definitions = blk: {
+                var property_definitions = std.ArrayList(MMTypes.PropertyDefinition).init(self.ast.allocator);
+
+                for (class.properties) |property| {
+                    _ = property; // autofix
+                    @panic("TODO: properties");
+                    // try property_definitions.append(.{
+                    //     .name = @intCast((try self.a_string_table.getOrPut(property.name)).index),
+                    //     .type_reference = @intCast((try self.type_reference_table.getOrPut(property.type.resolved.runtime_type)).index),
+                    // });
+                }
+
+                break :blk try property_definitions.toOwnedSlice();
+            },
+            .type_references = self.type_references.keys(),
             .a_string_table = blk: {
                 var buf = std.ArrayList(u8).init(self.ast.allocator);
                 var strings = std.ArrayList([:0]const u8).init(self.ast.allocator);
@@ -1406,33 +1513,6 @@ pub fn generate(self: *Genny) !MMTypes.Script {
                     .buf = try buf.toOwnedSlice(),
                     .strings = try strings.toOwnedSlice(),
                 };
-            },
-            .field_definitions = blk: {
-                var field_definitions = std.ArrayList(MMTypes.FieldDefinition).init(self.ast.allocator);
-
-                for (class.fields) |field| {
-                    try field_definitions.append(.{
-                        .name = @intCast((try self.a_string_table.getOrPut(field.name)).index),
-                        .type_reference = @intCast((try self.type_references.getOrPut(field.type.resolved.runtime_type)).index),
-                        .modifiers = field.modifiers,
-                    });
-                }
-
-                break :blk try field_definitions.toOwnedSlice();
-            },
-            .property_definitions = blk: {
-                var property_definitions = std.ArrayList(MMTypes.PropertyDefinition).init(self.ast.allocator);
-
-                for (class.properties) |property| {
-                    _ = property; // autofix
-                    @panic("TODO: properties");
-                    // try property_definitions.append(.{
-                    //     .name = @intCast((try self.a_string_table.getOrPut(property.name)).index),
-                    //     .type_reference = @intCast((try self.type_reference_table.getOrPut(property.type.resolved.runtime_type)).index),
-                    // });
-                }
-
-                break :blk try property_definitions.toOwnedSlice();
             },
         };
     }

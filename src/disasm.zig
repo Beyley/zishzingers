@@ -34,6 +34,17 @@ pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
     }
     try std.fmt.format(writer, "\n", .{});
 
+    try std.fmt.format(writer, " --- Field Definitions ---\n", .{});
+    for (script.field_definitions) |*field_definition| {
+        try std.fmt.format(writer, " - Field {*} \n", .{field_definition});
+        if (field_definition.name != 0xFFFFFFFF) {
+            try std.fmt.format(writer, "   - Name: {s}\n", .{script.a_string_table.strings[field_definition.name]});
+        }
+        try std.fmt.format(writer, "   - Type: {*}\n", .{&script.type_references[field_definition.type_reference]});
+        try std.fmt.format(writer, "   - Modifiers: {}\n", .{field_definition.modifiers});
+    }
+    try std.fmt.format(writer, "\n", .{});
+
     try std.fmt.format(writer, " --- Function References ---\n", .{});
     for (script.function_references) |*function_reference| {
         try std.fmt.format(writer, " - Function {*} \n", .{function_reference});
@@ -68,7 +79,7 @@ pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
                 try std.fmt.format(writer, "      - Name: {s}\n", .{script.a_string_table.strings[local_variable.name]});
                 try std.fmt.format(writer, "      - Offset: {d}\n", .{local_variable.offset});
                 try std.fmt.format(writer, "      - Modifiers: {d}\n", .{local_variable.modifiers});
-                try std.fmt.format(writer, "      - Type: {*}\n", .{&script.type_references[local_variable.type_reference]});
+                try std.fmt.format(writer, "      - Type: {s}\n", .{@tagName(script.type_references[local_variable.type_reference].machine_type)});
             }
         }
 

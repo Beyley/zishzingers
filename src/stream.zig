@@ -611,40 +611,29 @@ pub fn MMStream(comptime Stream: type) type {
             if (indices.len == 0)
                 return self.writeInt(u32, 0);
 
-            const needs_second_table = blk: {
-                for (indices) |index|
-                    if (index > 0xFF) break :blk true;
+            const highest_number: u32 = blk: {
+                var highest: u32 = 0;
 
-                break :blk false;
+                for (indices) |index|
+                    highest = @max(highest, index);
+
+                break :blk highest;
             };
 
-            //Write the length
-            try self.writeInt(u32, @intCast(indices.len));
-
-            //If theres only one element and its a zero, just write a zero marking no tables
-            if (indices.len == 1 and indices[0] == 0)
+            // If the highest number is zero (eg. theres a bunch of zero elements, or only one zero element), then we can just write the length then a single zero
+            if (highest_number == 0) {
+                try self.writeInt(u32, @intCast(indices.len));
                 return self.writeInt(u32, 0);
-
-            //Write the amount of tables needed
-            try self.writeInt(u32, @as(u32, @intFromBool(needs_second_table)) + 1);
-
-            { //Write the first table
-                var loop: u32 = 0;
-                for (indices) |index| {
-                    if (index - (loop * 0x100) > 0x100)
-                        loop += 1;
-
-                    try self.writeInt(u8, @intCast(index - (loop * 0x100)));
-                }
             }
 
-            if (needs_second_table) {
-                var loop: u32 = 0;
-                for (indices) |index| {
-                    if (index - (loop * 0x100) > 0x100)
-                        loop += 1;
+            // Get the amount of tables needed (aka, amount of bytes used in the highest number)
+            const tables_needed: u8 = ((@bitSizeOf(u32) - @as(u8, @clz(highest_number))) + 7) / 8;
 
-                    try self.writeInt(u8, @intCast(loop));
+            try self.writeInt(u32, @intCast(indices.len));
+            try self.writeInt(u8, tables_needed);
+            for (0..tables_needed) |table| {
+                for (indices) |index| {
+                    try self.writeInt(u8, @truncate(index >> @intCast(table * 8)));
                 }
             }
         }

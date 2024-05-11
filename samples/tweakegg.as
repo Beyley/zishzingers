@@ -9,15 +9,14 @@ import 'std:resource';
 from 'std:inventory' import *;
 from 'std:lams' import Translate;
 
-class TweakEgg extends TriggerCollectItem
+class TweakEgg(g27432) extends TriggerCollectItem
 {
     private divergent ContentsIcon: Resource;
     private divergent CacheID: s32;
-    private divergent ShareableIndex: s32 = 1;
 
     pub fn StartTweakingObject(player: s32) -> bool
     {
-        let cache_id = CreateInventoryCollection(player, 4, true);
+        let cache_id = CreateInventoryCollection(player, 5, true);
 
         # User Created Objects
 
@@ -50,7 +49,6 @@ class TweakEgg extends TriggerCollectItem
         AddView(player, cache_id, 2, 0, L'TG_Objects');
 
         this.CacheID = cache_id;
-        this.ShareableIndex = this.GetEggLinkShareable();
 
         return true;
     }
@@ -95,16 +93,7 @@ class TweakEgg extends TriggerCollectItem
         }
 
         Poppet.DoSectionBreak(gooey, Translate(0x110E4CFC), true);
-
-        this.ShareableIndex = this.DoCarousel(
-            200000,
-            gooey,
-            poppet,
-            15,
-            this.ShareableIndex,
-            105,
-            this.GetThingUID()
-        );
+		this.DoTweakWidget(gooey, poppet, this.GetThingUID(), 105);
 
         this.EndTweakFrame(gooey, poppet);
     }

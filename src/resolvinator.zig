@@ -83,6 +83,7 @@ fn getImportPathFromImportTarget(allocator: std.mem.Allocator, target: []const u
 fn collectImportedTypes(class_name: []const u8, defined_libraries: Libraries, script_table: *ParsedScriptTable) Error!void {
     const script = script_table.get(class_name) orelse @panic("tsheointeonhsaoi");
 
+    //TODO: we need to make sure to prevent two imported scripts from sharing the same GUID in the global script table
     for (script.ast.root_elements.items) |item| {
         switch (item) {
             inline .import, .from_import => |import, import_type| {
@@ -238,8 +239,14 @@ fn isScriptThing(script: *const ParsedScript, script_table: *const ParsedScriptT
 
     const class = getScriptClassNode(script.ast);
 
-    if (class.base_class == .parsed) {
-        return isScriptThing(script_table.get(class.base_class.parsed).?, script_table);
+    if (class.base_class != .none) {
+        const base_class_name = switch (class.base_class) {
+            .parsed => |parsed| parsed,
+            .resolved => |resolved| resolved.name,
+            else => unreachable,
+        };
+
+        return isScriptThing(script_table.get(base_class_name).?, script_table);
     } else {
         // This class is not Thing, and extends no other classes, therefor it cannot be a Thing
         return false;
@@ -526,6 +533,7 @@ fn resolveExpression(
             };
         },
         .wide_string_literal => {
+            //TODO: make try to pull in a `String` script, not just "some object ref"
             expression.type = .{ .resolved = try stringType(a_string_table) };
         },
         .function_call => |*function_call| {
