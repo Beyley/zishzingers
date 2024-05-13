@@ -271,7 +271,7 @@ pub fn resolve(
         script_table.get(class.name).?,
         0,
         a_string_table,
-    )).runtime;
+    )).fish;
 
     const script = script_table.get(class.name) orelse unreachable;
 
@@ -367,7 +367,7 @@ fn resolveFunctionHead(
 }
 
 fn stringType(a_string_table: *AStringTable) Error!Parser.Type.Resolved {
-    return .{ .runtime = .{
+    return .{ .fish = .{
         .script = .{ .guid = 16491 },
         .type_name = @intCast((try a_string_table.getOrPut("String")).index),
         .machine_type = .object_ref,
@@ -430,7 +430,7 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            std.debug.assert(assignment.destination.type.resolved == .runtime);
+            std.debug.assert(assignment.destination.type.resolved == .fish);
 
             //Resolve the type of the value, which should be the same type as the destination
             try resolveExpression(
@@ -457,9 +457,9 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            const field = switch (field_access.source.type.resolved.runtime.machine_type) {
+            const field = switch (field_access.source.type.resolved.fish.machine_type) {
                 .object_ref, .safe_ptr => field_resolution: {
-                    const source_class_name = a_string_table.keys()[field_access.source.type.resolved.runtime.type_name];
+                    const source_class_name = a_string_table.keys()[field_access.source.type.resolved.fish.type_name];
 
                     const source_script = script_table.get(source_class_name).?;
 
@@ -633,7 +633,7 @@ fn resolveExpression(
                             function_script,
                             0,
                             a_string_table,
-                        )).runtime,
+                        )).fish,
                     },
                 };
 
@@ -735,7 +735,7 @@ fn resolveExpression(
                                 );
 
                                 //Panic if the resolved type is not knowable at runtime
-                                if (value.type.resolved != .runtime)
+                                if (value.type.resolved != .fish)
                                     std.debug.panic(
                                         "variable declaration {s}'s default value's is unknown at runtime, currently is {s}",
                                         .{ variable_declaration.name, @tagName(value.type.resolved) },
@@ -786,7 +786,7 @@ fn resolveExpression(
                         );
                     },
                     .return_statement => |return_statement| {
-                        if (function_variable_stack.?.function.return_type.resolved.runtime.machine_type != .void and return_statement.expression == null)
+                        if (function_variable_stack.?.function.return_type.resolved.fish.machine_type != .void and return_statement.expression == null)
                             std.debug.panic("you cant return nothing when the function wants {}", .{function_variable_stack.?.function.return_type.resolved});
 
                         //If this return statement has an expression, type resolve that to the return type of the function
@@ -904,7 +904,7 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            switch (bitwise_and.lefthand.type.resolved.runtime.machine_type) {
+            switch (bitwise_and.lefthand.type.resolved.fish.machine_type) {
                 .s32, .bool, .s64 => {},
                 else => |tag| std.debug.panic(
                     "lefthand side of bitwise type must be s32, bool, or s64, currently is {s}",
@@ -935,7 +935,7 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            switch (not_equal.lefthand.type.resolved.runtime.machine_type) {
+            switch (not_equal.lefthand.type.resolved.fish.machine_type) {
                 //NEb   NEc    NEi   NEf   NEs64 NErp      NEo          NEsp
                 .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref, .safe_ptr => {},
                 else => |tag| std.debug.panic(
@@ -999,6 +999,13 @@ fn resolveExpression(
             expression.type = math_op.lefthand.type;
         },
         .cast => |cast_expression| {
+            const resolved_cast_target_type = try resolveParsedType(
+                expression.type.parsed,
+                script,
+                script_table,
+                a_string_table,
+            );
+
             try resolveExpression(
                 cast_expression,
                 null,
@@ -1008,12 +1015,11 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            expression.type = .{ .resolved = try resolveParsedType(
-                expression.type.parsed,
-                script,
-                script_table,
-                a_string_table,
-            ) };
+            if (try coerceExpression(script.ast.allocator, resolved_cast_target_type, cast_expression)) |new_expression| {
+                expression.* = new_expression;
+            } else {
+                expression.type = .{ .resolved = resolved_cast_target_type };
+            }
         },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }
@@ -1046,10 +1052,11 @@ fn isNumberLike(resolved_type: Parser.Type.Resolved) bool {
     return switch (resolved_type) {
         .type, .null_literal => false,
         .float_literal, .integer_literal => true,
-        .runtime => |runtime| switch (runtime.machine_type) {
+        .fish => |fish| switch (fish.machine_type) {
             .s32, .s64, .f32, .f64 => true,
             else => false,
         },
+        .pointer => false,
     };
 }
 
@@ -1134,124 +1141,146 @@ fn coerceExpression(
     if (expression_type.eql(target_type))
         return null;
 
-    // Integer literal -> s32 coercion
-    if (target_type.runtime.machine_type == .s32 and expression_type == .integer_literal) {
-        try resolveComptimeInteger(expression);
+    switch (target_type) {
+        .pointer => |pointer| {
+            _ = pointer; // autofix
+            // Integer literal -> ptr conversion
+            if (expression_type == .integer_literal) {
+                try resolveComptimeInteger(expression);
 
-        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
-        const cast_target_expression = try allocator.create(Parser.Node.Expression);
-        cast_target_expression.* = expression.*;
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
 
-        return .{
-            .contents = .{ .integer_literal_to_s32 = cast_target_expression },
-            .type = .{ .resolved = target_type },
-        };
-    }
+                return .{
+                    .contents = .{ .integer_literal_to_ptr = cast_target_expression },
+                    .type = .{ .resolved = target_type },
+                };
+            }
+        },
+        .fish => |target_fish_type| {
 
-    //Integer literal -> s64 coercion
-    if (target_type.runtime.machine_type == .s64 and expression_type == .integer_literal) {
-        try resolveComptimeInteger(expression);
+            // Integer literal -> s32 coercion
+            if (target_fish_type.machine_type == .s32 and expression_type == .integer_literal) {
+                try resolveComptimeInteger(expression);
 
-        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
-        const cast_target_expression = try allocator.create(Parser.Node.Expression);
-        cast_target_expression.* = expression.*;
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
 
-        return .{
-            .contents = .{ .integer_literal_to_s64 = cast_target_expression },
-            .type = .{ .resolved = target_type },
-        };
-    }
+                return .{
+                    .contents = .{ .integer_literal_to_s32 = cast_target_expression },
+                    .type = .{ .resolved = target_type },
+                };
+            }
 
-    // Integer literal -> f32 coercion
-    if (target_type.runtime.machine_type == .f32 and expression_type == .integer_literal) {
-        try resolveComptimeInteger(expression);
+            //Integer literal -> s64 coercion
+            if (target_fish_type.machine_type == .s64 and expression_type == .integer_literal) {
+                try resolveComptimeInteger(expression);
 
-        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
-        const cast_target_expression = try allocator.create(Parser.Node.Expression);
-        cast_target_expression.* = expression.*;
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
 
-        return .{
-            .contents = .{ .integer_literal_to_f32 = cast_target_expression },
-            .type = .{ .resolved = target_type },
-        };
-    }
+                return .{
+                    .contents = .{ .integer_literal_to_s64 = cast_target_expression },
+                    .type = .{ .resolved = target_type },
+                };
+            }
 
-    //Integer literal -> f64 coercion
-    if (target_type.runtime.machine_type == .f64 and expression_type == .integer_literal) {
-        try resolveComptimeInteger(expression);
+            // Integer literal -> f32 coercion
+            if (target_fish_type.machine_type == .f32 and expression_type == .integer_literal) {
+                try resolveComptimeInteger(expression);
 
-        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
-        const cast_target_expression = try allocator.create(Parser.Node.Expression);
-        cast_target_expression.* = expression.*;
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
 
-        return .{
-            .contents = .{ .integer_literal_to_f64 = cast_target_expression },
-            .type = .{ .resolved = target_type },
-        };
-    }
+                return .{
+                    .contents = .{ .integer_literal_to_f32 = cast_target_expression },
+                    .type = .{ .resolved = target_type },
+                };
+            }
 
-    // Float literal -> f32 coercion
-    if (target_type.runtime.machine_type == .f32 and expression_type == .float_literal) {
-        try resolveComptimeFloat(expression);
+            //Integer literal -> f64 coercion
+            if (target_fish_type.machine_type == .f64 and expression_type == .integer_literal) {
+                try resolveComptimeInteger(expression);
 
-        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
-        const cast_target_expression = try allocator.create(Parser.Node.Expression);
-        cast_target_expression.* = expression.*;
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
 
-        return .{
-            .contents = .{ .float_literal_to_f32 = cast_target_expression },
-            .type = .{ .resolved = target_type },
-        };
-    }
+                return .{
+                    .contents = .{ .integer_literal_to_f64 = cast_target_expression },
+                    .type = .{ .resolved = target_type },
+                };
+            }
 
-    //Float literal -> f64 coercion
-    if (target_type.runtime.machine_type == .f64 and expression_type == .float_literal) {
-        try resolveComptimeFloat(expression);
+            // Float literal -> f32 coercion
+            if (target_fish_type.machine_type == .f32 and expression_type == .float_literal) {
+                try resolveComptimeFloat(expression);
 
-        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
-        const cast_target_expression = try allocator.create(Parser.Node.Expression);
-        cast_target_expression.* = expression.*;
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
 
-        return .{
-            .contents = .{ .float_literal_to_f64 = cast_target_expression },
-            .type = .{ .resolved = target_type },
-        };
-    }
+                return .{
+                    .contents = .{ .float_literal_to_f32 = cast_target_expression },
+                    .type = .{ .resolved = target_type },
+                };
+            }
 
-    // bool -> s32 conversion
-    if (target_type.runtime.machine_type == .s32 and expression_type.runtime.machine_type == .bool) {
-        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
-        const cast_target_expression = try allocator.create(Parser.Node.Expression);
-        cast_target_expression.* = expression.*;
+            //Float literal -> f64 coercion
+            if (target_fish_type.machine_type == .f64 and expression_type == .float_literal) {
+                try resolveComptimeFloat(expression);
 
-        return .{
-            .contents = .{ .cast = cast_target_expression },
-            .type = .{ .resolved = target_type },
-        };
-    }
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
 
-    // Null -> safe_ptr conversion
-    if (target_type.runtime.machine_type == .safe_ptr and expression_type == .null_literal) {
-        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
-        const cast_target_expression = try allocator.create(Parser.Node.Expression);
-        cast_target_expression.* = expression.*;
+                return .{
+                    .contents = .{ .float_literal_to_f64 = cast_target_expression },
+                    .type = .{ .resolved = target_type },
+                };
+            }
 
-        return .{
-            .contents = .null_literal_to_safe_ptr,
-            .type = .{ .resolved = target_type },
-        };
-    }
+            // bool -> s32 conversion
+            if (target_fish_type.machine_type == .s32 and expression_type.fish.machine_type == .bool) {
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
 
-    // Null -> object_ptr conversion
-    if (target_type.runtime.machine_type == .object_ref and expression_type == .null_literal) {
-        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
-        const cast_target_expression = try allocator.create(Parser.Node.Expression);
-        cast_target_expression.* = expression.*;
+                return .{
+                    .contents = .{ .cast = cast_target_expression },
+                    .type = .{ .resolved = target_type },
+                };
+            }
 
-        return .{
-            .contents = .null_literal_to_object_ptr,
-            .type = .{ .resolved = target_type },
-        };
+            // Null -> safe_ptr conversion
+            if (target_fish_type.machine_type == .safe_ptr and expression_type == .null_literal) {
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
+
+                return .{
+                    .contents = .null_literal_to_safe_ptr,
+                    .type = .{ .resolved = target_type },
+                };
+            }
+
+            // Null -> object_ptr conversion
+            if (target_fish_type.machine_type == .object_ref and expression_type == .null_literal) {
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
+
+                return .{
+                    .contents = .null_literal_to_object_ptr,
+                    .type = .{ .resolved = target_type },
+                };
+            }
+        },
+        else => {},
     }
 
     return null;
@@ -1275,10 +1304,10 @@ fn findFunction(
 
     if (source_expression) |function_source_expression| {
         switch (function_source_expression.type.resolved) {
-            .runtime => |runtime| {
-                switch (runtime.machine_type) {
+            .fish => |fish| {
+                switch (fish.machine_type) {
                     .object_ref, .safe_ptr => {
-                        const source_class_name = a_string_table.keys()[runtime.type_name];
+                        const source_class_name = a_string_table.keys()[fish.type_name];
 
                         //Recursively go through all the parent classes, and try to find a matching function
                         var source_script = script_table.get(source_class_name).?;
@@ -1317,14 +1346,14 @@ fn findFunction(
                                         const first_parameter = function.parameters[0];
 
                                         //If the first parameter is not an object ref or safe ptr, then its definitely not special cased
-                                        if (first_parameter.type.resolved.runtime.machine_type != .safe_ptr and
-                                            first_parameter.type.resolved.runtime.machine_type != .object_ref)
+                                        if (first_parameter.type.resolved.fish.machine_type != .safe_ptr and
+                                            first_parameter.type.resolved.fish.machine_type != .object_ref)
                                             break :blk;
 
                                         //If its a safe_ptr or object_ref, the type name should always be known
-                                        std.debug.assert(first_parameter.type.resolved.runtime.type_name != 0xFFFFFFFF);
+                                        std.debug.assert(first_parameter.type.resolved.fish.type_name != 0xFFFFFFFF);
 
-                                        const type_name = a_string_table.keys()[first_parameter.type.resolved.runtime.type_name];
+                                        const type_name = a_string_table.keys()[first_parameter.type.resolved.fish.type_name];
 
                                         // If the calling script derives the parameter's script, then this *can* be a member function, allow through
                                         if (scriptDerivesOtherScript(
@@ -1333,7 +1362,7 @@ fn findFunction(
                                             script_table,
                                         )) try candidates.append(.{
                                             function,
-                                            (try typeReferenceFromScript(source_script, 0, a_string_table)).runtime,
+                                            (try typeReferenceFromScript(source_script, 0, a_string_table)).fish,
                                         });
 
                                         continue;
@@ -1344,7 +1373,7 @@ fn findFunction(
 
                                 try candidates.append(.{
                                     function,
-                                    (try typeReferenceFromScript(source_script, 0, a_string_table)).runtime,
+                                    (try typeReferenceFromScript(source_script, 0, a_string_table)).fish,
                                 });
                             }
 
@@ -1388,7 +1417,7 @@ fn findFunction(
 
                         try candidates.append(.{
                             function,
-                            (try typeReferenceFromScript(type_script, 0, a_string_table)).runtime,
+                            (try typeReferenceFromScript(type_script, 0, a_string_table)).fish,
                         });
                     }
                 }
@@ -1466,9 +1495,27 @@ fn resolveParsedType(
     script_table: ?*ParsedScriptTable,
     a_string_table: ?*AStringTable,
 ) Error!Parser.Type.Resolved {
+    if (parsed_type.indirection_count > 0) {
+        return Parser.Type.Resolved{
+            .pointer = .{
+                //TODO: arrays of pointers?
+                .indirection_count = parsed_type.indirection_count,
+                .type = .{ .fish = std.meta.stringToEnum(MMTypes.FishType, parsed_type.name).? },
+                .fish = .{
+                    .array_base_machine_type = .void,
+                    .dimension_count = 0,
+                    .fish_type = .s32,
+                    .machine_type = .s32,
+                    .script = null,
+                    .type_name = @intCast((try a_string_table.?.getOrPut("ptr")).index),
+                },
+            },
+        };
+    }
+
     if (std.meta.stringToEnum(MMTypes.FishType, parsed_type.name)) |fish_type| {
         return .{
-            .runtime = if (parsed_type.dimension_count > 0)
+            .fish = if (parsed_type.dimension_count > 0)
                 MMTypes.TypeReference{
                     .array_base_machine_type = fish_type.toMachineType(),
                     .dimension_count = parsed_type.dimension_count,
@@ -1532,9 +1579,9 @@ pub fn typeReferenceFromScriptEnum(script: *const ParsedScript, enumeration: *Pa
     if (enumeration.backing_type == .parsed)
         enumeration.backing_type = .{ .resolved = try resolveParsedType(enumeration.backing_type.parsed, null, null, a_string_table) };
 
-    const base_type = enumeration.backing_type.resolved.runtime;
+    const base_type = enumeration.backing_type.resolved.fish;
 
-    return .{ .runtime = if (dimension_count > 0)
+    return .{ .fish = if (dimension_count > 0)
         MMTypes.TypeReference{
             .array_base_machine_type = base_type.machine_type,
             .dimension_count = dimension_count,
@@ -1558,7 +1605,7 @@ pub fn typeReferenceFromScript(script: *ParsedScript, dimension_count: u8, a_str
     //Get the idx of the name of this script, or put into the string table
     const name_idx = try a_string_table.getOrPut(script.class_name);
 
-    return .{ .runtime = if (dimension_count > 0)
+    return .{ .fish = if (dimension_count > 0)
         MMTypes.TypeReference{
             .array_base_machine_type = if (script.is_thing) .safe_ptr else .object_ref,
             .dimension_count = dimension_count,
@@ -1626,7 +1673,7 @@ fn resolveField(
     std.debug.assert(field.type == .resolved);
 
     //Panic if the resolved type is not knowable at runtime
-    if (field.type.resolved != .runtime)
+    if (field.type.resolved != .fish)
         std.debug.panic(
             "field {s}'s default value's is unknown at runtime, currently is {s}",
             .{ field.name, @tagName(field.type.resolved) },
@@ -1643,7 +1690,7 @@ pub fn mangleFunctionName(
     try writer.writeAll("__");
 
     for (parameters) |parameter| {
-        const parameter_type = parameter.type.resolved.runtime;
+        const parameter_type = parameter.type.resolved.fish;
 
         if (parameter_type.type_name != 0xFFFFFFFF) {
             const type_name = a_string_table.keys()[parameter_type.type_name];

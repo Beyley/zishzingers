@@ -21,4 +21,8 @@ class Basic(g1234568)
         let x: s32 = 0;
         let y: f32 = x as f32;
     }
+
+    pub fn Ptr() {
+        let x: s32* = 0xc as s32*;
+    }
 }

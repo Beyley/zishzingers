@@ -147,33 +147,34 @@ fn printType(self: *Self, tree_type: Parser.Type) Error!void {
         },
         .resolved => |resolved| {
             switch (resolved) {
-                .runtime => |runtime| {
-                    if (runtime.dimension_count > 0) try self.writer.print(
+                .fish => |fish| {
+                    if (fish.dimension_count > 0) try self.writer.print(
                         "Name: {s}, Machine Type: {s}, Fish Type: {s}, Dimension Count: {d}, Array Base Machine Type: {s}, Script: {?}",
                         .{
-                            if (runtime.type_name == 0xFFFFFFFF)
+                            if (fish.type_name == 0xFFFFFFFF)
                                 "(unknown)"
                             else
-                                self.a_string_table.keys()[runtime.type_name],
-                            @tagName(runtime.machine_type),
-                            @tagName(runtime.fish_type),
-                            runtime.dimension_count,
-                            @tagName(runtime.array_base_machine_type),
-                            runtime.script,
+                                self.a_string_table.keys()[fish.type_name],
+                            @tagName(fish.machine_type),
+                            @tagName(fish.fish_type),
+                            fish.dimension_count,
+                            @tagName(fish.array_base_machine_type),
+                            fish.script,
                         },
                     ) else try self.writer.print(
                         "Name: {s}, Machine Type: {s}, Fish Type: {s}, Script: {?}",
                         .{
-                            if (runtime.type_name == 0xFFFFFFFF)
+                            if (fish.type_name == 0xFFFFFFFF)
                                 "(unknown)"
                             else
-                                self.a_string_table.keys()[runtime.type_name],
-                            @tagName(runtime.machine_type),
-                            @tagName(runtime.fish_type),
-                            runtime.script,
+                                self.a_string_table.keys()[fish.type_name],
+                            @tagName(fish.machine_type),
+                            @tagName(fish.fish_type),
+                            fish.script,
                         },
                     );
                 },
+                .pointer => |pointer| try self.writer.print("Base Type: {s}, Indirection Count: {d}", .{ @tagName(pointer.type), pointer.indirection_count }),
                 .integer_literal => try self.writer.print("Integer Literal", .{}),
                 .float_literal => try self.writer.print("Float Literal", .{}),
                 .null_literal => try self.writer.print("Null Literal", .{}),
@@ -192,8 +193,8 @@ fn printExpression(self: *Self, expression: *Node.Expression) Error!void {
             .{ literal.value, @tagName(literal.base) },
         ),
         .bool_literal => |literal| try self.writer.print("Boolean literal: {}", .{literal}),
-        .integer_literal_to_s32 => |integer_literal_to_s32| {
-            try self.writer.print("Integer literal to s32:\n", .{});
+        inline .integer_literal_to_s32, .integer_literal_to_ptr => |integer_literal_cast, tag| {
+            try self.writer.print("{s}:\n", .{@tagName(tag)});
 
             self.indent += 1;
             defer self.indent -= 1;
@@ -205,7 +206,7 @@ fn printExpression(self: *Self, expression: *Node.Expression) Error!void {
             defer self.indent -= 1;
 
             try self.printIndent();
-            try self.printExpression(integer_literal_to_s32);
+            try self.printExpression(integer_literal_cast);
         },
         .block => |block| {
             try self.writer.writeAll("Block:\n");

@@ -39,9 +39,10 @@ pub const Type = union(enum) {
         base_type: ?[]const u8,
         name: []const u8,
         dimension_count: u8,
+        indirection_count: u8,
 
         pub fn fromFishType(fish_type: MMTypes.FishType) Parsed {
-            return .{ .name = @tagName(fish_type), .dimension_count = 0, .base_type = null };
+            return .{ .name = @tagName(fish_type), .dimension_count = 0, .base_type = null, .indirection_count = 0 };
         }
 
         pub fn eql(self: Parsed, other: Parsed) bool {
@@ -60,13 +61,36 @@ pub const Type = union(enum) {
             }
 
             return self.dimension_count == other.dimension_count and
+                self.indirection_count == other.indirection_count and
                 std.mem.eql(u8, self.name, other.name);
         }
     };
 
     pub const Resolved = union(enum) {
-        /// This is a type which exists at runtime
-        runtime: MMTypes.TypeReference,
+        pub const Pointer = struct {
+            indirection_count: u8,
+            type: union(enum) {
+                fish: MMTypes.FishType,
+
+                pub fn eql(self: @This(), other: @This()) bool {
+                    if (std.meta.activeTag(self) != std.meta.activeTag(other))
+                        return false;
+
+                    return switch (self) {
+                        .fish => self.fish == other.fish,
+                    };
+                }
+            },
+            fish: ?MMTypes.TypeReference,
+
+            pub fn eql(self: Pointer, other: Pointer) bool {
+                return self.indirection_count == other.indirection_count and self.type.eql(other.type);
+            }
+        };
+
+        /// This is a normal fish type which exists at runtime
+        fish: MMTypes.TypeReference,
+        pointer: Pointer,
         /// This is a type which only exists at compile time, and represents a type, eg. the expression is pointing to a Type
         type: []const u8,
         integer_literal: void,
@@ -78,7 +102,8 @@ pub const Type = union(enum) {
                 return false;
 
             return switch (self) {
-                .runtime => |runtime| runtime.eql(other.runtime),
+                .fish => |fish| fish.eql(other.fish),
+                .pointer => |pointer| pointer.eql(other.pointer),
                 .type => |comptime_type| std.mem.eql(u8, comptime_type, other.type),
                 .integer_literal, .float_literal, .null_literal => true,
             };
@@ -250,6 +275,7 @@ pub const Node = union(enum) {
 
             integer_literal: struct { base: LiteralBase, value: i64 },
             integer_literal_to_s32: UnaryExpression,
+            integer_literal_to_ptr: UnaryExpression,
             integer_literal_to_f32: UnaryExpression,
             integer_literal_to_s64: UnaryExpression,
             integer_literal_to_f64: UnaryExpression,
@@ -315,6 +341,7 @@ pub const Node = union(enum) {
                 return switch (value) {
                     .integer_literal => |literal| writer.print("expression_contents{{ .integer_literal = {} }}", .{literal}),
                     .integer_literal_to_s32 => |literal| writer.print("expression_contents {{ .integer_literal_to_s32 = {d} }}", .{literal}),
+                    .integer_literal_to_ptr => |literal| writer.print("expression_contents {{ .integer_literal_to_ptr = {d} }}", .{literal}),
                     .cast => |literal| writer.print("expression_contents {{ .cast = {} }}", .{literal}),
                     .integer_literal_to_f32 => |literal| writer.print("expression_contents {{ .integer_literal_to_f32 = {d} }}", .{literal}),
                     .integer_literal_to_s64 => |literal| writer.print("expression_contents {{ .integer_literal_to_s64 = {d} }}", .{literal}),
@@ -646,7 +673,7 @@ fn consumeEnum(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modif
     const backing_type = if (consumeArbitraryLexemeIfAvailable(iter, ":"))
         consumeTypeName(iter)
     else
-        Type{ .parsed = .{ .name = "s32", .dimension_count = 0, .base_type = null } };
+        Type{ .parsed = .{ .name = "s32", .dimension_count = 0, .base_type = null, .indirection_count = 0 } };
 
     consumeArbitraryLexeme(iter, "{");
 
@@ -895,7 +922,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
 
                 expression.* = .{
                     .contents = .null_literal,
-                    .type = .{ .parsed = .{ .name = "null", .dimension_count = 0, .base_type = null } },
+                    .type = .{ .parsed = .{ .name = "null", .dimension_count = 0, .base_type = null, .indirection_count = 0 } },
                 };
 
                 return expression;
@@ -1459,10 +1486,15 @@ fn consumeTypeName(iter: *SliceIterator(Lexeme)) Type {
         }
     }
 
+    var indirection_count: u8 = 0;
+    while (consumeArbitraryLexemeIfAvailable(iter, "*"))
+        indirection_count += 1;
+
     return .{ .parsed = .{
         .name = name,
         .dimension_count = dimension_count,
         .base_type = base_type,
+        .indirection_count = indirection_count,
     } };
 }
 
