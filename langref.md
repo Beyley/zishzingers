@@ -22,8 +22,8 @@ This is a document describing the variant of the A# language used by the zishzin
 expression          → assignment ;
 assignment          → logical_or "=" assignment
                     | logical_or ;
-logical_or            → logical_and ( "||" logical_and )* ;
-logical_and           → equality ( "&&" equality ) ;
+logical_or          → logical_and ( "||" logical_and )* ;
+logical_and         → equality ( "&&" equality ) ;
 equality            → comparison ( ( "!=" | "==" ) comparison )* ;
 comparison          → cast ( ( ">" | ">=" | "<" | "<=" ) cast )* ;
 cast                → bitwise ( "as" TYPE_NAME )* ;
