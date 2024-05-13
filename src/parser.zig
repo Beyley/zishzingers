@@ -66,7 +66,7 @@ pub const Type = union(enum) {
 
     pub const Resolved = union(enum) {
         /// This is a type which exists at runtime
-        runtime_type: MMTypes.TypeReference,
+        runtime: MMTypes.TypeReference,
         /// This is a type which only exists at compile time, and represents a type, eg. the expression is pointing to a Type
         type: []const u8,
         integer_literal: void,
@@ -78,7 +78,7 @@ pub const Type = union(enum) {
                 return false;
 
             return switch (self) {
-                .runtime_type => |runtime_type| runtime_type.eql(other.runtime_type),
+                .runtime => |runtime| runtime.eql(other.runtime),
                 .type => |comptime_type| std.mem.eql(u8, comptime_type, other.type),
                 .integer_literal, .float_literal, .null_literal => true,
             };
@@ -258,8 +258,7 @@ pub const Node = union(enum) {
             float_literal: struct { base: LiteralBase, value: f64 },
             float_literal_to_f32: UnaryExpression,
             float_literal_to_f64: UnaryExpression,
-            /// A boolean to s32 cast
-            bool_to_s32: UnaryExpression,
+            cast: *Expression,
             guid_literal: u32,
             bool_literal: bool,
             null_literal: void,
@@ -316,6 +315,7 @@ pub const Node = union(enum) {
                 return switch (value) {
                     .integer_literal => |literal| writer.print("expression_contents{{ .integer_literal = {} }}", .{literal}),
                     .integer_literal_to_s32 => |literal| writer.print("expression_contents {{ .integer_literal_to_s32 = {d} }}", .{literal}),
+                    .cast => |literal| writer.print("expression_contents {{ .cast = {} }}", .{literal}),
                     .integer_literal_to_f32 => |literal| writer.print("expression_contents {{ .integer_literal_to_f32 = {d} }}", .{literal}),
                     .integer_literal_to_s64 => |literal| writer.print("expression_contents {{ .integer_literal_to_s64 = {d} }}", .{literal}),
                     .integer_literal_to_f64 => |literal| writer.print("expression_contents {{ .integer_literal_to_f64 = {d} }}", .{literal}),
@@ -325,7 +325,6 @@ pub const Node = union(enum) {
                     .float_literal_to_f32 => |literal| writer.print("expression_contents {{ .float_literal_to_f32 = {d} }}", .{literal}),
                     .float_literal_to_f64 => |literal| writer.print("expression_contents {{ .float_literal_to_f64 = {d} }}", .{literal}),
                     .null_literal => writer.print("expression_contents {{ .null_literal }}", .{}),
-                    .bool_to_s32 => |literal| writer.print("expression_contents{{ .bool_to_s32 = {} }}", .{literal}),
                     .guid_literal => |literal| writer.print("expression_contents{{ .guid_literal = {d} }}", .{literal}),
                     .bool_literal => |literal| writer.print("expression_contents{{ .bool_literal = {} }}", .{literal}),
                     .ascii_string_literal => |literal| writer.print("expression_contents{{ .ascii_string_literal = {s} }}", .{literal}),
@@ -1210,8 +1209,25 @@ fn consumeBitwiseExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
     return node;
 }
 
-fn consumeComparisonExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+fn consumeCastExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
     var node = try consumeBitwiseExpression(allocator, iter);
+
+    while (consumeArbitraryLexemeIfAvailable(iter, "as")) {
+        const cast_expression = try allocator.create(Node.Expression);
+
+        cast_expression.* = .{
+            .contents = .{ .cast = node },
+            .type = consumeTypeName(iter),
+        };
+
+        node = cast_expression;
+    }
+
+    return node;
+}
+
+fn consumeComparisonExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+    var node = try consumeCastExpression(allocator, iter);
 
     while (consumeAnyMatches(iter, &.{ ">", ">=", "<", "<=" })) |match| {
         node = switch (match) {
@@ -1229,7 +1245,7 @@ fn consumeComparisonExpression(allocator: std.mem.Allocator, iter: *SliceIterato
                         },
                         .{
                             .lefthand = node,
-                            .righthand = try consumeBitwiseExpression(allocator, iter),
+                            .righthand = try consumeCastExpression(allocator, iter),
                         },
                     ),
                     .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
@@ -1790,7 +1806,7 @@ fn consumeArbitraryLexeme(iter: *SliceIterator(Lexeme), intended: []const u8) vo
 
     if (iter.next()) |next| {
         if (!std.mem.eql(u8, next, intended)) {
-            const prev_lexeme = iter.slice[iter.pos - 1];
+            const prev_lexeme = iter.slice[iter.pos - 2];
             const next_lexeme = iter.peek() orelse @panic("eof");
 
             std.debug.panic(

@@ -25,17 +25,19 @@ assignment          → logical_or "=" assignment
 logical_or            → logical_and ( "||" logical_and )* ;
 logical_and           → equality ( "&&" equality ) ;
 equality            → comparison ( ( "!=" | "==" ) comparison )* ;
-comparison          → bitwise ( ( ">" | ">=" | "<" | "<=" ) bitwise )* ;
+comparison          → cast ( ( ">" | ">=" | "<" | "<=" ) cast )* ;
+cast                → bitwise ( "as" TYPE_NAME )* ;
 bitwise             → term ( ( "&" | "^" | "|" ) term )* ;
 term                → factor ( ( "-" | "+" ) factor )* ;
 factor              → unary ( ( "/" | "*" ) unary )* ;
 unary               → ( "!" | "-" ) unary
                     | dot ;
-dot                 → primary ( "." ( FIELD | function_call ) )* ;
+dot                 → primary ( "." ( FIELD | function_call | "*" ) )* ;
 primary             → "true" | "false" | "null"
                     | "(" expression ")"
                     | INTEGER_LITERAL
                     | FLOAT_LITERAL
+                    | TYPE_NAME
                     | vec2_construction
                     | vec3_construction
                     | vec4_construction

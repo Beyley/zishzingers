@@ -267,7 +267,11 @@ pub fn resolve(
     //Get the class of the script
     const class = getScriptClassNode(tree);
 
-    class.type_reference = (try typeReferenceFromScript(script_table.get(class.name).?, 0, a_string_table)).runtime_type;
+    class.type_reference = (try typeReferenceFromScript(
+        script_table.get(class.name).?,
+        0,
+        a_string_table,
+    )).runtime;
 
     const script = script_table.get(class.name) orelse unreachable;
 
@@ -363,7 +367,7 @@ fn resolveFunctionHead(
 }
 
 fn stringType(a_string_table: *AStringTable) Error!Parser.Type.Resolved {
-    return .{ .runtime_type = .{
+    return .{ .runtime = .{
         .script = .{ .guid = 16491 },
         .type_name = @intCast((try a_string_table.getOrPut("String")).index),
         .machine_type = .object_ref,
@@ -426,7 +430,7 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            std.debug.assert(assignment.destination.type.resolved == .runtime_type);
+            std.debug.assert(assignment.destination.type.resolved == .runtime);
 
             //Resolve the type of the value, which should be the same type as the destination
             try resolveExpression(
@@ -453,9 +457,9 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            const field = switch (field_access.source.type.resolved.runtime_type.machine_type) {
+            const field = switch (field_access.source.type.resolved.runtime.machine_type) {
                 .object_ref, .safe_ptr => field_resolution: {
-                    const source_class_name = a_string_table.keys()[field_access.source.type.resolved.runtime_type.type_name];
+                    const source_class_name = a_string_table.keys()[field_access.source.type.resolved.runtime.type_name];
 
                     const source_script = script_table.get(source_class_name).?;
 
@@ -629,7 +633,7 @@ fn resolveExpression(
                             function_script,
                             0,
                             a_string_table,
-                        )).runtime_type,
+                        )).runtime,
                     },
                 };
 
@@ -731,7 +735,7 @@ fn resolveExpression(
                                 );
 
                                 //Panic if the resolved type is not knowable at runtime
-                                if (value.type.resolved != .runtime_type)
+                                if (value.type.resolved != .runtime)
                                     std.debug.panic(
                                         "variable declaration {s}'s default value's is unknown at runtime, currently is {s}",
                                         .{ variable_declaration.name, @tagName(value.type.resolved) },
@@ -782,7 +786,7 @@ fn resolveExpression(
                         );
                     },
                     .return_statement => |return_statement| {
-                        if (function_variable_stack.?.function.return_type.resolved.runtime_type.machine_type != .void and return_statement.expression == null)
+                        if (function_variable_stack.?.function.return_type.resolved.runtime.machine_type != .void and return_statement.expression == null)
                             std.debug.panic("you cant return nothing when the function wants {}", .{function_variable_stack.?.function.return_type.resolved});
 
                         //If this return statement has an expression, type resolve that to the return type of the function
@@ -900,7 +904,7 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            switch (bitwise_and.lefthand.type.resolved.runtime_type.machine_type) {
+            switch (bitwise_and.lefthand.type.resolved.runtime.machine_type) {
                 .s32, .bool, .s64 => {},
                 else => |tag| std.debug.panic(
                     "lefthand side of bitwise type must be s32, bool, or s64, currently is {s}",
@@ -931,7 +935,7 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            switch (not_equal.lefthand.type.resolved.runtime_type.machine_type) {
+            switch (not_equal.lefthand.type.resolved.runtime.machine_type) {
                 //NEb   NEc    NEi   NEf   NEs64 NErp      NEo          NEsp
                 .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref, .safe_ptr => {},
                 else => |tag| std.debug.panic(
@@ -994,6 +998,23 @@ fn resolveExpression(
 
             expression.type = math_op.lefthand.type;
         },
+        .cast => |cast_expression| {
+            try resolveExpression(
+                cast_expression,
+                null,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            expression.type = .{ .resolved = try resolveParsedType(
+                expression.type.parsed,
+                script,
+                script_table,
+                a_string_table,
+            ) };
+        },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }
 
@@ -1025,7 +1046,7 @@ fn isNumberLike(resolved_type: Parser.Type.Resolved) bool {
     return switch (resolved_type) {
         .type, .null_literal => false,
         .float_literal, .integer_literal => true,
-        .runtime_type => |runtime_type| switch (runtime_type.machine_type) {
+        .runtime => |runtime| switch (runtime.machine_type) {
             .s32, .s64, .f32, .f64 => true,
             else => false,
         },
@@ -1114,7 +1135,7 @@ fn coerceExpression(
         return null;
 
     // Integer literal -> s32 coercion
-    if (target_type.runtime_type.machine_type == .s32 and expression_type == .integer_literal) {
+    if (target_type.runtime.machine_type == .s32 and expression_type == .integer_literal) {
         try resolveComptimeInteger(expression);
 
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
@@ -1128,7 +1149,7 @@ fn coerceExpression(
     }
 
     //Integer literal -> s64 coercion
-    if (target_type.runtime_type.machine_type == .s64 and expression_type == .integer_literal) {
+    if (target_type.runtime.machine_type == .s64 and expression_type == .integer_literal) {
         try resolveComptimeInteger(expression);
 
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
@@ -1142,7 +1163,7 @@ fn coerceExpression(
     }
 
     // Integer literal -> f32 coercion
-    if (target_type.runtime_type.machine_type == .f32 and expression_type == .integer_literal) {
+    if (target_type.runtime.machine_type == .f32 and expression_type == .integer_literal) {
         try resolveComptimeInteger(expression);
 
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
@@ -1156,7 +1177,7 @@ fn coerceExpression(
     }
 
     //Integer literal -> f64 coercion
-    if (target_type.runtime_type.machine_type == .f64 and expression_type == .integer_literal) {
+    if (target_type.runtime.machine_type == .f64 and expression_type == .integer_literal) {
         try resolveComptimeInteger(expression);
 
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
@@ -1170,7 +1191,7 @@ fn coerceExpression(
     }
 
     // Float literal -> f32 coercion
-    if (target_type.runtime_type.machine_type == .f32 and expression_type == .float_literal) {
+    if (target_type.runtime.machine_type == .f32 and expression_type == .float_literal) {
         try resolveComptimeFloat(expression);
 
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
@@ -1184,7 +1205,7 @@ fn coerceExpression(
     }
 
     //Float literal -> f64 coercion
-    if (target_type.runtime_type.machine_type == .f64 and expression_type == .float_literal) {
+    if (target_type.runtime.machine_type == .f64 and expression_type == .float_literal) {
         try resolveComptimeFloat(expression);
 
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
@@ -1198,19 +1219,19 @@ fn coerceExpression(
     }
 
     // bool -> s32 conversion
-    if (target_type.runtime_type.machine_type == .s32 and expression_type.runtime_type.machine_type == .bool) {
+    if (target_type.runtime.machine_type == .s32 and expression_type.runtime.machine_type == .bool) {
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
         const cast_target_expression = try allocator.create(Parser.Node.Expression);
         cast_target_expression.* = expression.*;
 
         return .{
-            .contents = .{ .bool_to_s32 = cast_target_expression },
+            .contents = .{ .cast = cast_target_expression },
             .type = .{ .resolved = target_type },
         };
     }
 
     // Null -> safe_ptr conversion
-    if (target_type.runtime_type.machine_type == .safe_ptr and expression_type == .null_literal) {
+    if (target_type.runtime.machine_type == .safe_ptr and expression_type == .null_literal) {
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
         const cast_target_expression = try allocator.create(Parser.Node.Expression);
         cast_target_expression.* = expression.*;
@@ -1222,7 +1243,7 @@ fn coerceExpression(
     }
 
     // Null -> object_ptr conversion
-    if (target_type.runtime_type.machine_type == .object_ref and expression_type == .null_literal) {
+    if (target_type.runtime.machine_type == .object_ref and expression_type == .null_literal) {
         //Dupe the source expression since this pointer will get overwritten later on with the value that we return
         const cast_target_expression = try allocator.create(Parser.Node.Expression);
         cast_target_expression.* = expression.*;
@@ -1254,10 +1275,10 @@ fn findFunction(
 
     if (source_expression) |function_source_expression| {
         switch (function_source_expression.type.resolved) {
-            .runtime_type => |runtime_type| {
-                switch (runtime_type.machine_type) {
+            .runtime => |runtime| {
+                switch (runtime.machine_type) {
                     .object_ref, .safe_ptr => {
-                        const source_class_name = a_string_table.keys()[runtime_type.type_name];
+                        const source_class_name = a_string_table.keys()[runtime.type_name];
 
                         //Recursively go through all the parent classes, and try to find a matching function
                         var source_script = script_table.get(source_class_name).?;
@@ -1296,14 +1317,14 @@ fn findFunction(
                                         const first_parameter = function.parameters[0];
 
                                         //If the first parameter is not an object ref or safe ptr, then its definitely not special cased
-                                        if (first_parameter.type.resolved.runtime_type.machine_type != .safe_ptr and
-                                            first_parameter.type.resolved.runtime_type.machine_type != .object_ref)
+                                        if (first_parameter.type.resolved.runtime.machine_type != .safe_ptr and
+                                            first_parameter.type.resolved.runtime.machine_type != .object_ref)
                                             break :blk;
 
                                         //If its a safe_ptr or object_ref, the type name should always be known
-                                        std.debug.assert(first_parameter.type.resolved.runtime_type.type_name != 0xFFFFFFFF);
+                                        std.debug.assert(first_parameter.type.resolved.runtime.type_name != 0xFFFFFFFF);
 
-                                        const type_name = a_string_table.keys()[first_parameter.type.resolved.runtime_type.type_name];
+                                        const type_name = a_string_table.keys()[first_parameter.type.resolved.runtime.type_name];
 
                                         // If the calling script derives the parameter's script, then this *can* be a member function, allow through
                                         if (scriptDerivesOtherScript(
@@ -1312,7 +1333,7 @@ fn findFunction(
                                             script_table,
                                         )) try candidates.append(.{
                                             function,
-                                            (try typeReferenceFromScript(source_script, 0, a_string_table)).runtime_type,
+                                            (try typeReferenceFromScript(source_script, 0, a_string_table)).runtime,
                                         });
 
                                         continue;
@@ -1323,7 +1344,7 @@ fn findFunction(
 
                                 try candidates.append(.{
                                     function,
-                                    (try typeReferenceFromScript(source_script, 0, a_string_table)).runtime_type,
+                                    (try typeReferenceFromScript(source_script, 0, a_string_table)).runtime,
                                 });
                             }
 
@@ -1367,7 +1388,7 @@ fn findFunction(
 
                         try candidates.append(.{
                             function,
-                            (try typeReferenceFromScript(type_script, 0, a_string_table)).runtime_type,
+                            (try typeReferenceFromScript(type_script, 0, a_string_table)).runtime,
                         });
                     }
                 }
@@ -1447,7 +1468,7 @@ fn resolveParsedType(
 ) Error!Parser.Type.Resolved {
     if (std.meta.stringToEnum(MMTypes.FishType, parsed_type.name)) |fish_type| {
         return .{
-            .runtime_type = if (parsed_type.dimension_count > 0)
+            .runtime = if (parsed_type.dimension_count > 0)
                 MMTypes.TypeReference{
                     .array_base_machine_type = fish_type.toMachineType(),
                     .dimension_count = parsed_type.dimension_count,
@@ -1511,9 +1532,9 @@ pub fn typeReferenceFromScriptEnum(script: *const ParsedScript, enumeration: *Pa
     if (enumeration.backing_type == .parsed)
         enumeration.backing_type = .{ .resolved = try resolveParsedType(enumeration.backing_type.parsed, null, null, a_string_table) };
 
-    const base_type = enumeration.backing_type.resolved.runtime_type;
+    const base_type = enumeration.backing_type.resolved.runtime;
 
-    return .{ .runtime_type = if (dimension_count > 0)
+    return .{ .runtime = if (dimension_count > 0)
         MMTypes.TypeReference{
             .array_base_machine_type = base_type.machine_type,
             .dimension_count = dimension_count,
@@ -1537,7 +1558,7 @@ pub fn typeReferenceFromScript(script: *ParsedScript, dimension_count: u8, a_str
     //Get the idx of the name of this script, or put into the string table
     const name_idx = try a_string_table.getOrPut(script.class_name);
 
-    return .{ .runtime_type = if (dimension_count > 0)
+    return .{ .runtime = if (dimension_count > 0)
         MMTypes.TypeReference{
             .array_base_machine_type = if (script.is_thing) .safe_ptr else .object_ref,
             .dimension_count = dimension_count,
@@ -1605,7 +1626,7 @@ fn resolveField(
     std.debug.assert(field.type == .resolved);
 
     //Panic if the resolved type is not knowable at runtime
-    if (field.type.resolved != .runtime_type)
+    if (field.type.resolved != .runtime)
         std.debug.panic(
             "field {s}'s default value's is unknown at runtime, currently is {s}",
             .{ field.name, @tagName(field.type.resolved) },
@@ -1622,7 +1643,7 @@ pub fn mangleFunctionName(
     try writer.writeAll("__");
 
     for (parameters) |parameter| {
-        const parameter_type = parameter.type.resolved.runtime_type;
+        const parameter_type = parameter.type.resolved.runtime;
 
         if (parameter_type.type_name != 0xFFFFFFFF) {
             const type_name = a_string_table.keys()[parameter_type.type_name];

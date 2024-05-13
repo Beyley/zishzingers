@@ -16,4 +16,9 @@ class Basic(g1234568)
 
         }
     }
+
+    pub fn Cast() {
+        let x: s32 = 0;
+        let y: f32 = x as f32;
+    }
 }

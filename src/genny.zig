@@ -340,8 +340,16 @@ const Codegen = struct {
 
     pub fn emitBoolToS32(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
         ensureAlignment(dst_idx, .s32);
+        ensureAlignment(src_idx, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .INTb = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
+    }
+
+    pub fn emitS32ToF32(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
+        ensureAlignment(dst_idx, .s32);
+        ensureAlignment(src_idx, .f32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .FLOATi = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
     }
 
     pub fn emitRet(self: *Codegen, src_idx: u16, machine_type: MMTypes.MachineType) !void {
@@ -579,7 +587,7 @@ fn compileExpression(
                     const source_variable = scope_local_variables.get(field_access.source.contents.variable_access).?;
                     const source_variable_type = codegen.genny.type_references.keys()[source_variable.type_reference];
 
-                    const machine_type = expression.type.resolved.runtime_type.machine_type;
+                    const machine_type = expression.type.resolved.runtime.machine_type;
 
                     const register = (try compileExpression(
                         codegen,
@@ -755,7 +763,7 @@ fn compileExpression(
                 .type_reference = @intCast((try codegen.genny.type_references.getOrPut(function.owning_type)).index),
             })).index);
 
-            const return_type = expression.type.resolved.runtime_type.machine_type;
+            const return_type = expression.type.resolved.runtime.machine_type;
 
             const parameter_registers = try codegen.register_allocator.allocator.alloc(Register, function_call.parameters.len);
 
@@ -815,25 +823,26 @@ fn compileExpression(
 
             break :blk call_result_register;
         },
-        .bool_to_s32 => |bool_to_s32| blk: {
+        .cast => |cast_source| blk: {
             if (try compileExpression(
                 codegen,
                 function_local_variables,
                 scope_local_variables,
-                bool_to_s32,
+                cast_source,
                 discard_result,
                 null,
             )) |source| {
-                const register = result_register orelse try codegen.register_allocator.allocate(.s32);
+                const register = result_register orelse
+                    try codegen.register_allocator.allocate(expression.type.resolved.runtime.machine_type);
 
-                if (source[1] != .bool)
-                    std.debug.panic(
-                        "BUG: source register should have been bool, was {s}",
-                        .{@tagName(source[1])},
-                    );
+                const source_type = cast_source.type.resolved.runtime.machine_type;
+                const dst_type = expression.type.resolved.runtime.machine_type;
 
-                // Emit the bool to s32 instruction
-                try codegen.emitBoolToS32(register[0], source[0]);
+                switch (tupleMachineTypes(source_type, dst_type)) {
+                    tupleMachineTypes(.bool, .s32) => try codegen.emitBoolToS32(register[0], source[0]),
+                    tupleMachineTypes(.s32, .f32) => try codegen.emitS32ToF32(register[0], source[0]),
+                    else => std.debug.panic("TODO: cast from expression {s} to {s}", .{ @tagName(source_type), @tagName(dst_type) }),
+                }
 
                 return register;
             }
@@ -848,7 +857,7 @@ fn compileExpression(
 
             const source_variable_type = codegen.genny.type_references.keys()[source_variable.type_reference];
 
-            const machine_type = expression.type.resolved.runtime_type.machine_type;
+            const machine_type = expression.type.resolved.runtime.machine_type;
 
             const register = result_register orelse try codegen.register_allocator.allocate(machine_type);
 
@@ -945,13 +954,13 @@ fn compileExpression(
 
             // Allocate a result register, in the case of bitwise ops, we need to use the machine type, else use a bool as the result
             const register = result_register orelse try codegen.register_allocator.allocate(switch (binary_type) {
-                .bitwise_and, .addition, .subtraction => binary.lefthand.type.resolved.runtime_type.machine_type,
+                .bitwise_and, .addition, .subtraction => binary.lefthand.type.resolved.runtime.machine_type,
                 .not_equal, .greater_than, .less_than_or_equal => .bool,
                 else => @compileError("Missing register type resolution"),
             });
 
             switch (hand_type) {
-                .runtime_type => |runtime_type| {
+                .runtime => |runtime| {
                     const lefthand = (try compileExpression(
                         codegen,
                         function_local_variables,
@@ -970,9 +979,9 @@ fn compileExpression(
                     )).?;
 
                     std.debug.assert(lefthand[1] == righthand[1]);
-                    std.debug.assert(lefthand[1] == runtime_type.machine_type);
+                    std.debug.assert(lefthand[1] == runtime.machine_type);
 
-                    switch (runtime_type.machine_type) {
+                    switch (runtime.machine_type) {
                         .s32 => switch (binary_type) {
                             .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
                             .bitwise_and => try codegen.emitIntBitwiseAnd(register[0], lefthand[0], righthand[0]),
@@ -1057,6 +1066,10 @@ fn compileExpression(
     };
 }
 
+fn tupleMachineTypes(left: MMTypes.MachineType, right: MMTypes.MachineType) u16 {
+    return (@as(u16, @intFromEnum(left)) << 8) | @intFromEnum(right);
+}
+
 fn compileBlock(
     codegen: *Codegen,
     function_local_variables: *LocalVariableTable,
@@ -1072,15 +1085,15 @@ fn compileBlock(
     for (block) |node| block_loop: {
         switch (node) {
             .variable_declaration => |variable_declaration| {
-                const runtime_type = variable_declaration.type.resolved.runtime_type;
+                const runtime = variable_declaration.type.resolved.runtime;
 
                 //Allocate the register that will be used for this local variable
-                const register = try codegen.register_allocator.allocate(runtime_type.machine_type);
+                const register = try codegen.register_allocator.allocate(runtime.machine_type);
 
                 try local_variables_from_this_scope.append(variable_declaration.name);
 
                 const local_variable: MMTypes.LocalVariable = .{
-                    .type_reference = @intCast((try codegen.genny.type_references.getOrPut(runtime_type)).index),
+                    .type_reference = @intCast((try codegen.genny.type_references.getOrPut(runtime)).index),
                     .name = @intCast((try codegen.genny.a_string_table.getOrPut(variable_declaration.name)).index),
                     .modifiers = .{},
                     .offset = register[0],
@@ -1304,8 +1317,8 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
     }
 
     for (function.parameters) |parameter| {
-        const register = try codegen.register_allocator.allocateArgument(parameter.type.resolved.runtime_type.machine_type);
-        const type_reference: u32 = @intCast((try self.type_references.getOrPut(parameter.type.resolved.runtime_type)).index);
+        const register = try codegen.register_allocator.allocateArgument(parameter.type.resolved.runtime.machine_type);
+        const type_reference: u32 = @intCast((try self.type_references.getOrPut(parameter.type.resolved.runtime)).index);
 
         const parameter_variable: MMTypes.LocalVariable = .{
             .name = @intCast((try self.a_string_table.getOrPut(parameter.name)).index),
@@ -1329,7 +1342,7 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         &scope_local_variables,
         function.body.?.contents.block,
         true,
-        function.return_type.resolved.runtime_type.machine_type,
+        function.return_type.resolved.runtime.machine_type,
     );
 
     //TODO: let users put this safety feature under a debug flag
@@ -1357,7 +1370,7 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         .name = @intCast((try self.a_string_table.getOrPut(function.mangled_name.?)).index),
         .modifiers = function.modifiers,
         .stack_size = stack_size,
-        .type_reference = @intCast((try self.type_references.getOrPut(function.return_type.resolved.runtime_type)).index),
+        .type_reference = @intCast((try self.type_references.getOrPut(function.return_type.resolved.runtime)).index),
         .bytecode = blk: {
             const start = self.bytecode.items.len;
 
@@ -1450,7 +1463,7 @@ pub fn generate(self: *Genny) !MMTypes.Script {
                 for (class.fields) |field| {
                     try field_definitions.append(.{
                         .name = @intCast((try self.a_string_table.getOrPut(field.name)).index),
-                        .type_reference = @intCast((try self.type_references.getOrPut(field.type.resolved.runtime_type)).index),
+                        .type_reference = @intCast((try self.type_references.getOrPut(field.type.resolved.runtime)).index),
                         .modifiers = field.modifiers,
                     });
                 }
@@ -1465,7 +1478,7 @@ pub fn generate(self: *Genny) !MMTypes.Script {
                     @panic("TODO: properties");
                     // try property_definitions.append(.{
                     //     .name = @intCast((try self.a_string_table.getOrPut(property.name)).index),
-                    //     .type_reference = @intCast((try self.type_reference_table.getOrPut(property.type.resolved.runtime_type)).index),
+                    //     .type_reference = @intCast((try self.type_reference_table.getOrPut(property.type.resolved.runtime)).index),
                     // });
                 }
 

@@ -147,30 +147,30 @@ fn printType(self: *Self, tree_type: Parser.Type) Error!void {
         },
         .resolved => |resolved| {
             switch (resolved) {
-                .runtime_type => |runtime_type| {
-                    if (runtime_type.dimension_count > 0) try self.writer.print(
+                .runtime => |runtime| {
+                    if (runtime.dimension_count > 0) try self.writer.print(
                         "Name: {s}, Machine Type: {s}, Fish Type: {s}, Dimension Count: {d}, Array Base Machine Type: {s}, Script: {?}",
                         .{
-                            if (runtime_type.type_name == 0xFFFFFFFF)
+                            if (runtime.type_name == 0xFFFFFFFF)
                                 "(unknown)"
                             else
-                                self.a_string_table.keys()[runtime_type.type_name],
-                            @tagName(runtime_type.machine_type),
-                            @tagName(runtime_type.fish_type),
-                            runtime_type.dimension_count,
-                            @tagName(runtime_type.array_base_machine_type),
-                            runtime_type.script,
+                                self.a_string_table.keys()[runtime.type_name],
+                            @tagName(runtime.machine_type),
+                            @tagName(runtime.fish_type),
+                            runtime.dimension_count,
+                            @tagName(runtime.array_base_machine_type),
+                            runtime.script,
                         },
                     ) else try self.writer.print(
                         "Name: {s}, Machine Type: {s}, Fish Type: {s}, Script: {?}",
                         .{
-                            if (runtime_type.type_name == 0xFFFFFFFF)
+                            if (runtime.type_name == 0xFFFFFFFF)
                                 "(unknown)"
                             else
-                                self.a_string_table.keys()[runtime_type.type_name],
-                            @tagName(runtime_type.machine_type),
-                            @tagName(runtime_type.fish_type),
-                            runtime_type.script,
+                                self.a_string_table.keys()[runtime.type_name],
+                            @tagName(runtime.machine_type),
+                            @tagName(runtime.fish_type),
+                            runtime.script,
                         },
                     );
                 },
