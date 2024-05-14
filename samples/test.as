@@ -1,5 +1,7 @@
 using library 'lbpdeploy';
 
+import 'std:thing';
+
 class Test(g1234568)
 {
     pub fn AssignmentTest() {
@@ -29,4 +31,15 @@ class Test(g1234568)
 
         x.* = y;
     }
+
+    pub fn CallNative() {
+        let x: void* = 0x10;
+        let y: Thing = 0x20 as Thing;
+        let z: f32 = 10;
+
+        NativeFunction(x, y, z, float4(0, 1, 2, 3));
+    }
+
+    @NativeInvoke(0x123456, false)
+    static fn NativeFunction(param1: void*, param2: Thing, param3: f32, param4: vec4) -> void*;
 }

@@ -276,6 +276,19 @@ const Codegen = struct {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALL = .{ .dst_idx = dst_idx, .call_idx = call_idx } }, machine_type));
     }
 
+    pub fn emitNativeInvoke(self: *Codegen, dst_idx: u16, call_address: u24, toc_switch: bool, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(dst_idx, machine_type);
+
+        // The current version of the extended runtime only allows s32 sized return types
+        std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_INVOKE = .{
+            .dst_idx = dst_idx,
+            .call_address = call_address,
+            .toc_switch = toc_switch,
+        } }, machine_type));
+    }
+
     pub fn emitLoadConstInt(self: *Codegen, dst_idx: u16, s32: i32) !void {
         ensureAlignment(dst_idx, .s32);
 
@@ -283,7 +296,7 @@ const Codegen = struct {
     }
 
     pub fn emitLoadConstBool(self: *Codegen, dst_idx: u16, boolean: bool) !void {
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCb = .{ .dst_idx = dst_idx, .constant_idx = if (boolean) 0x80000000 else 0 } }, .s32));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCb = .{ .dst_idx = dst_idx, .constant_idx = if (boolean) 0x80000000 else 0 } }, .bool));
     }
 
     pub fn emitLoadConstNullSafePtr(self: *Codegen, dst_idx: u16) !void {
@@ -701,7 +714,7 @@ fn compileExpression(
             }
         },
         // We can just lower this into a LCi
-        .integer_literal_to_s32, .integer_literal_to_ptr => |integer_literal| blk: {
+        .integer_literal_to_s32, .integer_literal_to_ptr, .integer_literal_to_safe_ptr => |integer_literal| blk: {
             if (discard_result)
                 break :blk null;
 
@@ -822,7 +835,11 @@ fn compileExpression(
                 .type_reference = @intCast((try codegen.genny.type_references.getOrPut(function.owning_type)).index),
             })).index);
 
-            const return_type = expression.type.resolved.fish.machine_type;
+            const return_type = switch (expression.type.resolved) {
+                .fish => |fish| fish.machine_type,
+                .pointer => .s32,
+                else => unreachable,
+            };
 
             const parameter_registers = try codegen.register_allocator.allocator.alloc(Register, function_call.parameters.len);
 
@@ -841,44 +858,134 @@ fn compileExpression(
                 }
             }
 
-            var curr_arg_register: u16 = 0;
-
-            // If this is a member function call, we need to add the source as the arg0 reg
-            if (function_call.source) |source| {
-                // We only want to put arg0 as the `this` param if we are calling a method on a variable, and not a class
-                if (source.contents == .variable_access) {
-                    const source_variable = scope_local_variables.get(source.contents.variable_access).?;
-
-                    const source_machine_type = codegen.genny.type_references.keys()[source_variable.type_reference].machine_type;
-
-                    try codegen.emitArg(0, @intCast(source_variable.offset), source_machine_type);
-
-                    curr_arg_register += source_machine_type.size();
+            const native_invoke: ?Parser.Node.Attribute.NativeInvoke = native_invoke_check: {
+                for (function_call.function.function.function.attributes) |attribute| {
+                    if (attribute.* == .native_invoke)
+                        break :native_invoke_check attribute.native_invoke;
                 }
-            }
 
-            for (parameter_registers) |parameter_register| {
-                const parameter_size = parameter_register[1].size();
+                break :native_invoke_check null;
+            };
 
-                // Align to machine type
-                curr_arg_register += (parameter_size - (curr_arg_register % parameter_size)) % parameter_size;
+            if (native_invoke != null) {
+                var curr_integer_register: u16 = 0;
+                var curr_float_register: u16 = 0;
+                var curr_vector_register: u16 = 0;
 
-                try codegen.emitArg(curr_arg_register, parameter_register[0], parameter_register[1]);
+                for (parameter_registers) |parameter_register| {
+                    switch (parameter_register[1]) {
+                        .bool, .char, .s32, .safe_ptr, .object_ref => {
+                            const parameter_size = MMTypes.MachineType.s32.size();
 
-                curr_arg_register += parameter_size;
+                            if (curr_float_register >= 32) {
+                                std.debug.panic("you cant have more than 8 native call int parameters", .{});
+                            }
+
+                            // Align to machine type
+                            curr_integer_register += (parameter_size - (curr_integer_register % parameter_size)) % parameter_size;
+
+                            if (parameter_register[1].size() < 4) {
+                                const temporary_register = try codegen.register_allocator.allocate(.s32);
+                                try codegen.emitLoadConstInt(temporary_register[0], 0);
+                                try codegen.emitArg(curr_integer_register, temporary_register[0], .s32);
+                                try codegen.register_allocator.free(temporary_register);
+
+                                curr_integer_register += parameter_size - parameter_register[1].size();
+                            }
+
+                            try codegen.emitArg(curr_integer_register, parameter_register[0], parameter_register[1]);
+
+                            curr_integer_register += parameter_size;
+                        },
+                        .f32 => {
+                            const parameter_size = MMTypes.MachineType.f32.size();
+
+                            if (curr_float_register >= 16) {
+                                std.debug.panic("you cant have more than 4 native call float parameters", .{});
+                            }
+
+                            // Align to machine type
+                            curr_float_register += (parameter_size - (curr_float_register % parameter_size)) % parameter_size;
+
+                            try codegen.emitArg(curr_float_register + 32, parameter_register[0], parameter_register[1]);
+
+                            curr_float_register += parameter_size;
+                        },
+                        .v4 => {
+                            const parameter_size = MMTypes.MachineType.v4.size();
+
+                            if (curr_vector_register >= 4) {
+                                std.debug.panic("you cant have more than 1 native call vector parameters", .{});
+                            }
+
+                            // Align to machine type
+                            curr_vector_register += (parameter_size - (curr_vector_register % parameter_size)) % parameter_size;
+
+                            try codegen.emitArg(curr_vector_register + 48, parameter_register[0], parameter_register[1]);
+
+                            curr_vector_register += parameter_size;
+                        },
+                        else => |missing_machine_type| std.debug.panic("Unable to native call with {s} machine type parameter", .{@tagName(missing_machine_type)}),
+                    }
+                }
+            } else {
+                var curr_arg_register: u16 = 0;
+
+                // If this is a member function call, we need to add the source as the arg0 reg
+                if (function_call.source) |source| {
+                    // We only want to put arg0 as the `this` param if we are calling a method on a variable, and not a class
+                    if (source.contents == .variable_access) {
+                        const source_variable = scope_local_variables.get(source.contents.variable_access).?;
+
+                        const source_machine_type = codegen.genny.type_references.keys()[source_variable.type_reference].machine_type;
+
+                        try codegen.emitArg(0, @intCast(source_variable.offset), source_machine_type);
+
+                        curr_arg_register += source_machine_type.size();
+                    }
+                }
+
+                for (parameter_registers) |parameter_register| {
+                    const parameter_size = parameter_register[1].size();
+
+                    // Align to machine type
+                    curr_arg_register += (parameter_size - (curr_arg_register % parameter_size)) % parameter_size;
+
+                    try codegen.emitArg(curr_arg_register, parameter_register[0], parameter_register[1]);
+
+                    curr_arg_register += parameter_size;
+                }
             }
 
             const call_result_register = if (result_register) |result_register_idx|
                 result_register_idx
-            else if (discard_result)
+                // We actually need to have a valid return register for native invokes
+            else if (discard_result and native_invoke == null)
                 .{ std.math.maxInt(u16), .void }
             else
                 try codegen.register_allocator.allocate(return_type);
 
-            try codegen.emitCall(call_result_register[0], called_function_idx, call_result_register[1]);
+            if (native_invoke) |native_invoke_attribute| {
+                try codegen.emitNativeInvoke(
+                    call_result_register[0],
+                    native_invoke_attribute.address,
+                    native_invoke_attribute.toc_switch,
+                    call_result_register[1],
+                );
+            } else {
+                try codegen.emitCall(
+                    call_result_register[0],
+                    called_function_idx,
+                    call_result_register[1],
+                );
+            }
 
             for (parameter_registers) |parameter_register|
                 try codegen.register_allocator.free(parameter_register);
+
+            if (discard_result and native_invoke != null) {
+                try codegen.register_allocator.free(call_result_register);
+            }
 
             break :blk call_result_register;
         },
@@ -982,13 +1089,13 @@ fn compileExpression(
 
             break :blk null;
         },
-        .vec2_construction => |vec2_construction| blk: {
+        inline .vec2_construction, .vec3_construction, .vec4_construction => |vector_construction| blk: {
             if (discard_result)
                 break :blk null;
 
             const register = result_register orelse try codegen.register_allocator.allocate(.v4);
 
-            for (vec2_construction, 0..) |element_expression, i| {
+            for (vector_construction, 0..) |element_expression, i| {
                 const element_register = (try compileExpression(
                     codegen,
                     function_local_variables,
@@ -1334,8 +1441,6 @@ fn compileBlock(
                     null,
                 ) == null);
 
-                std.debug.print("HASNEOSHANEO {d} - {d}\n", .{ codegen.nextEmitBytecodeIndex(), condition_start });
-
                 // Generate a branch which branches directly back to the condition check
                 codegen.bytecode.items[try codegen.emitBranch()].params.B.branch_offset =
                     @as(i32, @intCast(condition_start)) - @as(i32, @intCast(codegen.nextEmitBytecodeIndex()));
@@ -1372,7 +1477,12 @@ fn compileBlock(
     }
 }
 
-fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser.Node.Class) !MMTypes.FunctionDefinition {
+fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser.Node.Class) !?MMTypes.FunctionDefinition {
+    for (function.attributes) |attribute| {
+        if (attribute.* == .native_invoke)
+            return null;
+    }
+
     var arguments = ArgumentList.init(self.ast.allocator);
     var local_variables = LocalVariableTable.init(self.ast.allocator);
     var scope_local_variables = LocalVariableTable.init(self.ast.allocator);
@@ -1410,8 +1520,14 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
     }
 
     for (function.parameters) |parameter| {
-        const register = try codegen.register_allocator.allocateArgument(parameter.type.resolved.fish.machine_type);
-        const type_reference: u32 = @intCast((try self.type_references.getOrPut(parameter.type.resolved.fish)).index);
+        const fish_type_reference = switch (parameter.type.resolved) {
+            .fish => |fish| fish,
+            .pointer => |pointer| pointer.fish.?,
+            else => unreachable,
+        };
+
+        const register = try codegen.register_allocator.allocateArgument(fish_type_reference.machine_type);
+        const type_reference: u32 = @intCast((try self.type_references.getOrPut(fish_type_reference)).index);
 
         const parameter_variable: MMTypes.LocalVariable = .{
             .name = @intCast((try self.a_string_table.getOrPut(parameter.name)).index),
@@ -1517,10 +1633,11 @@ pub fn generate(self: *Genny) !MMTypes.Script {
 
         const class = node.class;
 
-        const functions = try self.ast.allocator.alloc(MMTypes.FunctionDefinition, class.functions.len);
+        var functions = std.ArrayList(MMTypes.FunctionDefinition).init(self.ast.allocator);
 
-        for (class.functions, functions) |ast_function, *function| {
-            function.* = try self.compileFunction(ast_function, class);
+        for (class.functions) |ast_function| {
+            if (try self.compileFunction(ast_function, class)) |function|
+                try functions.append(function);
         }
 
         return .{
@@ -1541,7 +1658,7 @@ pub fn generate(self: *Genny) !MMTypes.Script {
 
                 break :blk depending_guids.items;
             },
-            .functions = functions,
+            .functions = functions.items,
             .bytecode = self.bytecode.items,
             .arguments = self.arguments.items,
             .line_numbers = self.line_numbers.items,

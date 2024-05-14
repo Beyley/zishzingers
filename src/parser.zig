@@ -221,6 +221,7 @@ pub const Node = union(enum) {
         name: []const u8,
         mangled_name: ?[]const u8,
         modifiers: MMTypes.Modifiers,
+        attributes: []const *Node.Attribute,
 
         pub const Parameter = struct {
             name: []const u8,
@@ -275,6 +276,7 @@ pub const Node = union(enum) {
 
             integer_literal: struct { base: LiteralBase, value: i64 },
             integer_literal_to_s32: UnaryExpression,
+            integer_literal_to_safe_ptr: UnaryExpression,
             integer_literal_to_ptr: UnaryExpression,
             integer_literal_to_f32: UnaryExpression,
             integer_literal_to_s64: UnaryExpression,
@@ -342,6 +344,7 @@ pub const Node = union(enum) {
                 return switch (value) {
                     .integer_literal => |literal| writer.print("expression_contents{{ .integer_literal = {} }}", .{literal}),
                     .integer_literal_to_s32 => |literal| writer.print("expression_contents {{ .integer_literal_to_s32 = {d} }}", .{literal}),
+                    .integer_literal_to_safe_ptr => |literal| writer.print("expression_contents {{ .integer_literal_to_safe_ptr = {d} }}", .{literal}),
                     .integer_literal_to_ptr => |literal| writer.print("expression_contents {{ .integer_literal_to_ptr = {d} }}", .{literal}),
                     .cast => |literal| writer.print("expression_contents {{ .cast = {} }}", .{literal}),
                     .integer_literal_to_f32 => |literal| writer.print("expression_contents {{ .integer_literal_to_f32 = {d} }}", .{literal}),
@@ -431,6 +434,15 @@ pub const Node = union(enum) {
         }
     };
 
+    pub const Attribute = union(enum) {
+        pub const NativeInvoke = struct {
+            address: u24,
+            toc_switch: bool,
+        };
+
+        native_invoke: NativeInvoke,
+    };
+
     using: *Using,
     import: *Import,
     from_import: *FromImport,
@@ -445,6 +457,7 @@ pub const Node = union(enum) {
     return_statement: *ReturnStatement,
     if_statement: *IfStatement,
     while_statement: *WhileStatement,
+    attribute: *Attribute,
 };
 
 pub const Tree = struct {
@@ -542,7 +555,6 @@ fn consumeTopLevel(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
             hashKeyword("using") => try consumeUsingStatement(tree, iter),
             hashKeyword("import") => try consumeImportStatement(tree, iter),
             hashKeyword("from") => try consumeFromImportStatement(tree, iter),
-            //TODO: classes can be abstract and divergent
             hashKeyword("class") => try consumeClassStatement(tree, iter, modifiers),
             else => {
                 std.debug.panic("Unexpected top level lexeme \"{s}\"", .{lexeme});
@@ -612,6 +624,32 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifi
             break;
         }
 
+        var attributes = std.ArrayList(*Node.Attribute).init(tree.allocator);
+        while (iter.peek().?[0] == '@') {
+            consumeArbitraryLexeme(iter, "@");
+
+            const name = iter.next() orelse @panic("unexpected EOF when parsing attribute");
+
+            const parameters = try consumeFunctionCallParameters(tree.allocator, iter);
+
+            const attribute = try tree.allocator.create(Node.Attribute);
+
+            if (std.mem.eql(u8, "NativeInvoke", name)) {
+                std.debug.assert(parameters.len == 2);
+
+                attribute.* = .{
+                    .native_invoke = .{
+                        .address = @intCast(parameters[0].contents.integer_literal.value),
+                        .toc_switch = parameters[1].contents.bool_literal,
+                    },
+                };
+            } else {
+                std.debug.panic("Unknown attribute {s}", .{name});
+            }
+
+            try attributes.append(attribute);
+        }
+
         const modifiers = consumeModifiers(iter);
 
         const next = iter.peek() orelse std.debug.panic("unexpected EOF when parsing declaration", .{});
@@ -623,7 +661,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifi
             //Get rid of the fn
             consumeArbitraryLexeme(iter, "fn");
 
-            try functions.append(try consumeFunction(tree.allocator, iter, modifiers));
+            try functions.append(try consumeFunction(tree.allocator, iter, modifiers, attributes.items));
         } else if (next_keyword == comptime hashKeyword("enum")) {
             try enums.append(try consumeEnum(tree.allocator, iter, modifiers));
         }
@@ -1527,7 +1565,7 @@ fn consumeFunctionParameters(allocator: std.mem.Allocator, iter: *SliceIterator(
     return parameters.items;
 }
 
-fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modifiers: MMTypes.Modifiers) !*Node.Function {
+fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modifiers: MMTypes.Modifiers, attributes: []const *Node.Attribute) !*Node.Function {
     const node = try allocator.create(Node.Function);
     errdefer allocator.destroy(node);
 
@@ -1556,6 +1594,7 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
         .name = name,
         .return_type = return_type,
         .mangled_name = null,
+        .attributes = attributes,
     };
 
     return node;
@@ -1884,7 +1923,7 @@ pub const Lexemeizer = struct {
     source: []const u8,
     pos: usize = 0,
 
-    const single_char_lexemes: []const u8 = "()[]{}!*,:;+.'<>+-";
+    const single_char_lexemes: []const u8 = "()[]{}!*,:;+.'<>+-@";
     const special_double_lexemes: []const u16 = &.{
         @intCast(hashKeyword("->")),
         @intCast(hashKeyword(">>")),

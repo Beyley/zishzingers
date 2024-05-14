@@ -637,6 +637,10 @@ fn resolveExpression(
                     },
                 };
 
+                if (function.parameters.len != function_call.parameters.len) {
+                    std.debug.panic("function {s} wanted parameter count {d} but got {d}", .{ function.name, function.parameters.len, function_call.parameters.len });
+                }
+
                 // Resolve all the call parameter expressions to the types of the function parameters
                 for (function.parameters, function_call.parameters) |parameter, call_parameter| {
                     try resolveExpression(
@@ -872,6 +876,21 @@ fn resolveExpression(
 
             expression.type = vec2Type();
         },
+        .vec4_construction => |vec4_construction| {
+            //Resolve the expressions into f32s
+            for (vec4_construction) |param| {
+                try resolveExpression(
+                    param,
+                    f32Type(),
+                    script,
+                    script_table,
+                    a_string_table,
+                    function_variable_stack,
+                );
+            }
+
+            expression.type = vec4Type();
+        },
         .less_than, .less_than_or_equal, .greater_than, .greater_than_or_equal => |comparison| {
             try resolveExpression(
                 comparison.lefthand,
@@ -1015,7 +1034,12 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            if (try coerceExpression(script.ast.allocator, resolved_cast_target_type, cast_expression)) |new_expression| {
+            if (try coerceExpression(
+                script.ast.allocator,
+                resolved_cast_target_type,
+                cast_expression,
+                true,
+            )) |new_expression| {
                 expression.* = new_expression;
             } else {
                 expression.type = .{ .resolved = resolved_cast_target_type };
@@ -1061,6 +1085,7 @@ fn resolveExpression(
                     script.ast.allocator,
                     target_parsed_type.resolved,
                     expression,
+                    false,
                 )) |coersion_expression|
                     expression.* = coersion_expression;
             },
@@ -1098,6 +1123,15 @@ fn boolType() Parser.Type {
 fn vec2Type() Parser.Type {
     return .{ .resolved = resolveParsedType(
         Parser.Type.Parsed.fromFishType(.vec2),
+        null,
+        null,
+        null,
+    ) catch unreachable };
+}
+
+fn vec4Type() Parser.Type {
+    return .{ .resolved = resolveParsedType(
+        Parser.Type.Parsed.fromFishType(.vec4),
         null,
         null,
         null,
@@ -1161,6 +1195,7 @@ fn coerceExpression(
     allocator: std.mem.Allocator,
     target_type: Parser.Type.Resolved,
     expression: *Parser.Node.Expression,
+    hard_cast: bool,
 ) !?Parser.Node.Expression {
     const expression_type = expression.type.resolved;
 
@@ -1186,6 +1221,19 @@ fn coerceExpression(
             }
         },
         .fish => |target_fish_type| {
+            // Integer literal -> safe_ptr coercion, only allowed in hard casts
+            if (hard_cast and target_fish_type.machine_type == .safe_ptr and expression_type == .integer_literal) {
+                try resolveComptimeInteger(expression);
+
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
+
+                return .{
+                    .contents = .{ .integer_literal_to_safe_ptr = cast_target_expression },
+                    .type = .{ .resolved = target_type },
+                };
+            }
 
             // Integer literal -> s32 coercion
             if (target_fish_type.machine_type == .s32 and expression_type == .integer_literal) {
@@ -1717,7 +1765,11 @@ pub fn mangleFunctionName(
     try writer.writeAll("__");
 
     for (parameters) |parameter| {
-        const parameter_type = parameter.type.resolved.fish;
+        const parameter_type = switch (parameter.type.resolved) {
+            .fish => |fish| fish,
+            .pointer => |pointer| pointer.fish.?,
+            else => @panic("cant parameter this type, sorry"),
+        };
 
         if (parameter_type.type_name != 0xFFFFFFFF) {
             const type_name = a_string_table.keys()[parameter_type.type_name];
