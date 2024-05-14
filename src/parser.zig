@@ -294,14 +294,15 @@ pub const Node = union(enum) {
                 source: *Expression,
                 field: []const u8,
             },
+            dereference: UnaryExpression,
             class_name: []const u8,
             /// An access on a variable of some kind (eg `var.Field`), or a class type (eg `Thing.Func()`)
             variable_or_class_access: []const u8,
             /// An access of a class
             class_access: []const u8,
             variable_access: []const u8,
-            numeric_negation: *Expression,
-            logical_negation: *Expression,
+            numeric_negation: UnaryExpression,
+            logical_negation: UnaryExpression,
             function_call: struct {
                 source: ?*Expression,
                 function: union(enum) {
@@ -358,6 +359,7 @@ pub const Node = union(enum) {
                     .wide_string_literal => |literal| writer.print("expression_contents{{ .wide_string_literal = {s} }}", .{literal}),
                     .class_name => |literal| writer.print("expression_contents{{ .class_name = {s} }}", .{literal}),
                     .field_access => |literal| writer.print("expression_contents{{ .field_access = .{{ .source = {}, .field = {s} }} }}", .{ literal.source, literal.field }),
+                    .dereference => |literal| writer.print("expression_contents{{ .dereference = .{{ .source = {} }} }}", .{literal}),
                     .variable_or_class_access => |literal| writer.print("expression_contents{{ .variable_or_class_access = {s} }}", .{literal}),
                     .variable_access => |literal| writer.print("expression_contents{{ .variable_access = {s} }}", .{literal}),
                     .class_access => |literal| writer.print("expression_contents{{ .class_access = {s} }}", .{literal}),
@@ -1092,7 +1094,11 @@ fn consumeDotExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexem
 
         const next = iter.peek() orelse @panic("EOF");
 
-        field_access.* = .{
+        // `ptr.*` dereferencing
+        field_access.* = if (name[0] == '*') .{
+            .contents = .{ .dereference = node },
+            .type = .unknown,
+        } else .{
             .contents = if (next[0] == '(')
                 .{
                     .function_call = .{

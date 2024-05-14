@@ -430,7 +430,7 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            std.debug.assert(assignment.destination.type.resolved == .fish);
+            std.debug.assert(assignment.destination.type.resolved == .fish or assignment.destination.type.resolved == .pointer);
 
             //Resolve the type of the value, which should be the same type as the destination
             try resolveExpression(
@@ -735,7 +735,7 @@ fn resolveExpression(
                                 );
 
                                 //Panic if the resolved type is not knowable at runtime
-                                if (value.type.resolved != .fish)
+                                if (value.type.resolved != .fish and value.type.resolved != .pointer)
                                     std.debug.panic(
                                         "variable declaration {s}'s default value's is unknown at runtime, currently is {s}",
                                         .{ variable_declaration.name, @tagName(value.type.resolved) },
@@ -1020,6 +1020,33 @@ fn resolveExpression(
             } else {
                 expression.type = .{ .resolved = resolved_cast_target_type };
             }
+        },
+        .dereference => |dereference| {
+            try resolveExpression(
+                dereference,
+                null,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+            );
+
+            std.debug.assert(dereference.type.resolved == .pointer);
+
+            expression.type = if (dereference.type.resolved.pointer.indirection_count > 1) .{
+                .resolved = .{
+                    .pointer = .{
+                        .indirection_count = dereference.type.resolved.pointer.indirection_count - 1,
+                        .fish = dereference.type.resolved.pointer.fish,
+                        .type = dereference.type.resolved.pointer.type,
+                    },
+                },
+            } else .{ .resolved = try resolveParsedType(
+                Parser.Type.Parsed.fromFishType(dereference.type.resolved.pointer.type.fish),
+                null,
+                null,
+                null,
+            ) };
         },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }

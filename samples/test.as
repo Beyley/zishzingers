@@ -1,6 +1,6 @@
 using library 'lbpdeploy';
 
-class Basic(g1234568)
+class Test(g1234568)
 {
     pub fn AssignmentTest() {
         let x: s32 = 0;
@@ -23,6 +23,10 @@ class Basic(g1234568)
     }
 
     pub fn Ptr() {
-        let x: s32* = 0xc as s32*;
+        let x: s32** = 0xc;
+
+        let y = x.*;
+
+        x.* = y;
     }
 }

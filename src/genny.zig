@@ -128,6 +128,10 @@ const Codegen = struct {
 
         /// Allocates a regester from the memory space, and returns the start register for the passed data type
         fn allocateInternal(self: *RegisterAllocator, machine_type: MMTypes.MachineType, create_local_vars: bool) !Register {
+            if (machine_type == .void) {
+                std.debug.panic("Attempted to allocate void register", .{});
+            }
+
             const size = machine_type.size();
 
             var item = self.free_spaces.first;
@@ -551,6 +555,32 @@ const Codegen = struct {
             .src_b_idx = righthand,
         } }, .void));
     }
+
+    pub fn emitExtLoad(self: *Codegen, dst_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(src_idx, .s32);
+        ensureAlignment(dst_idx, machine_type);
+
+        // Only size s32 types work in the current version of the extended runtime
+        std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_LOAD = .{
+            .src_idx = src_idx,
+            .dst_idx = dst_idx,
+        } }, machine_type));
+    }
+
+    pub fn emitExtStore(self: *Codegen, dst_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(src_idx, machine_type);
+        ensureAlignment(dst_idx, .s32);
+
+        // Only size s32 types work in the current version of the extended runtime
+        std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_STORE = .{
+            .src_idx = src_idx,
+            .dst_idx = dst_idx,
+        } }, machine_type));
+    }
 };
 
 const Register = struct { u16, MMTypes.MachineType };
@@ -637,6 +667,35 @@ fn compileExpression(
                     }
 
                     break :blk register;
+                },
+                .dereference => |dereference| {
+                    const intermediate_register = (try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        assignment.value,
+                        false,
+                        null,
+                    )).?;
+
+                    const address_register = (try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        dereference,
+                        false,
+                        null,
+                    )).?;
+
+                    try codegen.emitExtStore(address_register[0], intermediate_register[0], intermediate_register[1]);
+
+                    if (discard_result) {
+                        try codegen.register_allocator.free(intermediate_register);
+
+                        break :blk null;
+                    }
+
+                    break :blk intermediate_register;
                 },
                 else => |tag| std.debug.panic("TODO: codegen for assignment to {s}", .{@tagName(tag)}),
             }
@@ -1062,6 +1121,33 @@ fn compileExpression(
             try codegen.register_allocator.free(righthand);
 
             break :blk null;
+        },
+        .dereference => |dereference| blk: {
+            if (discard_result)
+                break :blk null;
+
+            const register = result_register orelse try codegen.register_allocator.allocate(switch (expression.type.resolved) {
+                .fish => |fish| fish.machine_type,
+                .pointer => .s32,
+                else => unreachable,
+            });
+
+            const source_register = (try compileExpression(
+                codegen,
+                function_local_variables,
+                scope_local_variables,
+                dereference,
+                false,
+                null,
+            )).?;
+
+            std.debug.assert(source_register[1] == .s32);
+
+            try codegen.emitExtLoad(register[0], source_register[0], register[1]);
+
+            try codegen.register_allocator.free(source_register);
+
+            break :blk register;
         },
         else => |tag| std.debug.panic("cant codegen for expression {s} yet\n", .{@tagName(tag)}),
     };
