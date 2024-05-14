@@ -366,10 +366,21 @@ fn resolveFunctionHead(
     function.mangled_name = mangled_name.items;
 }
 
-fn stringType(a_string_table: *AStringTable) Error!Parser.Type.Resolved {
+fn wideStringType(a_string_table: *AStringTable) Error!Parser.Type.Resolved {
     return .{ .fish = .{
         .script = .{ .guid = 16491 },
         .type_name = @intCast((try a_string_table.getOrPut("String")).index),
+        .machine_type = .object_ref,
+        .fish_type = .void,
+        .dimension_count = 0,
+        .array_base_machine_type = .void,
+    } };
+}
+
+fn asciiStringType(a_string_table: *AStringTable) Error!Parser.Type.Resolved {
+    return .{ .fish = .{
+        .script = .{ .guid = 22442 },
+        .type_name = @intCast((try a_string_table.getOrPut("StringA")).index),
         .machine_type = .object_ref,
         .fish_type = .void,
         .dimension_count = 0,
@@ -538,7 +549,11 @@ fn resolveExpression(
         },
         .wide_string_literal => {
             //TODO: make try to pull in a `String` script, not just "some object ref"
-            expression.type = .{ .resolved = try stringType(a_string_table) };
+            expression.type = .{ .resolved = try wideStringType(a_string_table) };
+        },
+        .ascii_string_literal => {
+            //TODO: make try to pull in a `StringA` script, not just "some object ref"
+            expression.type = .{ .resolved = try asciiStringType(a_string_table) };
         },
         .function_call => |*function_call| {
             if (function_call.source != null) {
@@ -790,7 +805,13 @@ fn resolveExpression(
                         );
                     },
                     .return_statement => |return_statement| {
-                        if (function_variable_stack.?.function.return_type.resolved.fish.machine_type != .void and return_statement.expression == null)
+                        const return_machine_type = switch (function_variable_stack.?.function.return_type.resolved) {
+                            .fish => |fish| fish.machine_type,
+                            .pointer => .s32,
+                            else => unreachable,
+                        };
+
+                        if (return_machine_type != .void and return_statement.expression == null)
                             std.debug.panic("you cant return nothing when the function wants {}", .{function_variable_stack.?.function.return_type.resolved});
 
                         //If this return statement has an expression, type resolve that to the return type of the function
@@ -943,10 +964,10 @@ fn resolveExpression(
 
             expression.type = .{ .resolved = bitwise_and.lefthand.type.resolved };
         },
-        .not_equal => |not_equal| {
+        .not_equal, .equal => |equality| {
             //Resolve the lefthand expression to whatever type it naturally wants to be
             try resolveExpression(
-                not_equal.lefthand,
+                equality.lefthand,
                 null,
                 script,
                 script_table,
@@ -954,19 +975,23 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            switch (not_equal.lefthand.type.resolved.fish.machine_type) {
-                //NEb   NEc    NEi   NEf   NEs64 NErp      NEo          NEsp
-                .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref, .safe_ptr => {},
-                else => |tag| std.debug.panic(
-                    "lefthand side of not equal must be .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref, currently is {s}",
-                    .{@tagName(tag)},
-                ),
+            switch (equality.lefthand.type.resolved) {
+                .fish => |fish| switch (fish.machine_type) {
+                    //NEb   NEc    NEi   NEf   NEs64 NErp      NEo          NEsp
+                    .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref, .safe_ptr => {},
+                    else => |tag| std.debug.panic(
+                        "lefthand side of not equal must be .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref, currently is {s}",
+                        .{@tagName(tag)},
+                    ),
+                },
+                .pointer => {},
+                else => unreachable,
             }
 
             //Resolve the righthand expression to the same type as the lefthand expression
             try resolveExpression(
-                not_equal.righthand,
-                not_equal.lefthand.type,
+                equality.righthand,
+                equality.lefthand.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1008,7 +1033,8 @@ fn resolveExpression(
 
             try resolveExpression(
                 math_op.righthand,
-                math_op.lefthand.type,
+                // For simple math ops, the righthand side should always be an s32
+                if (math_op.lefthand.type.resolved == .pointer) s32Type() else math_op.lefthand.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1038,6 +1064,8 @@ fn resolveExpression(
                 script.ast.allocator,
                 resolved_cast_target_type,
                 cast_expression,
+                script_table,
+                a_string_table,
                 true,
             )) |new_expression| {
                 expression.* = new_expression;
@@ -1085,6 +1113,8 @@ fn resolveExpression(
                     script.ast.allocator,
                     target_parsed_type.resolved,
                     expression,
+                    script_table,
+                    a_string_table,
                     false,
                 )) |coersion_expression|
                     expression.* = coersion_expression;
@@ -1118,6 +1148,10 @@ fn typeFromName(name: []const u8) Parser.Type {
 
 fn boolType() Parser.Type {
     return comptime .{ .resolved = resolveParsedType(Parser.Type.Parsed.fromFishType(.bool), null, null, null) catch unreachable };
+}
+
+fn s32Type() Parser.Type {
+    return comptime .{ .resolved = resolveParsedType(Parser.Type.Parsed.fromFishType(.s32), null, null, null) catch unreachable };
 }
 
 fn vec2Type() Parser.Type {
@@ -1195,6 +1229,8 @@ fn coerceExpression(
     allocator: std.mem.Allocator,
     target_type: Parser.Type.Resolved,
     expression: *Parser.Node.Expression,
+    script_table: *ParsedScriptTable,
+    a_string_table: *AStringTable,
     hard_cast: bool,
 ) !?Parser.Node.Expression {
     const expression_type = expression.type.resolved;
@@ -1206,6 +1242,7 @@ fn coerceExpression(
     switch (target_type) {
         .pointer => |pointer| {
             _ = pointer; // autofix
+
             // Integer literal -> ptr conversion
             if (expression_type == .integer_literal) {
                 try resolveComptimeInteger(expression);
@@ -1219,8 +1256,51 @@ fn coerceExpression(
                     .type = .{ .resolved = target_type },
                 };
             }
+
+            // Null literal -> ptr conversion
+            if (expression_type == .null_literal) {
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
+
+                return .{
+                    .contents = .null_literal_to_ptr,
+                    .type = .{ .resolved = target_type },
+                };
+            }
         },
         .fish => |target_fish_type| {
+            // Iterate the base classes of the source expression, to try to see if we can implicitly cast the type to its base type
+            if (expression.type.resolved == .fish and target_fish_type.script != null) {
+                var script_name = a_string_table.keys()[expression.type.resolved.fish.type_name];
+
+                base_check: while (true) {
+                    const parsed_script = script_table.get(script_name).?;
+
+                    const class = getScriptClassNode(parsed_script.ast);
+
+                    // If the GUID of the class is equal to the target type GUID, then we have found the base class, and should return a cast
+                    if (class.identifier.?.contents.guid_literal == target_fish_type.script.?.guid) {
+                        //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                        const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                        cast_target_expression.* = expression.*;
+
+                        return .{
+                            .contents = .{ .cast = cast_target_expression },
+                            .type = .{ .resolved = target_type },
+                        };
+                    }
+
+                    switch (class.base_class) {
+                        .resolved => |resolved_base_class| {
+                            script_name = resolved_base_class.name;
+                        },
+                        .parsed => unreachable,
+                        .none => break :base_check,
+                    }
+                }
+            }
+
             // Integer literal -> safe_ptr coercion, only allowed in hard casts
             if (hard_cast and target_fish_type.machine_type == .safe_ptr and expression_type == .integer_literal) {
                 try resolveComptimeInteger(expression);

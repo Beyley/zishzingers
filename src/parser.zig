@@ -108,6 +108,22 @@ pub const Type = union(enum) {
                 .integer_literal, .float_literal, .null_literal => true,
             };
         }
+
+        pub fn machineType(self: Resolved) MMTypes.MachineType {
+            return switch (self) {
+                .fish => |fish| fish.machine_type,
+                .pointer => .s32,
+                else => unreachable,
+            };
+        }
+
+        pub fn valueTypeReference(self: Resolved) MMTypes.TypeReference {
+            return switch (self) {
+                .fish => |fish| fish,
+                .pointer => |pointer| pointer.fish.?,
+                else => unreachable,
+            };
+        }
     };
 
     /// An unresolved type
@@ -282,6 +298,7 @@ pub const Node = union(enum) {
             integer_literal_to_s64: UnaryExpression,
             integer_literal_to_f64: UnaryExpression,
             null_literal_to_safe_ptr: void,
+            null_literal_to_ptr: void,
             null_literal_to_object_ptr: void,
             float_literal: struct { base: LiteralBase, value: f64 },
             float_literal_to_f32: UnaryExpression,
@@ -351,6 +368,7 @@ pub const Node = union(enum) {
                     .integer_literal_to_s64 => |literal| writer.print("expression_contents {{ .integer_literal_to_s64 = {d} }}", .{literal}),
                     .integer_literal_to_f64 => |literal| writer.print("expression_contents {{ .integer_literal_to_f64 = {d} }}", .{literal}),
                     .null_literal_to_safe_ptr => writer.print("expression_contents {{ .null_literal_to_safe_ptr }}", .{}),
+                    .null_literal_to_ptr => writer.print("expression_contents {{ .null_literal_to_ptr }}", .{}),
                     .null_literal_to_object_ptr => writer.print("expression_contents {{ .null_literal_to_object_ptr }}", .{}),
                     .float_literal => |literal| writer.print("expression_contents{{ .float_literal = {} }}", .{literal}),
                     .float_literal_to_f32 => |literal| writer.print("expression_contents {{ .float_literal_to_f32 = {d} }}", .{literal}),

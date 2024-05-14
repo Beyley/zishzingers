@@ -251,6 +251,15 @@ const Codegen = struct {
         } }, .void));
     }
 
+    pub fn emitLoadConstStringAscii(self: *Codegen, dst_idx: u16, str: []const u8) !void {
+        ensureAlignment(dst_idx, .object_ref);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCsa = .{
+            .constant_idx = @intCast((try self.genny.a_string_table.getOrPut(str)).index),
+            .dst_idx = dst_idx,
+        } }, .void));
+    }
+
     pub fn emitAssert(self: *Codegen, src_idx: u16) !void {
         ensureAlignment(src_idx, .object_ref);
 
@@ -369,6 +378,20 @@ const Codegen = struct {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .FLOATi = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
     }
 
+    pub fn emitMoveObjectRef(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
+        ensureAlignment(dst_idx, .object_ref);
+        ensureAlignment(src_idx, .object_ref);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .MOVo = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
+    }
+
+    pub fn emitMoveS32(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
+        ensureAlignment(dst_idx, .s32);
+        ensureAlignment(src_idx, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .MOVi = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
+    }
+
     pub fn emitRet(self: *Codegen, src_idx: u16, machine_type: MMTypes.MachineType) !void {
         ensureAlignment(src_idx, machine_type);
 
@@ -470,6 +493,17 @@ const Codegen = struct {
         } }, .void));
     }
 
+    pub fn emitIntEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
+        ensureAlignment(left_idx, .s32);
+        ensureAlignment(right_idx, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .EQi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = left_idx,
+            .src_b_idx = right_idx,
+        } }, .void));
+    }
+
     pub fn emitSafePtrNotEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
         ensureAlignment(left_idx, .safe_ptr);
         ensureAlignment(right_idx, .safe_ptr);
@@ -551,6 +585,18 @@ const Codegen = struct {
         ensureAlignment(righthand, .s32);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .ADDi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
+
+    pub fn emitMultiplyInt(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(dst_idx, .s32);
+        ensureAlignment(lefthand, .s32);
+        ensureAlignment(righthand, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .MULi = .{
             .dst_idx = dst_idx,
             .src_a_idx = lefthand,
             .src_b_idx = righthand,
@@ -766,23 +812,18 @@ fn compileExpression(
 
             break :blk register;
         },
-        .null_literal_to_safe_ptr => blk: {
+        inline .null_literal_to_safe_ptr, .null_literal_to_object_ptr, .null_literal_to_ptr => |_, tag| blk: {
             if (discard_result)
                 break :blk null;
 
             const register = result_register orelse try codegen.register_allocator.allocate(.safe_ptr);
 
-            try codegen.emitLoadConstNullSafePtr(register[0]);
-
-            break :blk register;
-        },
-        .null_literal_to_object_ptr => blk: {
-            if (discard_result)
-                break :blk null;
-
-            const register = result_register orelse try codegen.register_allocator.allocate(.object_ref);
-
-            try codegen.emitLoadConstNullObjectPtr(register[0]);
+            switch (tag) {
+                .null_literal_to_object_ptr => try codegen.emitLoadConstNullObjectPtr(register[0]),
+                .null_literal_to_safe_ptr => try codegen.emitLoadConstNullSafePtr(register[0]),
+                .null_literal_to_ptr => try codegen.emitLoadConstInt(register[0], 0),
+                else => @compileError("unhandled null literal load"),
+            }
 
             break :blk register;
         },
@@ -803,6 +844,25 @@ fn compileExpression(
                 const result_idx = try codegen.register_allocator.allocate(.object_ref);
 
                 try codegen.emitLoadConstStringWide(result_idx[0], wide_string);
+
+                break :blk result_idx;
+            }
+        },
+        .ascii_string_literal => |ascii_string_literal| blk: {
+            if (discard_result)
+                break :blk null;
+
+            //If the result register is known, just load directly into that
+            if (result_register) |result_idx| {
+                try codegen.emitLoadConstStringAscii(result_idx[0], ascii_string_literal);
+
+                break :blk result_idx;
+            }
+            // Else, allocate a new register and use that
+            else {
+                const result_idx = try codegen.register_allocator.allocate(.object_ref);
+
+                try codegen.emitLoadConstStringAscii(result_idx[0], ascii_string_literal);
 
                 break :blk result_idx;
             }
@@ -835,11 +895,7 @@ fn compileExpression(
                 .type_reference = @intCast((try codegen.genny.type_references.getOrPut(function.owning_type)).index),
             })).index);
 
-            const return_type = switch (expression.type.resolved) {
-                .fish => |fish| fish.machine_type,
-                .pointer => .s32,
-                else => unreachable,
-            };
+            const return_type = expression.type.resolved.machineType();
 
             const parameter_registers = try codegen.register_allocator.allocator.alloc(Register, function_call.parameters.len);
 
@@ -999,14 +1055,16 @@ fn compileExpression(
                 null,
             )) |source| {
                 const register = result_register orelse
-                    try codegen.register_allocator.allocate(expression.type.resolved.fish.machine_type);
+                    try codegen.register_allocator.allocate(expression.type.resolved.machineType());
 
-                const source_type = cast_source.type.resolved.fish.machine_type;
-                const dst_type = expression.type.resolved.fish.machine_type;
+                const source_type = cast_source.type.resolved.machineType();
+                const dst_type = expression.type.resolved.machineType();
 
                 switch (tupleMachineTypes(source_type, dst_type)) {
                     tupleMachineTypes(.bool, .s32) => try codegen.emitBoolToS32(register[0], source[0]),
                     tupleMachineTypes(.s32, .f32) => try codegen.emitS32ToF32(register[0], source[0]),
+                    tupleMachineTypes(.object_ref, .object_ref) => try codegen.emitMoveObjectRef(register[0], source[0]),
+                    tupleMachineTypes(.s32, .s32) => try codegen.emitMoveS32(register[0], source[0]),
                     else => std.debug.panic("TODO: cast from expression {s} to {s}", .{ @tagName(source_type), @tagName(dst_type) }),
                 }
 
@@ -1112,16 +1170,19 @@ fn compileExpression(
 
             break :blk register;
         },
-        inline .bitwise_and, .addition, .subtraction, .not_equal, .greater_than, .less_than_or_equal => |binary, binary_type| blk: {
-            //Assert the types are equal
-            std.debug.assert(binary.lefthand.type.resolved.eql(binary.righthand.type.resolved));
+        inline .bitwise_and, .addition, .subtraction, .not_equal, .equal, .greater_than, .less_than_or_equal => |binary, binary_type| blk: {
+            //Assert the types are equal if its not a pointer we are dealing with, else make sure that the other operand is an s32
+            if ((binary_type == .addition or binary_type == .subtraction) and binary.lefthand.type.resolved == .pointer)
+                std.debug.assert(binary.righthand.type.resolved.fish.machine_type == .s32)
+            else
+                std.debug.assert(binary.lefthand.type.resolved.eql(binary.righthand.type.resolved));
 
             const hand_type = binary.lefthand.type.resolved;
 
             // Allocate a result register, in the case of bitwise ops, we need to use the machine type, else use a bool as the result
             const register = result_register orelse try codegen.register_allocator.allocate(switch (binary_type) {
-                .bitwise_and, .addition, .subtraction => binary.lefthand.type.resolved.fish.machine_type,
-                .not_equal, .greater_than, .less_than_or_equal => .bool,
+                .bitwise_and, .addition, .subtraction => binary.lefthand.type.resolved.machineType(),
+                .not_equal, .equal, .greater_than, .less_than_or_equal => .bool,
                 else => @compileError("Missing register type resolution"),
             });
 
@@ -1149,6 +1210,7 @@ fn compileExpression(
 
                     switch (fish.machine_type) {
                         .s32 => switch (binary_type) {
+                            .equal => try codegen.emitIntEqual(register[0], lefthand[0], righthand[0]),
                             .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
                             .bitwise_and => try codegen.emitIntBitwiseAnd(register[0], lefthand[0], righthand[0]),
                             .addition => try codegen.emitAddInt(register[0], lefthand[0], righthand[0]),
@@ -1175,7 +1237,44 @@ fn compileExpression(
                     try codegen.register_allocator.free(lefthand);
                     try codegen.register_allocator.free(righthand);
                 },
-                .pointer => @panic("TODO: pointer comparison"),
+                .pointer => |pointer| {
+                    const lefthand = (try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        binary.lefthand,
+                        false,
+                        null,
+                    )).?;
+                    const righthand = (try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        binary.righthand,
+                        false,
+                        null,
+                    )).?;
+
+                    std.debug.assert(lefthand[1] == .s32);
+
+                    switch (binary_type) {
+                        .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
+                        .addition => {
+                            const target_type_size = pointer.type.fish.toMachineType().size();
+
+                            // Load the size of the data type into the destination register
+                            try codegen.emitLoadConstInt(register[0], target_type_size);
+                            // Multiply the amount by the amount of elements weare moving
+                            try codegen.emitMultiplyInt(register[0], register[0], righthand[0]);
+                            // Add the resulting offset with the pointer, and store it in the result register
+                            try codegen.emitAddInt(register[0], register[0], lefthand[0]);
+                        },
+                        else => |tag| std.debug.panic("TODO: comparisons for machine type {s}", .{@tagName(tag)}),
+                    }
+
+                    try codegen.register_allocator.free(lefthand);
+                    try codegen.register_allocator.free(righthand);
+                },
                 .type => @panic("BUG: i dont think this should be allowed?"),
                 .integer_literal => {
                     @panic("TODO: int literal comparison");
@@ -1233,11 +1332,7 @@ fn compileExpression(
             if (discard_result)
                 break :blk null;
 
-            const register = result_register orelse try codegen.register_allocator.allocate(switch (expression.type.resolved) {
-                .fish => |fish| fish.machine_type,
-                .pointer => .s32,
-                else => unreachable,
-            });
+            const register = result_register orelse try codegen.register_allocator.allocate(expression.type.resolved.machineType());
 
             const source_register = (try compileExpression(
                 codegen,
@@ -1520,11 +1615,7 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
     }
 
     for (function.parameters) |parameter| {
-        const fish_type_reference = switch (parameter.type.resolved) {
-            .fish => |fish| fish,
-            .pointer => |pointer| pointer.fish.?,
-            else => unreachable,
-        };
+        const fish_type_reference = parameter.type.resolved.valueTypeReference();
 
         const register = try codegen.register_allocator.allocateArgument(fish_type_reference.machine_type);
         const type_reference: u32 = @intCast((try self.type_references.getOrPut(fish_type_reference)).index);
@@ -1551,7 +1642,7 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         &scope_local_variables,
         function.body.?.contents.block,
         true,
-        function.return_type.resolved.fish.machine_type,
+        function.return_type.resolved.machineType(),
     );
 
     //TODO: let users put this safety feature under a debug flag
@@ -1579,7 +1670,7 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         .name = @intCast((try self.a_string_table.getOrPut(function.mangled_name.?)).index),
         .modifiers = function.modifiers,
         .stack_size = stack_size,
-        .type_reference = @intCast((try self.type_references.getOrPut(function.return_type.resolved.fish)).index),
+        .type_reference = @intCast((try self.type_references.getOrPut(function.return_type.resolved.valueTypeReference())).index),
         .bytecode = blk: {
             const start = self.bytecode.items.len;
 
