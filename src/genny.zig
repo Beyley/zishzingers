@@ -545,6 +545,14 @@ const Codegen = struct {
         } }, .void));
     }
 
+    pub fn emitBoolBitwiseOr(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .BIT_ORi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
+
     pub fn emitFloatGreaterThan(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
         ensureAlignment(lefthand, .f32);
         ensureAlignment(righthand, .f32);
@@ -1018,6 +1026,9 @@ fn compileExpression(
                 // We actually need to have a valid return register for native invokes
             else if (discard_result and native_invoke == null)
                 .{ std.math.maxInt(u16), .void }
+                // We need to have a valid s32 return register for native calls
+            else if (native_invoke != null and return_type == .void)
+                try codegen.register_allocator.allocate(.s32)
             else
                 try codegen.register_allocator.allocate(return_type);
 
@@ -1259,6 +1270,7 @@ fn compileExpression(
 
                     switch (binary_type) {
                         .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
+                        .equal => try codegen.emitIntEqual(register[0], lefthand[0], righthand[0]),
                         .addition => {
                             const target_type_size = pointer.type.fish.toMachineType().size();
 
@@ -1269,7 +1281,7 @@ fn compileExpression(
                             // Add the resulting offset with the pointer, and store it in the result register
                             try codegen.emitAddInt(register[0], register[0], lefthand[0]);
                         },
-                        else => |tag| std.debug.panic("TODO: comparisons for machine type {s}", .{@tagName(tag)}),
+                        else => |tag| std.debug.panic("TODO: comparisons for op {s}", .{@tagName(tag)}),
                     }
 
                     try codegen.register_allocator.free(lefthand);
@@ -1294,12 +1306,12 @@ fn compileExpression(
 
             break :blk register;
         },
-        .logical_and => |logical_and| blk: {
+        inline .logical_and, .logical_or => |logical_op, tag| blk: {
             const lefthand = (try compileExpression(
                 codegen,
                 function_local_variables,
                 scope_local_variables,
-                logical_and.lefthand,
+                logical_op.lefthand,
                 false,
                 null,
             )).?;
@@ -1309,7 +1321,7 @@ fn compileExpression(
                 codegen,
                 function_local_variables,
                 scope_local_variables,
-                logical_and.righthand,
+                logical_op.righthand,
                 false,
                 null,
             )).?;
@@ -1318,7 +1330,11 @@ fn compileExpression(
             if (!discard_result) {
                 const register = result_register orelse try codegen.register_allocator.allocate(.bool);
 
-                try codegen.emitBoolBitwiseAnd(register[0], lefthand[0], righthand[0]);
+                switch (tag) {
+                    .logical_and => try codegen.emitBoolBitwiseAnd(register[0], lefthand[0], righthand[0]),
+                    .logical_or => try codegen.emitBoolBitwiseOr(register[0], lefthand[0], righthand[0]),
+                    else => @compileError("what"),
+                }
 
                 break :blk register;
             }

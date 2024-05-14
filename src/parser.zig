@@ -1113,7 +1113,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
     //TODO: hash literals here
     if (first[0] == 'h') {}
 
-    if (isWideStringLiteral(first)) |wide_string_literal| {
+    if (try isWideStringLiteral(allocator, first)) |wide_string_literal| {
         const expression = try allocator.create(Node.Expression);
         expression.* = .{
             .contents = .{ .wide_string_literal = wide_string_literal },
@@ -1122,7 +1122,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
         return expression;
     }
 
-    if (isAsciiStringLiteral(first)) |string_literal| {
+    if (try isAsciiStringLiteral(allocator, first)) |string_literal| {
         const expression = try allocator.create(Node.Expression);
         expression.* = .{
             .contents = .{ .ascii_string_literal = string_literal },
@@ -1618,7 +1618,7 @@ fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), m
     return node;
 }
 
-fn isWideStringLiteral(lexeme: Lexeme) ?[]const u8 {
+fn isWideStringLiteral(allocator: std.mem.Allocator, lexeme: Lexeme) !?[]const u8 {
     if (lexeme.len < 3)
         return null;
 
@@ -1629,10 +1629,10 @@ fn isWideStringLiteral(lexeme: Lexeme) ?[]const u8 {
         return null;
 
     //Strip to just the contents
-    return lexeme[2 .. lexeme.len - 1];
+    return try unwrapStringLiteral(allocator, lexeme[1..]);
 }
 
-fn isAsciiStringLiteral(lexeme: Lexeme) ?[]const u8 {
+fn isAsciiStringLiteral(allocator: std.mem.Allocator, lexeme: Lexeme) !?[]const u8 {
     if (lexeme.len < 2)
         return null;
 
@@ -1640,7 +1640,7 @@ fn isAsciiStringLiteral(lexeme: Lexeme) ?[]const u8 {
         return null;
 
     //Strip to just the contents
-    return lexeme[1 .. lexeme.len - 1];
+    return try unwrapStringLiteral(allocator, lexeme);
 }
 
 fn consumeWhileStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
@@ -1816,7 +1816,7 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
 
                     //TODO: support renamed function imports eg. `import { Messaging_PoppetInfoMessage: ShowNotification }`
 
-                    const name = unwrapStringLiteral(curr);
+                    const name = try unwrapStringLiteral(tree.allocator, curr);
 
                     //Append the new import
                     try wanted_imports.append(tree.allocator, .{
@@ -1848,7 +1848,7 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     };
 
     node.* = .{
-        .target = unwrapStringLiteral(target),
+        .target = try unwrapStringLiteral(tree.allocator, target),
         .wanted = wanted,
     };
 
@@ -1864,7 +1864,7 @@ fn consumeImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     errdefer tree.allocator.destroy(node);
 
     node.* = .{
-        .target = unwrapStringLiteral(iter.next() orelse std.debug.panic("unexpected EOF after import statement", .{})),
+        .target = try unwrapStringLiteral(tree.allocator, iter.next() orelse std.debug.panic("unexpected EOF after import statement", .{})),
     };
 
     try tree.root_elements.append(tree.allocator, .{ .import = node });
@@ -1880,7 +1880,7 @@ fn consumeUsingStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
 
     const using_type = std.meta.stringToEnum(UsingType, using_type_str) orelse std.debug.panic("unknown using type {s}", .{using_type_str});
 
-    const library_name = unwrapStringLiteral(iter.next() orelse std.debug.panic("unexpected EOF after using statement type", .{}));
+    const library_name = try unwrapStringLiteral(tree.allocator, iter.next() orelse std.debug.panic("unexpected EOF after using statement type", .{}));
 
     node.* = .{
         .type = using_type,
@@ -1929,11 +1929,31 @@ fn consumeArbitraryLexemeIfAvailable(iter: *SliceIterator(Lexeme), intended: []c
     return false;
 }
 
-fn unwrapStringLiteral(literal: []const u8) []const u8 {
+fn unwrapStringLiteral(allocator: std.mem.Allocator, literal: []const u8) ![]const u8 {
     if (literal[0] != '\'' or literal[literal.len - 1] != '\'')
         std.debug.panic("bad string \"{s}\"", .{literal});
 
-    return literal[1 .. literal.len - 1];
+    const raw = literal[1 .. literal.len - 1];
+
+    var unescaped_literal = std.ArrayList(u8).init(allocator);
+
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        const c = raw[i];
+
+        if (c == '\\') {
+            switch (raw[i + 1]) {
+                'n' => try unescaped_literal.append('\n'),
+                else => |escape_char| std.debug.panic("unknown escape character {c}", .{escape_char}),
+            }
+            i += 1;
+            continue;
+        }
+
+        try unescaped_literal.append(c);
+    }
+
+    return unescaped_literal.items;
 }
 
 /// Turns a source into a stream of lexemes
