@@ -130,7 +130,7 @@ pub fn main() !void {
                     const script = try resource_stream.readScript(allocator);
                     defer script.deinit(allocator);
 
-                    try Disasm.disassembleScript(stdout, script);
+                    try Disasm.disassembleScript(stdout, allocator, script);
                 }
             } else {
                 //Iterate over all paths and disassemble them
@@ -156,7 +156,7 @@ pub fn main() !void {
                     const script = try resource.stream.readScript(allocator);
                     defer script.deinit(allocator);
 
-                    try Disasm.disassembleScript(stdout, script);
+                    try Disasm.disassembleScript(stdout, allocator, script);
                 }
             }
         },
@@ -321,7 +321,7 @@ pub fn main() !void {
                     try stdout.print("Script has dependency {}\n", .{dependency.ident});
                 }
 
-                try Disasm.disassembleScript(stdout, script);
+                try Disasm.disassembleScript(stdout, allocator, script);
             }
         },
         .generate_library => {

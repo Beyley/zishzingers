@@ -2,7 +2,7 @@ const std = @import("std");
 
 const MMTypes = @import("MMTypes.zig");
 
-pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
+pub fn disassembleScript(writer: anytype, allocator: std.mem.Allocator, script: MMTypes.Script) !void {
     try std.fmt.format(writer, " --- Class Name: {s} ---\n", .{script.class_name});
     try std.fmt.format(writer, " --- Up to date script: {?} ---\n", .{script.up_to_date_script});
     try std.fmt.format(writer, " --- Super class script: {?} ---\n", .{script.super_class_script});
@@ -86,61 +86,7 @@ pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
         if (function.bytecode.len() > 0) {
             try std.fmt.format(writer, "   - Bytecode\n", .{});
 
-            for (function.bytecode.slice(script.bytecode), function.line_numbers.slice(script.line_numbers), 0..) |bytecode, line_number, i| {
-                _ = line_number; // autofix
-
-                try std.fmt.format(writer, "      {d:0>4}: 0x{x:0>16} {s} ", .{
-                    i,
-                    @as(u64, @bitCast(bytecode)),
-                    @tagName(bytecode.op),
-                });
-                switch (bytecode.op) {
-                    inline else => |op| {
-                        const params = @field(bytecode.params, @tagName(op));
-
-                        const ParamsType = @TypeOf(params);
-
-                        switch (ParamsType) {
-                            MMTypes.NopClass => {},
-                            MMTypes.LoadConstClass => {
-                                switch (op) {
-                                    .LCsw => try std.fmt.format(writer, "r{d}, \"{}\"", .{ params.dst_idx, std.unicode.fmtUtf16Le(script.w_string_table.strings[params.constant_idx]) }),
-                                    .LCsa => try std.fmt.format(writer, "r{d}, \"{s}\"", .{ params.dst_idx, script.a_string_table.strings[params.constant_idx] }),
-                                    else => try std.fmt.format(writer, "r{d}, cid{d}", .{ params.dst_idx, params.constant_idx }),
-                                }
-                            },
-                            MMTypes.UnaryClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.src_idx }),
-                            MMTypes.BinaryClass => try std.fmt.format(writer, "r{d}, r{d}, r{d}", .{ params.dst_idx, params.src_a_idx, params.src_b_idx }),
-                            MMTypes.GetBuiltinMemberClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
-                            MMTypes.SetBuiltinMemberClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.src_idx, params.base_idx }),
-                            MMTypes.GetMemberClass => try std.fmt.format(writer, "r{d}, r{d}, {s}", .{ params.dst_idx, params.base_idx, script.a_string_table.strings[script.field_references[params.field_ref].name] }),
-                            MMTypes.SetMemberClass => try std.fmt.format(writer, "r{d}, r{d}, {s}", .{ params.src_idx, params.base_idx, script.a_string_table.strings[script.field_references[params.field_ref].name] }),
-                            MMTypes.GetElementClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
-                            MMTypes.SetElementClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.src_idx, params.base_idx }),
-                            MMTypes.NewArrayClass => try std.fmt.format(writer, "r{d}, t{d}[r{d}]", .{ params.dst_idx, params.type_idx, params.size_idx }),
-                            MMTypes.WriteClass => try std.fmt.format(writer, "r{d}", .{params.src_idx}),
-                            MMTypes.ArgClass => try std.fmt.format(writer, "a{d}, r{d}", .{ params.arg_idx, params.src_idx }),
-                            MMTypes.CallClass => {
-                                if (params.call_idx >= script.function_references.len)
-                                    try std.fmt.format(writer, "r{d}, ??? {d}", .{ params.dst_idx, params.call_idx })
-                                else
-                                    try std.fmt.format(writer, "r{d}, {s}", .{ params.dst_idx, script.a_string_table.strings[script.function_references[params.call_idx].name] });
-                            },
-                            MMTypes.ReturnClass => try std.fmt.format(writer, "r{d}", .{params.src_idx}),
-                            MMTypes.BranchClass => try std.fmt.format(writer, "r{d}, @{d}", .{ params.src_idx, params.branch_offset + @as(i32, @intCast(i)) }),
-                            MMTypes.CastClass => try std.fmt.format(writer, "r{d}, t{d}, r{d}", .{ params.dst_idx, params.type_idx, params.src_idx }),
-                            MMTypes.NewObjectClass => try std.fmt.format(writer, "r{d}, t{d}", .{ params.dst_idx, params.type_idx }),
-                            MMTypes.ExternalInvokeClass => try std.fmt.format(writer, "r{d}, 0x{x}, {} ", .{ params.dst_idx, params.call_address, params.toc_switch }),
-                            else => @compileError("Unhandled class type " ++ @typeName(ParamsType)),
-                        }
-                    },
-                }
-
-                if (bytecode.type != .void)
-                    try std.fmt.format(writer, " ({s})\n", .{@tagName(bytecode.type)})
-                else
-                    try std.fmt.format(writer, "\n", .{});
-            }
+            try disassembleBytecode(writer, allocator, script, function, false);
         }
     }
 
@@ -161,4 +107,177 @@ pub fn disassembleScript(writer: anytype, script: MMTypes.Script) !void {
     // try std.fmt.format(writer, "\n", .{});
     // try std.fmt.format(writer, "script class_name: {s}\n", .{script.class_name});
     // try std.fmt.format(writer, "{}\n", .{script});
+}
+
+fn disassembleBytecode(writer: anytype, allocator: std.mem.Allocator, script: MMTypes.Script, function: *const MMTypes.FunctionDefinition, inline_asm: bool) !void {
+    var branch_targets = std.AutoHashMap(i32, void).init(allocator);
+    defer branch_targets.deinit();
+
+    if (inline_asm) {
+        for (function.bytecode.slice(script.bytecode), 0..) |bytecode, i| {
+            switch (bytecode.op) {
+                inline else => |op| {
+                    const params = @field(bytecode.params, @tagName(op));
+
+                    const ParamsType = @TypeOf(params);
+
+                    if (ParamsType == MMTypes.BranchClass) {
+                        try branch_targets.put(params.branch_offset + @as(i32, @intCast(i)), {});
+                    }
+                },
+            }
+        }
+    }
+
+    for (function.bytecode.slice(script.bytecode), function.line_numbers.slice(script.line_numbers), 0..) |bytecode, line_number, i| {
+        _ = line_number; // autofix
+
+        if (inline_asm) {
+            if (branch_targets.get(@intCast(i)) != null) {
+                try writer.print("branch_{d}:\n", .{i});
+            }
+            try writer.print("    {s} ", .{@tagName(bytecode.op)});
+        } else try std.fmt.format(writer, "      {d:0>4}: 0x{x:0>16} {s} ", .{
+            i,
+            @as(u64, @bitCast(bytecode)),
+            @tagName(bytecode.op),
+        });
+
+        switch (bytecode.op) {
+            inline else => |op| {
+                const params = @field(bytecode.params, @tagName(op));
+
+                const ParamsType = @TypeOf(params);
+
+                std.debug.print("op {}\n", .{op});
+
+                switch (ParamsType) {
+                    MMTypes.NopClass => {},
+                    MMTypes.LoadConstClass => {
+                        switch (op) {
+                            .LCsw => try std.fmt.format(writer, "r{d}, \"{}\"", .{
+                                params.dst_idx,
+                                std.unicode.fmtUtf16Le(script.w_string_table.strings[params.constant_idx]),
+                            }),
+                            .LCsa => try std.fmt.format(writer, "r{d}, \"{s}\"", .{
+                                params.dst_idx,
+                                script.a_string_table.strings[params.constant_idx],
+                            }),
+                            .LCi => try std.fmt.format(writer, "r{d}, {d}", .{ params.dst_idx, params.constant_idx }),
+                            .LCb => try std.fmt.format(writer, "r{d}, {}", .{ params.dst_idx, (params.constant_idx >> 31) > 0 }),
+                            .LCf => try std.fmt.format(writer, "r{d}, {}", .{ params.dst_idx, @as(f32, @bitCast(params.constant_idx)) }),
+                            else => try std.fmt.format(writer, "r{d}, cid{d}", .{
+                                params.dst_idx,
+                                params.constant_idx,
+                            }),
+                        }
+                    },
+                    MMTypes.UnaryClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.src_idx }),
+                    MMTypes.BinaryClass => try std.fmt.format(writer, "r{d}, r{d}, r{d}", .{
+                        params.dst_idx,
+                        params.src_a_idx,
+                        params.src_b_idx,
+                    }),
+                    MMTypes.GetBuiltinMemberClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
+                    MMTypes.SetBuiltinMemberClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.src_idx, params.base_idx }),
+                    MMTypes.GetMemberClass => {
+                        if (op == .GET_RP_MEMBER) {
+                            try std.fmt.format(writer, "r{d}, r{d}, {s}.{s}", .{
+                                params.dst_idx,
+                                params.base_idx,
+                                script.a_string_table.strings[script.type_references[script.field_references[params.field_ref].type_reference].type_name],
+                                script.a_string_table.strings[script.field_references[params.field_ref].name],
+                            });
+                        } else if (script.type_references[script.field_references[params.field_ref].type_reference].type_name == 0xFFFFFFFF) {
+                            try std.fmt.format(writer, "r{d}, r{d}, g{d}.{s}", .{
+                                params.dst_idx,
+                                params.base_idx,
+                                script.type_references[script.field_references[params.field_ref].type_reference].script.?.guid,
+                                script.a_string_table.strings[script.field_references[params.field_ref].name],
+                            });
+                        } else try std.fmt.format(writer, "r{d}, r{d}, {s}.{s}", .{
+                            params.dst_idx,
+                            params.base_idx,
+                            script.a_string_table.strings[script.type_references[script.field_references[params.field_ref].type_reference].type_name],
+                            script.a_string_table.strings[script.field_references[params.field_ref].name],
+                        });
+                    },
+                    MMTypes.SetMemberClass => {
+                        if (op == .SET_RP_MEMBER) {
+                            try std.fmt.format(writer, "r{d}, {s}.{s}, r{d}", .{
+                                params.base_idx,
+                                script.a_string_table.strings[script.type_references[script.field_references[params.field_ref].type_reference].type_name],
+                                script.a_string_table.strings[script.field_references[params.field_ref].name],
+                                params.src_idx,
+                            });
+                        } else if (script.type_references[script.field_references[params.field_ref].type_reference].type_name == 0xFFFFFFFF) {
+                            try std.fmt.format(writer, "r{d}, g{d}.{s}, r{d}", .{
+                                params.base_idx,
+                                script.type_references[script.field_references[params.field_ref].type_reference].script.?.guid,
+                                script.a_string_table.strings[script.field_references[params.field_ref].name],
+                                params.src_idx,
+                            });
+                        } else try std.fmt.format(writer, "r{d}, {s}.{s}, r{d}", .{
+                            params.base_idx,
+                            script.a_string_table.strings[script.type_references[script.field_references[params.field_ref].type_reference].type_name],
+                            script.a_string_table.strings[script.field_references[params.field_ref].name],
+                            params.src_idx,
+                        });
+                    },
+                    MMTypes.GetElementClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.dst_idx, params.base_idx }),
+                    MMTypes.SetElementClass => try std.fmt.format(writer, "r{d}, r{d}", .{ params.src_idx, params.base_idx }),
+                    MMTypes.NewArrayClass => try std.fmt.format(writer, "r{d}, t{d}[r{d}]", .{
+                        params.dst_idx,
+                        params.type_idx,
+                        params.size_idx,
+                    }),
+                    MMTypes.WriteClass => try std.fmt.format(writer, "r{d}", .{params.src_idx}),
+                    MMTypes.ArgClass => try std.fmt.format(writer, "a{d}, r{d}", .{ params.arg_idx, params.src_idx }),
+                    MMTypes.CallClass => {
+                        if (params.call_idx >= script.function_references.len)
+                            try std.fmt.format(writer, "r{d}, ??? {d}", .{ params.dst_idx, params.call_idx })
+                        else if (script.type_references[script.function_references[params.call_idx].type_reference].type_name == 0xFFFFFFFF)
+                            try std.fmt.format(writer, "r{d}, g{d}.{s}", .{
+                                params.dst_idx,
+                                script.type_references[script.function_references[params.call_idx].type_reference].script.?.guid,
+                                script.a_string_table.strings[script.function_references[params.call_idx].name],
+                            })
+                        else
+                            try std.fmt.format(writer, "r{d}, {s}.{s}", .{
+                                params.dst_idx,
+                                script.a_string_table.strings[script.type_references[script.function_references[params.call_idx].type_reference].type_name],
+                                script.a_string_table.strings[script.function_references[params.call_idx].name],
+                            });
+                    },
+                    MMTypes.ReturnClass => try std.fmt.format(writer, "r{d}", .{params.src_idx}),
+                    MMTypes.BranchClass => {
+                        if (inline_asm) try std.fmt.format(writer, "branch_{d}, r{d}", .{
+                            params.branch_offset + @as(i32, @intCast(i)),
+                            params.src_idx,
+                        }) else try std.fmt.format(writer, "r{d}, @{d}", .{
+                            params.src_idx,
+                            params.branch_offset + @as(i32, @intCast(i)),
+                        });
+                    },
+                    MMTypes.CastClass => try std.fmt.format(writer, "r{d}, t{d}, r{d}", .{
+                        params.dst_idx,
+                        params.type_idx,
+                        params.src_idx,
+                    }),
+                    MMTypes.NewObjectClass => try std.fmt.format(writer, "r{d}, t{d}", .{ params.dst_idx, params.type_idx }),
+                    MMTypes.ExternalInvokeClass => try std.fmt.format(writer, "r{d}, 0x{x}, {} ", .{
+                        params.dst_idx,
+                        params.call_address,
+                        params.toc_switch,
+                    }),
+                    else => @compileError("Unhandled class type " ++ @typeName(ParamsType)),
+                }
+            },
+        }
+
+        if (bytecode.type != .void)
+            try std.fmt.format(writer, " ({s})\n", .{@tagName(bytecode.type)})
+        else
+            try std.fmt.format(writer, "\n", .{});
+    }
 }

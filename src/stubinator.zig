@@ -72,8 +72,6 @@ pub fn generateStubs(
             {
                 const enum_name = type_name[script.class_name.len + 1 ..];
 
-                std.debug.print("found enum {s} ({s})\n", .{ enum_name, type_name });
-
                 // We cant really guess at the enum *contents*, but we can just emit an empty enum and im sure its fine
                 try writer.print("    pub enum {s} : {s} {{}}\n", .{ enum_name, @tagName(type_reference.fish_type) });
             }
