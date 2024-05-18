@@ -45,27 +45,39 @@ pub const Script = struct {
 };
 
 /// Demangles a function name
-pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std.mem.Allocator) ![]const u8 {
+/// Caller owns the returned parameters, but name is a slice of `orig`
+pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std.mem.Allocator) !struct { []const u8, ?[]const []const u8 } {
     const sep_index = std.mem.lastIndexOf(u8, orig, "__").?;
 
     const name = orig[0..sep_index];
 
     if (!extract_args)
-        return try allocator.dupe(u8, name);
+        return .{ name, null };
 
     const args_str = orig[sep_index + 2 ..];
 
-    var demangled = std.ArrayList(u8).init(allocator);
-    defer demangled.deinit();
+    var parameters = std.ArrayList([]const u8).init(allocator);
+    defer parameters.deinit();
 
-    try demangled.appendSlice(name);
-    try demangled.appendSlice("(");
+    var parameter_temp = std.ArrayList(u8).init(allocator);
+    defer parameter_temp.deinit();
 
     var i: usize = 0;
     while (i < args_str.len) : (i += 1) {
-        if (i > 0) try demangled.appendSlice(", ");
+        parameter_temp.clearRetainingCapacity();
 
-        const c = args_str[i];
+        var c = args_str[i];
+
+        var indirection_count: u8 = 0;
+
+        // Handle arrays, which are marked by a [ prefix
+        while (args_str[i] == '[') {
+            indirection_count += 1;
+
+            i += 1;
+            c = args_str[i];
+        }
+
         if (c == 'Q') {
             var digit_count: usize = 0;
 
@@ -81,21 +93,30 @@ pub fn demangleFunctionName(orig: []const u8, extract_args: bool, allocator: std
 
             const type_name = args_str[i + 1 + digit_count .. i + 1 + digit_count + count];
 
-            try demangled.appendSlice(type_name);
+            try parameter_temp.appendSlice(type_name);
+            for (0..indirection_count) |_| {
+                try parameter_temp.appendSlice("[]");
+            }
+
+            try parameters.append(try allocator.dupe(u8, parameter_temp.items));
 
             //Skip the whole parameter
             i += digit_count + count;
+
             continue;
         }
 
         const fish_type = FishType.fromMangledId(c);
 
-        try demangled.appendSlice(@tagName(fish_type));
+        try parameter_temp.appendSlice(@tagName(fish_type));
+        for (0..indirection_count) |_| {
+            try parameter_temp.appendSlice("[]");
+        }
+
+        try parameters.append(try allocator.dupe(u8, parameter_temp.items));
     }
 
-    try demangled.appendSlice(")");
-
-    return demangled.toOwnedSlice();
+    return .{ name, try parameters.toOwnedSlice() };
 }
 
 pub const NopClass = packed struct(u48) {
@@ -207,8 +228,7 @@ pub const BranchClass = packed struct(u48) {
 pub const ExternalInvokeClass = packed struct(u48) {
     dst_idx: u16,
     call_address: u24,
-    toc_switch: bool,
-    _unused: u7 = undefined,
+    toc_index: u8,
 };
 
 pub const Bytecode = packed struct(u64) {
@@ -1053,6 +1073,7 @@ pub const TaggedInstruction = union(enum(u8)) {
     EXT_INVOKE: ExternalInvokeClass = 0xce,
 
     pub inline fn destructure(tagged: TaggedInstruction) struct { InstructionType, InstructionParams } {
+        @setEvalBranchQuota(10000);
         return .{
             tagged,
             switch (tagged) {

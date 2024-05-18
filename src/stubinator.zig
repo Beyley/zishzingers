@@ -3,6 +3,7 @@
 const std = @import("std");
 
 const MMTypes = @import("MMTypes.zig");
+const Disasm = @import("disasm.zig");
 
 pub fn generateStubs(
     writer: anytype,
@@ -130,10 +131,15 @@ pub fn generateStubs(
             if (property.get_function == func_idx or property.set_function == func_idx)
                 continue :func;
 
-        const function_name = script.a_string_table.strings[function.name];
+        const mangled_name = script.a_string_table.strings[function.name];
 
-        const demangled_name = try MMTypes.demangleFunctionName(function_name, false, allocator);
-        defer allocator.free(demangled_name);
+        const demangled_name, const parameters = try MMTypes.demangleFunctionName(mangled_name, true, allocator);
+        defer {
+            for (parameters.?) |parameter|
+                allocator.free(parameter);
+
+            allocator.free(parameters.?);
+        }
 
         //Skip init functions
         if (std.mem.eql(u8, demangled_name, ".init")) {
@@ -143,7 +149,7 @@ pub fn generateStubs(
         if (std.mem.eql(u8, demangled_name, ".ctor")) {
             try writer.print("    {} {s}", .{ function.modifiers, script.class_name });
             try writer.writeByte('(');
-            try formatParameters(writer, script_lookup, function, script);
+            try formatParameters(writer, script_lookup, function, script, parameters.?);
             try writer.writeAll(");\n");
             continue;
         }
@@ -154,7 +160,7 @@ pub fn generateStubs(
 
         try writer.print("    {} fn {s}", .{ function.modifiers, demangled_name });
         try writer.writeByte('(');
-        try formatParameters(writer, script_lookup, function, script);
+        try formatParameters(writer, script_lookup, function, script, parameters.?);
         try writer.writeAll(") -> ");
         try formatType(
             writer,
@@ -162,7 +168,36 @@ pub fn generateStubs(
             script,
             script.type_references[function.type_reference],
         );
-        try writer.writeAll(";\n");
+
+        const bytecode = function.bytecode.slice(script.bytecode);
+
+        if (bytecode.len > 0) {
+            try writer.writeAll(
+                \\ {
+                \\        inline_asm 
+                \\        {
+                \\
+            );
+
+            try Disasm.disassembleBytecode(
+                writer,
+                allocator,
+                script,
+                &function,
+                2,
+                true,
+            );
+
+            try writer.writeAll(
+                \\        }
+                \\
+                \\        unreachable;
+                \\    }
+                \\
+            );
+        } else {
+            try writer.writeAll(";\n");
+        }
     }
     try writer.writeAll("}\n");
 }
@@ -172,8 +207,12 @@ fn formatParameters(
     script_lookup: std.AutoHashMap(u32, MMTypes.Script),
     function: MMTypes.FunctionDefinition,
     script: MMTypes.Script,
+    parameter_type_names: []const []const u8,
 ) !void {
-    for (function.arguments.slice(script.arguments), 0..) |argument, i| {
+    _ = script_lookup; // autofix
+
+    for (function.arguments.slice(script.arguments), parameter_type_names, 0..) |argument, parameter_type_name, i| {
+
         // Try to resolve a name for this argument using the local variables,
         // since arguments themselves dont actually store the names.
         // This is generally safe since the original compiler isnt really good at re-using registers
@@ -197,12 +236,13 @@ fn formatParameters(
         else
             try writer.print("arg{d}: ", .{i});
 
-        try formatType(
-            writer,
-            script_lookup,
-            script,
-            script.type_references[argument.type_reference],
-        );
+        try writer.writeAll(parameter_type_name);
+        // try formatType(
+        //     writer,
+        //     script_lookup,
+        //     script,
+        //     script.type_references[argument.type_reference],
+        // );
     }
 }
 

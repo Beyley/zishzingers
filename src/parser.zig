@@ -88,10 +88,8 @@ pub const Type = union(enum) {
             }
         };
 
-        /// This is a normal fish type which exists at runtime
         fish: MMTypes.TypeReference,
         pointer: Pointer,
-        /// This is a type which only exists at compile time, and represents a type, eg. the expression is pointing to a Type
         type: []const u8,
         integer_literal: void,
         float_literal: void,
@@ -126,11 +124,8 @@ pub const Type = union(enum) {
         }
     };
 
-    /// An unresolved type
     parsed: Parsed,
-    /// An unknown type, waiting to be resolved
     unknown: void,
-    /// A resolved type
     resolved: Resolved,
 };
 
@@ -315,9 +310,7 @@ pub const Node = union(enum) {
             },
             dereference: UnaryExpression,
             class_name: []const u8,
-            /// An access on a variable of some kind (eg `var.Field`), or a class type (eg `Thing.Func()`)
             variable_or_class_access: []const u8,
-            /// An access of a class
             class_access: []const u8,
             variable_access: []const u8,
             numeric_negation: UnaryExpression,
@@ -455,10 +448,15 @@ pub const Node = union(enum) {
     pub const Attribute = union(enum) {
         pub const NativeInvoke = struct {
             address: u24,
-            toc_switch: bool,
+            toc_index: u8,
         };
 
         native_invoke: NativeInvoke,
+    };
+
+    pub const InlineAsmStatement = struct {
+        bytecode: []Bytecode,
+        jump_targets: std.StringHashMap(u32),
     };
 
     using: *Using,
@@ -476,6 +474,7 @@ pub const Node = union(enum) {
     if_statement: *IfStatement,
     while_statement: *WhileStatement,
     attribute: *Attribute,
+    inline_asm_statement: *InlineAsmStatement,
 };
 
 pub const Tree = struct {
@@ -530,7 +529,6 @@ pub fn SliceIterator(comptime T: type) type {
     };
 }
 
-///Parses a script, caller has to free the resulting `Tree` object
 pub fn parse(allocator: std.mem.Allocator, lexemes: []const Lexeme) Error!Tree {
     var tree: Tree = .{
         .allocator = allocator,
@@ -547,10 +545,10 @@ pub fn parse(allocator: std.mem.Allocator, lexemes: []const Lexeme) Error!Tree {
     return tree;
 }
 
-const KeywordHash = u72;
+const KeywordHash = u80;
 
 fn maybeHashKeyword(keyword: []const u8) ?KeywordHash {
-    if (keyword.len > (@bitSizeOf(u72) / 8)) {
+    if (keyword.len > (@bitSizeOf(KeywordHash) / 8)) {
         return null;
     }
 
@@ -658,7 +656,7 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifi
                 attribute.* = .{
                     .native_invoke = .{
                         .address = @intCast(parameters[0].contents.integer_literal.value),
-                        .toc_switch = parameters[1].contents.bool_literal,
+                        .toc_index = @intCast(parameters[1].contents.integer_literal.value),
                     },
                 };
             } else {
@@ -857,7 +855,7 @@ fn consumeFieldOrProperty(
     }
 }
 
-pub const Error = std.mem.Allocator.Error || std.fmt.ParseIntError;
+pub const Error = std.mem.Allocator.Error || std.fmt.ParseIntError || error{InvalidUtf8};
 
 fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
     const body_node = try allocator.create(Node.Expression);
@@ -910,6 +908,12 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
                     try body.append(while_statement);
                     break :blk true;
                 },
+                hashKeyword("inline_asm") => {
+                    const inline_asm_statement = try consumeInlineAsmStatement(allocator, iter);
+
+                    try body.append(inline_asm_statement);
+                    break :blk true;
+                },
                 else => {
                     break :blk false;
                 },
@@ -935,6 +939,482 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
     body_node.* = .{ .contents = .{ .block = try body.toOwnedSlice() }, .type = .unknown };
 
     return body_node;
+}
+
+fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
+    const node = try allocator.create(Node.InlineAsmStatement);
+
+    consumeArbitraryLexeme(iter, "inline_asm");
+
+    var bytecode = std.ArrayList(Bytecode).init(allocator);
+    var targets = std.StringHashMap(u32).init(allocator);
+
+    consumeArbitraryLexeme(iter, "{");
+
+    while (!consumeArbitraryLexemeIfAvailable(iter, "}")) {
+        const name = iter.next() orelse @panic("EOF parsing op");
+
+        const parsed_op = std.meta.stringToEnum(MMTypes.InstructionType, name);
+
+        if (parsed_op == null) {
+            if (consumeArbitraryLexemeIfAvailable(iter, ":")) {
+                try targets.putNoClobber(name, @intCast(bytecode.items.len));
+            } else std.debug.panic("wat {s} {s} {s}", .{ iter.slice[iter.pos - 2], name, iter.peek().? });
+        } else switch (parsed_op.?) {
+            inline else => |op| {
+                const ParamType = @TypeOf(@field(@as(MMTypes.InstructionParams, undefined), @tagName(op)));
+
+                switch (ParamType) {
+                    MMTypes.NopClass => {
+                        try bytecode.append(Bytecode{
+                            .op = .{ .NOP = .{} },
+                            .machine_type = .void,
+                        });
+                    },
+                    MMTypes.LoadConstClass => try bytecode.append(.{
+                        .op = switch (op) {
+                            .LCb => .{
+                                .LCb = .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .value = switch (hashKeyword(iter.next().?)) {
+                                        hashKeyword("true") => true,
+                                        hashKeyword("false") => false,
+                                        else => @panic("thnseoa"),
+                                    },
+                                },
+                            },
+                            .LCc => .{
+                                .LCc = .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .value = blk: {
+                                        consumeArbitraryLexeme(iter, "'");
+                                        const char = iter.next().?;
+                                        consumeArbitraryLexeme(iter, "'");
+
+                                        std.debug.assert(char.len == 1);
+
+                                        // TODO: make this handle unicode
+                                        break :blk char[0];
+                                    },
+                                },
+                            },
+                            .LCi => .{
+                                .LCi = .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .value = blk: {
+                                        const is_negative = consumeArbitraryLexemeIfAvailable(iter, "-");
+
+                                        const int = try std.fmt.parseInt(i33, iter.next().?, 0);
+
+                                        break :blk if (is_negative) @intCast(-int) else @intCast(int);
+                                    },
+                                },
+                            },
+                            .LCf => .{
+                                .LCf = .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .value = blk: {
+                                        const is_negative = consumeArbitraryLexemeIfAvailable(iter, "-");
+                                        const int = try std.fmt.parseFloat(f32, iter.next().?);
+
+                                        break :blk if (is_negative) -int else int;
+                                    },
+                                },
+                            },
+                            .LCsa => .{
+                                .LCsa = .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .value = blk: {
+                                        break :blk try unwrapStringLiteral(allocator, iter.next().?);
+                                    },
+                                },
+                            },
+                            .LCsw => .{
+                                .LCsw = .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .value = blk: {
+                                        break :blk try std.unicode.utf8ToUtf16LeAlloc(allocator, try unwrapStringLiteral(allocator, iter.next().?));
+                                    },
+                                },
+                            },
+                            inline .LC_NULLsp, .LC_NULLo => |tag| @unionInit(Bytecode.Params, @tagName(tag), .{
+                                .dst_idx = try consumeRegister(iter, false),
+                            }),
+                            .LCv4 => .{
+                                .LCv4 = .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .value = blk: {
+                                        const x_neg = consumeArbitraryLexemeIfAvailable(iter, "-");
+                                        const x = try std.fmt.parseFloat(f32, iter.next().?);
+                                        consumeArbitraryLexeme(iter, ",");
+
+                                        const y_neg = consumeArbitraryLexemeIfAvailable(iter, "-");
+                                        const y = try std.fmt.parseFloat(f32, iter.next().?);
+                                        consumeArbitraryLexeme(iter, ",");
+
+                                        const z_neg = consumeArbitraryLexemeIfAvailable(iter, "-");
+                                        const z = try std.fmt.parseFloat(f32, iter.next().?);
+                                        consumeArbitraryLexeme(iter, ",");
+
+                                        const w_neg = consumeArbitraryLexemeIfAvailable(iter, "-");
+                                        const w = try std.fmt.parseFloat(f32, iter.next().?);
+
+                                        break :blk .{
+                                            if (x_neg) -x else x,
+                                            if (y_neg) -y else y,
+                                            if (z_neg) -z else z,
+                                            if (w_neg) -w else w,
+                                        };
+                                    },
+                                },
+                            },
+                            .LCs64 => .{
+                                .LCs64 = .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .value = blk: {
+                                        const is_negative = consumeArbitraryLexemeIfAvailable(iter, "-");
+                                        const int = try std.fmt.parseInt(i64, iter.next().?, 0);
+
+                                        break :blk if (is_negative) -int else int;
+                                    },
+                                },
+                            },
+                            else => @compileError("wrong op " ++ @tagName(op)),
+                        },
+                        .machine_type = .void,
+                    }),
+                    MMTypes.UnaryClass => try bytecode.append(Bytecode{
+                        .op = switch (op) {
+                            inline else => |tag| blk: {
+                                if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.UnaryClass)
+                                    unreachable;
+
+                                break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .src_idx = try consumeRegister(iter, false),
+                                });
+                            },
+                        },
+                        .machine_type = consumeMachineType(iter) orelse .void,
+                    }),
+                    MMTypes.BinaryClass => try bytecode.append(Bytecode{
+                        .op = switch (op) {
+                            inline else => |tag| blk: {
+                                if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.BinaryClass)
+                                    unreachable;
+
+                                break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .src_a_idx = try consumeRegister(iter, true),
+                                    .src_b_idx = try consumeRegister(iter, false),
+                                });
+                            },
+                        },
+                        .machine_type = consumeMachineType(iter) orelse .void,
+                    }),
+                    MMTypes.GetBuiltinMemberClass => try bytecode.append(Bytecode{
+                        .op = switch (op) {
+                            inline else => |tag| blk: {
+                                if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.GetBuiltinMemberClass)
+                                    unreachable;
+
+                                break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .base_idx = try consumeRegister(iter, false),
+                                });
+                            },
+                        },
+                        .machine_type = consumeMachineType(iter) orelse .void,
+                    }),
+                    MMTypes.SetBuiltinMemberClass => try bytecode.append(Bytecode{
+                        .op = switch (op) {
+                            inline else => |tag| blk: {
+                                if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.SetBuiltinMemberClass)
+                                    unreachable;
+
+                                break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                    .base_idx = try consumeRegister(iter, true),
+                                    .src_idx = try consumeRegister(iter, false),
+                                });
+                            },
+                        },
+                        .machine_type = consumeMachineType(iter) orelse .void,
+                    }),
+                    MMTypes.GetMemberClass => {
+                        const dst_idx = try consumeRegister(iter, true);
+                        const base_idx = try consumeRegister(iter, true);
+
+                        const full_name = iter.next().?;
+
+                        var split_iter = std.mem.splitScalar(u8, full_name, '.');
+
+                        const type_name = split_iter.next().?;
+                        const field_name = full_name[split_iter.index.?..];
+
+                        try bytecode.append(Bytecode{
+                            .op = switch (op) {
+                                inline else => |tag| blk: {
+                                    if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.GetMemberClass)
+                                        unreachable;
+
+                                    break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                        .dst_idx = dst_idx,
+                                        .base_idx = base_idx,
+                                        .type = Type{
+                                            .parsed = .{
+                                                .name = type_name,
+                                                .base_type = null,
+                                                .dimension_count = 0,
+                                                .indirection_count = 0,
+                                            },
+                                        },
+                                        .field = field_name,
+                                    });
+                                },
+                            },
+                            .machine_type = consumeMachineType(iter).?,
+                        });
+                    },
+                    MMTypes.SetMemberClass => {
+                        const base_idx = try consumeRegister(iter, true);
+
+                        const full_name = iter.next().?;
+
+                        var split_iter = std.mem.splitScalar(u8, full_name, '.');
+
+                        const type_name = split_iter.next().?;
+                        const field_name = full_name[split_iter.index.?..];
+
+                        consumeArbitraryLexeme(iter, ",");
+
+                        const src_idx = try consumeRegister(iter, false);
+
+                        try bytecode.append(Bytecode{
+                            .op = switch (op) {
+                                inline else => |tag| blk: {
+                                    if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.SetMemberClass)
+                                        unreachable;
+
+                                    break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                        .base_idx = base_idx,
+                                        .type = Type{
+                                            .parsed = .{
+                                                .name = type_name,
+                                                .base_type = null,
+                                                .dimension_count = 0,
+                                                .indirection_count = 0,
+                                            },
+                                        },
+                                        .field = field_name,
+                                        .src_idx = src_idx,
+                                    });
+                                },
+                            },
+                            .machine_type = consumeMachineType(iter).?,
+                        });
+                    },
+                    MMTypes.GetElementClass => try bytecode.append(Bytecode{
+                        .op = switch (op) {
+                            inline else => |tag| blk: {
+                                if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.GetElementClass)
+                                    unreachable;
+
+                                break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .base_idx = try consumeRegister(iter, true),
+                                    .src_or_index_idx = try consumeRegister(iter, false),
+                                });
+                            },
+                        },
+                        .machine_type = consumeMachineType(iter) orelse .void,
+                    }),
+                    MMTypes.SetElementClass => try bytecode.append(Bytecode{
+                        .op = switch (op) {
+                            inline else => |tag| blk: {
+                                if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.SetElementClass)
+                                    unreachable;
+
+                                break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                    .base_idx = try consumeRegister(iter, true),
+                                    .src_idx = try consumeRegister(iter, true),
+                                    .index_idx = try consumeRegister(iter, false),
+                                });
+                            },
+                        },
+                        .machine_type = consumeMachineType(iter) orelse .void,
+                    }),
+                    MMTypes.NewArrayClass => try bytecode.append(Bytecode{
+                        .op = switch (op) {
+                            inline else => |tag| blk: {
+                                if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.NewArrayClass)
+                                    unreachable;
+
+                                break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .type = .{ .parsed = .{
+                                        .base_type = null,
+                                        .dimension_count = 0,
+                                        .indirection_count = 0,
+                                        .name = iter.next().?,
+                                    } },
+                                    .size_idx = size_idx: {
+                                        consumeArbitraryLexeme(iter, ",");
+
+                                        break :size_idx try consumeRegister(iter, false);
+                                    },
+                                });
+                            },
+                        },
+                        .machine_type = consumeMachineType(iter) orelse .void,
+                    }),
+                    MMTypes.WriteClass => try bytecode.append(Bytecode.init(.{ .WRITE = .{
+                        .src_idx = try consumeRegister(iter, false),
+                    } }, consumeMachineType(iter).?)),
+                    MMTypes.ArgClass => {
+                        try bytecode.append(Bytecode{
+                            .op = .{
+                                .ARG = .{
+                                    .arg_idx = try consumeRegister(iter, true),
+                                    .src_idx = try consumeRegister(iter, false),
+                                },
+                            },
+                            .machine_type = consumeMachineType(iter).?,
+                        });
+                    },
+                    MMTypes.CallClass => {
+                        try bytecode.append(.{
+                            .op = switch (op) {
+                                inline else => |tag| blk: {
+                                    if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.CallClass)
+                                        unreachable;
+
+                                    const dst_idx = try consumeRegister(iter, true);
+
+                                    const full_name = iter.next().?;
+
+                                    var split_iter = std.mem.splitScalar(u8, full_name, '.');
+
+                                    const type_name = split_iter.next().?;
+                                    const function_name = full_name[split_iter.index.?..];
+
+                                    break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                        .dst_idx = dst_idx,
+                                        .type = .{ .parsed = .{
+                                            .name = type_name,
+                                            .base_type = null,
+                                            .dimension_count = 0,
+                                            .indirection_count = 0,
+                                        } },
+                                        .function = .{ .name = function_name },
+                                    });
+                                },
+                            },
+                            .machine_type = consumeMachineType(iter) orelse .void,
+                        });
+                    },
+                    MMTypes.ReturnClass => {
+                        try bytecode.append(Bytecode{
+                            .op = .{ .RET = .{ .src_idx = try consumeRegister(iter, false) } },
+                            .machine_type = consumeMachineType(iter) orelse .void,
+                        });
+                    },
+                    MMTypes.BranchClass => {
+                        try bytecode.append(.{
+                            .op = switch (op) {
+                                inline else => |tag| blk: {
+                                    if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.BranchClass)
+                                        unreachable;
+
+                                    break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                        .target = iter.next().?,
+                                        .src_idx = if (op == .B) std.math.maxInt(u16) else src_idx: {
+                                            consumeArbitraryLexeme(iter, ",");
+
+                                            break :src_idx try consumeRegister(iter, false);
+                                        },
+                                    });
+                                },
+                            },
+                            .machine_type = .void,
+                        });
+                    },
+                    MMTypes.CastClass => try bytecode.append(.{
+                        .op = switch (op) {
+                            inline else => |tag| blk: {
+                                if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.CastClass)
+                                    unreachable;
+
+                                break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .type = .{
+                                        .parsed = .{
+                                            .name = iter.next().?,
+                                            .base_type = null,
+                                            .indirection_count = 0,
+                                            .dimension_count = 0,
+                                        },
+                                    },
+                                    .src_idx = src_idx: {
+                                        consumeArbitraryLexeme(iter, ",");
+
+                                        break :src_idx try consumeRegister(iter, false);
+                                    },
+                                });
+                            },
+                        },
+                        .machine_type = .void,
+                    }),
+                    MMTypes.NewObjectClass => try bytecode.append(Bytecode{
+                        .op = switch (op) {
+                            inline else => |tag| blk: {
+                                if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.NewObjectClass)
+                                    unreachable;
+
+                                break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
+                                    .dst_idx = try consumeRegister(iter, true),
+                                    .type = .{ .parsed = .{
+                                        .base_type = null,
+                                        .dimension_count = 0,
+                                        .indirection_count = 0,
+                                        .name = iter.next().?,
+                                    } },
+                                });
+                            },
+                        },
+                        .machine_type = consumeMachineType(iter) orelse .void,
+                    }),
+                    MMTypes.ExternalInvokeClass => @panic("TODO"),
+                    else => |unhandled_type| @compileError("Unhandled type " ++ @typeName(unhandled_type)),
+                }
+            },
+        }
+    }
+
+    node.* = .{
+        .bytecode = bytecode.items,
+        .jump_targets = targets,
+    };
+
+    return .{ .inline_asm_statement = node };
+}
+
+fn consumeRegister(iter: *SliceIterator(Lexeme), want_comma: bool) !u16 {
+    const register = iter.next().?;
+
+    if (want_comma)
+        consumeArbitraryLexeme(iter, ",");
+
+    return try std.fmt.parseInt(u16, register[1..], 10);
+}
+
+// Consumes a machine type wrapped in parentheses
+fn consumeMachineType(iter: *SliceIterator(Lexeme)) ?MMTypes.MachineType {
+    if (consumeArbitraryLexemeIfAvailable(iter, "(")) {
+        const name = iter.next().?;
+        consumeArbitraryLexeme(iter, ")");
+
+        return std.meta.stringToEnum(MMTypes.MachineType, name).?;
+    } else return null;
 }
 
 fn isInt(comptime T: type, str: []const u8) !?T {
@@ -1472,7 +1952,7 @@ fn MatchEnum(comptime matches: []const [:0]const u8) type {
 
 fn consumeAnyMatches(iter: *SliceIterator(Lexeme), comptime matches: []const [:0]const u8) ?MatchEnum(matches) {
     const matches_keywords = comptime blk: {
-        var keywords: [matches.len]u72 = undefined;
+        var keywords: [matches.len]KeywordHash = undefined;
 
         for (matches, 0..) |match, i| {
             keywords[i] = hashKeyword(match);
@@ -1944,6 +2424,8 @@ fn unwrapStringLiteral(allocator: std.mem.Allocator, literal: []const u8) ![]con
         if (c == '\\') {
             switch (raw[i + 1]) {
                 'n' => try unescaped_literal.append('\n'),
+                'r' => try unescaped_literal.append('\r'),
+                '\'' => try unescaped_literal.append('\''),
                 else => |escape_char| std.debug.panic("unknown escape character {c}", .{escape_char}),
             }
             i += 1;
@@ -1956,12 +2438,13 @@ fn unwrapStringLiteral(allocator: std.mem.Allocator, literal: []const u8) ![]con
     return unescaped_literal.items;
 }
 
-/// Turns a source into a stream of lexemes
 pub const Lexemeizer = struct {
     source: []const u8,
     pos: usize = 0,
+    is_asm: bool = false,
 
-    const single_char_lexemes: []const u8 = "()[]{}!*,:;+.'<>+-@";
+    const normal_single_char_lexemes: []const u8 = "()[]{}!*,:;+.'<>+-@";
+    const asm_single_char_lexemes: []const u8 = "(){}!*,:;+'<>+-@";
     const special_double_lexemes: []const u16 = &.{
         @intCast(hashKeyword("->")),
         @intCast(hashKeyword(">>")),
@@ -1974,6 +2457,11 @@ pub const Lexemeizer = struct {
 
     pub fn next(self: *Lexemeizer) !?Lexeme {
         const iter = self.source[self.pos..];
+
+        const single_char_lexemes = if (self.is_asm)
+            asm_single_char_lexemes
+        else
+            normal_single_char_lexemes;
 
         var is_number = true;
         var lexeme_start: ?usize = null;
@@ -2020,8 +2508,8 @@ pub const Lexemeizer = struct {
                 if (is_long_string)
                     i += 1;
 
-                //Skip over all non ' characters
-                while (iter[i] != '\'') {
+                //Skip over all non ' characters which do not start with \ (eg. an escaped apostrophe)
+                while (iter[i] != '\'' or iter[i - 1] == '\\') {
                     i += 1;
                 }
 
@@ -2071,6 +2559,353 @@ pub const Lexemeizer = struct {
 
         self.pos += i;
 
-        return iter[lexeme_start.?..i];
+        const lexeme = iter[lexeme_start.?..i];
+
+        // When we hit an inline ASM block, we need to change some parameters of the parser (like that `.` is no longer a single char lexeme) due to function names containing `.`
+        if (std.mem.eql(u8, lexeme, "inline_asm")) {
+            self.is_asm = true;
+        }
+
+        if (self.is_asm and lexeme[0] == '}') {
+            self.is_asm = false;
+        }
+
+        return lexeme;
+    }
+};
+
+pub const Bytecode = struct {
+    pub const Params = union(MMTypes.InstructionType) {
+        pub const NopClass = struct {};
+        pub const CastClass = struct {
+            dst_idx: u16,
+            src_idx: u16,
+            type: Type,
+        };
+        pub const UnaryClass = struct {
+            dst_idx: u16,
+            src_idx: u16,
+        };
+        pub const BinaryClass = struct {
+            dst_idx: u16,
+            src_a_idx: u16,
+            src_b_idx: u16,
+        };
+        pub const GetBuiltinMemberClass = struct {
+            dst_idx: u16,
+            base_idx: u16,
+        };
+        pub const SetBuiltinMemberClass = struct {
+            src_idx: u16,
+            base_idx: u16,
+        };
+        pub const GetMemberClass = struct {
+            dst_idx: u16,
+            base_idx: u16,
+            type: Type,
+            field: []const u8,
+        };
+        pub const SetMemberClass = struct {
+            src_idx: u16,
+            base_idx: u16,
+            type: Type,
+            field: []const u8,
+        };
+        pub const GetElementClass = struct {
+            dst_idx: u16,
+            base_idx: u16,
+            src_or_index_idx: u16,
+        };
+        pub const SetElementClass = struct {
+            src_idx: u16,
+            base_idx: u16,
+            index_idx: u16,
+        };
+        pub const NewObjectClass = struct {
+            dst_idx: u16,
+            type: Type,
+        };
+        pub const NewArrayClass = struct {
+            dst_idx: u16,
+            type: Type,
+            size_idx: u16,
+        };
+        pub const WriteClass = struct {
+            src_idx: u16,
+        };
+        pub const ArgClass = struct {
+            src_idx: u16,
+            arg_idx: u16,
+        };
+        pub const CallClass = struct {
+            dst_idx: u16,
+            function: union(enum) {
+                name: []const u8,
+                function: *Node.Function,
+            },
+            type: Type,
+        };
+        pub const ReturnClass = struct {
+            src_idx: u16,
+        };
+        pub const BranchClass = struct {
+            src_idx: u16,
+            target: []const u8,
+        };
+        pub const ExternalInvokeClass = struct {};
+
+        pub const LoadBoolConst = struct {
+            dst_idx: u16,
+            value: bool,
+        };
+        pub const LoadCharConst = struct {
+            dst_idx: u16,
+            value: u16,
+        };
+        pub const LoadIntConst = struct {
+            dst_idx: u16,
+            value: i32,
+        };
+        pub const LoadFloatConst = struct {
+            dst_idx: u16,
+            value: f32,
+        };
+        pub const LoadAsciiStringConst = struct {
+            dst_idx: u16,
+            value: []const u8,
+        };
+        pub const LoadWideStringConst = struct {
+            dst_idx: u16,
+            value: []const u16,
+        };
+        pub const LoadNullConst = struct {
+            dst_idx: u16,
+        };
+        pub const LoadVectorConst = struct {
+            dst_idx: u16,
+            value: [4]f32,
+        };
+        pub const LoadLongConst = struct {
+            dst_idx: u16,
+            value: i64,
+        };
+
+        NOP: NopClass,
+        LCb: LoadBoolConst,
+        LCc: LoadCharConst,
+        LCi: LoadIntConst,
+        LCf: LoadFloatConst,
+        LCsw: LoadWideStringConst,
+        LC_NULLsp: LoadNullConst,
+        MOVb: UnaryClass,
+        LOG_NEGb: UnaryClass,
+        MOVc: UnaryClass,
+        MOVi: UnaryClass,
+        INCi: UnaryClass,
+        DECi: UnaryClass,
+        NEGi: UnaryClass,
+        BIT_NEGi: UnaryClass,
+        LOG_NEGi: UnaryClass,
+        ABSi: UnaryClass,
+        MOVf: UnaryClass,
+        NEGf: UnaryClass,
+        ABSf: UnaryClass,
+        SQRTf: UnaryClass,
+        SINf: UnaryClass,
+        COSf: UnaryClass,
+        TANf: UnaryClass,
+        MOVv4: UnaryClass,
+        NEGv4: UnaryClass,
+        MOVm44: UnaryClass,
+        IT_MOV_S_DEPRECATED: NopClass,
+        MOVrp: UnaryClass,
+        MOVcp: UnaryClass,
+        MOVsp: UnaryClass,
+        MOVo: UnaryClass,
+        EQb: BinaryClass,
+        NEb: BinaryClass,
+        IT_RESERVED0_C: BinaryClass,
+        IT_RESERVED1_C: BinaryClass,
+        LTc: BinaryClass,
+        LTEc: BinaryClass,
+        GTc: BinaryClass,
+        GTEc: BinaryClass,
+        EQc: BinaryClass,
+        NEc: BinaryClass,
+        ADDi: BinaryClass,
+        SUBi: BinaryClass,
+        MULi: BinaryClass,
+        DIVi: BinaryClass,
+        MODi: BinaryClass,
+        MINi: BinaryClass,
+        MAXi: BinaryClass,
+        SLAi: BinaryClass,
+        SRAi: BinaryClass,
+        SRLi: BinaryClass,
+        BIT_ORi: BinaryClass,
+        BIT_ANDi: BinaryClass,
+        BIT_XORi: BinaryClass,
+        LTi: BinaryClass,
+        LTEi: BinaryClass,
+        GTi: BinaryClass,
+        GTEi: BinaryClass,
+        EQi: BinaryClass,
+        NEi: BinaryClass,
+        ADDf: BinaryClass,
+        SUBf: BinaryClass,
+        MULf: BinaryClass,
+        DIVf: BinaryClass,
+        MINf: BinaryClass,
+        MAXf: BinaryClass,
+        LTf: BinaryClass,
+        LTEf: BinaryClass,
+        GTf: BinaryClass,
+        GTEf: BinaryClass,
+        EQf: BinaryClass,
+        NEf: BinaryClass,
+        ADDv4: BinaryClass,
+        SUBv4: BinaryClass,
+        MULSv4: BinaryClass,
+        DIVSv4: BinaryClass,
+        DOT4v4: BinaryClass,
+        DOT3v4: BinaryClass,
+        DOT2v4: BinaryClass,
+        CROSS3v4: BinaryClass,
+        MULm44: BinaryClass,
+        IT_EQ_S_DEPRECATED: NopClass,
+        IT_NE_S_DEPRECATED: NopClass,
+        EQrp: BinaryClass,
+        NErp: BinaryClass,
+        EQo: BinaryClass,
+        NEo: BinaryClass,
+        EQsp: BinaryClass,
+        NEsp: BinaryClass,
+        GET_V4_X: GetBuiltinMemberClass,
+        GET_V4_Y: GetBuiltinMemberClass,
+        GET_V4_Z: GetBuiltinMemberClass,
+        GET_V4_W: GetBuiltinMemberClass,
+        GET_V4_LEN2: GetBuiltinMemberClass,
+        GET_V4_LEN3: GetBuiltinMemberClass,
+        GET_V4_LEN4: GetBuiltinMemberClass,
+        GET_M44_XX: GetBuiltinMemberClass,
+        GET_M44_XY: GetBuiltinMemberClass,
+        GET_M44_XZ: GetBuiltinMemberClass,
+        GET_M44_XW: GetBuiltinMemberClass,
+        GET_M44_YX: GetBuiltinMemberClass,
+        GET_M44_YY: GetBuiltinMemberClass,
+        GET_M44_YZ: GetBuiltinMemberClass,
+        GET_M44_YW: GetBuiltinMemberClass,
+        GET_M44_ZX: GetBuiltinMemberClass,
+        GET_M44_ZY: GetBuiltinMemberClass,
+        GET_M44_ZZ: GetBuiltinMemberClass,
+        GET_M44_ZW: GetBuiltinMemberClass,
+        GET_M44_WX: GetBuiltinMemberClass,
+        GET_M44_WY: GetBuiltinMemberClass,
+        GET_M44_WZ: GetBuiltinMemberClass,
+        GET_M44_WW: GetBuiltinMemberClass,
+        GET_M44_rX: GetBuiltinMemberClass,
+        GET_M44_rY: GetBuiltinMemberClass,
+        GET_M44_rZ: GetBuiltinMemberClass,
+        GET_M44_rW: GetBuiltinMemberClass,
+        GET_M44_cX: GetBuiltinMemberClass,
+        GET_M44_cY: GetBuiltinMemberClass,
+        GET_M44_cZ: GetBuiltinMemberClass,
+        GET_M44_cW: GetBuiltinMemberClass,
+        SET_V4_X: SetBuiltinMemberClass,
+        SET_V4_Y: SetBuiltinMemberClass,
+        SET_V4_Z: SetBuiltinMemberClass,
+        SET_V4_W: SetBuiltinMemberClass,
+        SET_M44_XX: SetBuiltinMemberClass,
+        SET_M44_XY: SetBuiltinMemberClass,
+        SET_M44_XZ: SetBuiltinMemberClass,
+        SET_M44_XW: SetBuiltinMemberClass,
+        SET_M44_YX: SetBuiltinMemberClass,
+        SET_M44_YY: SetBuiltinMemberClass,
+        SET_M44_YZ: SetBuiltinMemberClass,
+        SET_M44_YW: SetBuiltinMemberClass,
+        SET_M44_ZX: SetBuiltinMemberClass,
+        SET_M44_ZY: SetBuiltinMemberClass,
+        SET_M44_ZZ: SetBuiltinMemberClass,
+        SET_M44_ZW: SetBuiltinMemberClass,
+        SET_M44_WX: SetBuiltinMemberClass,
+        SET_M44_WY: SetBuiltinMemberClass,
+        SET_M44_WZ: SetBuiltinMemberClass,
+        SET_M44_WW: SetBuiltinMemberClass,
+        SET_M44_rX: SetBuiltinMemberClass,
+        SET_M44_rY: SetBuiltinMemberClass,
+        SET_M44_rZ: SetBuiltinMemberClass,
+        SET_M44_rW: SetBuiltinMemberClass,
+        SET_M44_cX: SetBuiltinMemberClass,
+        SET_M44_cY: SetBuiltinMemberClass,
+        SET_M44_cZ: SetBuiltinMemberClass,
+        SET_M44_cW: SetBuiltinMemberClass,
+        GET_SP_MEMBER: GetMemberClass,
+        GET_RP_MEMBER: GetMemberClass,
+        SET_SP_MEMBER: SetMemberClass,
+        SET_RP_MEMBER: SetMemberClass,
+        GET_ELEMENT: GetElementClass,
+        SET_ELEMENT: SetElementClass,
+        GET_ARRAY_LEN: GetBuiltinMemberClass,
+        NEW_ARRAY: NewArrayClass,
+        ARRAY_INSERT: SetElementClass,
+        ARRAY_APPEND: SetElementClass,
+        ARRAY_ERASE: SetElementClass,
+        ARRAY_FIND: GetElementClass,
+        ARRAY_CLEAR: SetElementClass,
+        WRITE: WriteClass,
+        ARG: ArgClass,
+        CALL: CallClass,
+        RET: ReturnClass,
+        B: BranchClass,
+        BEZ: BranchClass,
+        BNEZ: BranchClass,
+        CASTsp: CastClass,
+        INTb: UnaryClass,
+        INTc: UnaryClass,
+        INTf: UnaryClass,
+        FLOATb: UnaryClass,
+        FLOATc: UnaryClass,
+        FLOATi: UnaryClass,
+        BOOLc: UnaryClass,
+        BOOLi: UnaryClass,
+        BOOLf: UnaryClass,
+        GET_OBJ_MEMBER: GetMemberClass,
+        SET_OBJ_MEMBER: SetMemberClass,
+        NEW_OBJECT: NewObjectClass,
+        ARRAY_RESIZE: SetElementClass,
+        ARRAY_RESERVE: SetElementClass,
+        LCv4: LoadVectorConst,
+        LC_NULLo: LoadNullConst,
+        CASTo: CastClass,
+        GET_SP_NATIVE_MEMBER: GetMemberClass,
+        LCsa: LoadAsciiStringConst,
+        BIT_ORb: BinaryClass,
+        BIT_ANDb: BinaryClass,
+        BIT_XORb: BinaryClass,
+        CALLVo: CallClass,
+        CALLVsp: CallClass,
+        ASSERT: WriteClass,
+        LCs64: LoadLongConst,
+        MOVs64: UnaryClass,
+        ADDs64: BinaryClass,
+        EQs64: BinaryClass,
+        NEs64: BinaryClass,
+        BIT_ORs64: BinaryClass,
+        BIT_ANDs64: BinaryClass,
+        BIT_XORs64: BinaryClass,
+        EXT_ADDRESS: UnaryClass,
+        EXT_LOAD: UnaryClass,
+        EXT_STORE: UnaryClass,
+        EXT_INVOKE: ExternalInvokeClass,
+    };
+
+    machine_type: MMTypes.MachineType,
+    op: Params,
+
+    pub fn init(params: Params, machine_type: MMTypes.MachineType) Bytecode {
+        return .{
+            .op = params,
+            .machine_type = machine_type,
+        };
     }
 };

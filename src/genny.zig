@@ -11,7 +11,18 @@ const Genny = @This();
 pub const Error = std.mem.Allocator.Error || error{InvalidUtf8};
 
 pub const S64ConstantTable = std.AutoArrayHashMap(i64, void);
-pub const FloatConstantTable = std.AutoArrayHashMap([4]f32, void);
+pub const FloatConstantTable = std.ArrayHashMap([4]f32, void, struct {
+    pub fn hash(self: @This(), s: [4]f32) u32 {
+        _ = self;
+        return @truncate(std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(&s)));
+    }
+
+    pub fn eql(self: @This(), a: [4]f32, b: [4]f32, b_index: usize) bool {
+        _ = self;
+        _ = b_index;
+        return std.mem.eql(f32, &a, &b);
+    }
+}, true);
 pub const TypeReferenceTable = std.AutoArrayHashMap(MMTypes.TypeReference, void);
 pub const FieldReferenceTable = std.AutoArrayHashMap(MMTypes.FieldReference, void);
 pub const FunctionReferenceTable = std.AutoArrayHashMap(*Parser.Node.Function, MMTypes.FunctionReference);
@@ -227,7 +238,7 @@ const Codegen = struct {
         }
     }
 
-    fn appendBytecode(self: *Codegen, bytecode: MMTypes.Bytecode) !void {
+    pub fn appendBytecode(self: *Codegen, bytecode: MMTypes.Bytecode) !void {
         //TODO: pass line numbers all the way down from the parser (ouch)
         try self.line_numbers.append(@intCast(self.bytecode.items.len));
 
@@ -285,7 +296,7 @@ const Codegen = struct {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALL = .{ .dst_idx = dst_idx, .call_idx = call_idx } }, machine_type));
     }
 
-    pub fn emitNativeInvoke(self: *Codegen, dst_idx: u16, call_address: u24, toc_switch: bool, machine_type: MMTypes.MachineType) !void {
+    pub fn emitNativeInvoke(self: *Codegen, dst_idx: u16, call_address: u24, toc_index: u8, machine_type: MMTypes.MachineType) !void {
         ensureAlignment(dst_idx, machine_type);
 
         // The current version of the extended runtime only allows s32 sized return types
@@ -294,7 +305,7 @@ const Codegen = struct {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_INVOKE = .{
             .dst_idx = dst_idx,
             .call_address = call_address,
-            .toc_switch = toc_switch,
+            .toc_index = toc_index,
         } }, machine_type));
     }
 
@@ -1036,10 +1047,11 @@ fn compileExpression(
                 try codegen.emitNativeInvoke(
                     call_result_register[0],
                     native_invoke_attribute.address,
-                    native_invoke_attribute.toc_switch,
+                    native_invoke_attribute.toc_index,
                     call_result_register[1],
                 );
             } else {
+                //TODO: use CALLVo and CALLVsp for virtual functions
                 try codegen.emitCall(
                     call_result_register[0],
                     called_function_idx,
@@ -1561,6 +1573,122 @@ fn compileBlock(
                     @intCast(codegen.nextEmitBytecodeIndex() - skip_to_end_instruction);
 
                 try codegen.register_allocator.free(condition_register);
+            },
+            .inline_asm_statement => |inline_asm| {
+                for (inline_asm.bytecode, 0..) |bytecode, i| {
+                    switch (bytecode.op) {
+                        inline else => |val, op| {
+                            const ParamType = @TypeOf(val);
+
+                            const serialized_bytecode: MMTypes.Bytecode = switch (ParamType) {
+                                Parser.Bytecode.Params.NopClass => MMTypes.Bytecode.init(.{ .NOP = .{} }, bytecode.machine_type),
+                                Parser.Bytecode.Params.LoadBoolConst => MMTypes.Bytecode.init(.{ .LCb = .{
+                                    .dst_idx = val.dst_idx,
+                                    .constant_idx = if (val.value) 0x80000000 else 0,
+                                } }, bytecode.machine_type),
+                                Parser.Bytecode.Params.LoadCharConst => MMTypes.Bytecode.init(.{
+                                    .LCc = .{
+                                        .dst_idx = val.dst_idx,
+                                        // For boolean constant loads, it pulls the upper 16 bits of the value as the char constant
+                                        .constant_idx = @as(u32, val.value) << 16,
+                                    },
+                                }, bytecode.machine_type),
+                                Parser.Bytecode.Params.LoadIntConst => MMTypes.Bytecode.init(.{ .LCi = .{
+                                    .dst_idx = val.dst_idx,
+                                    .constant_idx = @bitCast(val.value),
+                                } }, bytecode.machine_type),
+                                Parser.Bytecode.Params.LoadFloatConst => MMTypes.Bytecode.init(.{ .LCf = .{
+                                    .dst_idx = val.dst_idx,
+                                    .constant_idx = @bitCast(val.value),
+                                } }, bytecode.machine_type),
+                                Parser.Bytecode.Params.LoadWideStringConst => MMTypes.Bytecode.init(.{ .LCsw = .{
+                                    .dst_idx = val.dst_idx,
+                                    .constant_idx = @intCast((try codegen.genny.w_string_table.getOrPut(val.value)).index),
+                                } }, bytecode.machine_type),
+                                Parser.Bytecode.Params.LoadAsciiStringConst => MMTypes.Bytecode.init(.{ .LCsa = .{
+                                    .dst_idx = val.dst_idx,
+                                    .constant_idx = @intCast((try codegen.genny.a_string_table.getOrPut(val.value)).index),
+                                } }, bytecode.machine_type),
+                                Parser.Bytecode.Params.LoadNullConst => switch (op) {
+                                    .LC_NULLo, .LC_NULLsp => MMTypes.Bytecode.init(@unionInit(MMTypes.TaggedInstruction, @tagName(op), .{
+                                        .dst_idx = val.dst_idx,
+                                        .constant_idx = 0,
+                                    }), bytecode.machine_type),
+                                    else => @compileError("Shit goin bad man " ++ @tagName(op)),
+                                },
+                                Parser.Bytecode.Params.UnaryClass => MMTypes.Bytecode{
+                                    .type = bytecode.machine_type,
+                                    .op = op,
+                                    .params = @bitCast(MMTypes.UnaryClass{
+                                        .dst_idx = val.dst_idx,
+                                        .src_idx = val.src_idx,
+                                    }),
+                                },
+                                Parser.Bytecode.Params.BinaryClass => MMTypes.Bytecode{
+                                    .type = bytecode.machine_type,
+                                    .op = op,
+                                    .params = @bitCast(MMTypes.BinaryClass{
+                                        .dst_idx = val.dst_idx,
+                                        .src_a_idx = val.src_a_idx,
+                                        .src_b_idx = val.src_b_idx,
+                                    }),
+                                },
+                                Parser.Bytecode.Params.GetBuiltinMemberClass => @panic("TODO"),
+                                Parser.Bytecode.Params.SetBuiltinMemberClass => @panic("TODO"),
+                                Parser.Bytecode.Params.GetMemberClass => @panic("TODO"),
+                                Parser.Bytecode.Params.SetMemberClass => @panic("TODO"),
+                                Parser.Bytecode.Params.GetElementClass => @panic("TODO"),
+                                Parser.Bytecode.Params.SetElementClass => @panic("TODO"),
+                                Parser.Bytecode.Params.NewArrayClass => @panic("TODO"),
+                                Parser.Bytecode.Params.WriteClass => @panic("TODO"),
+                                Parser.Bytecode.Params.ArgClass => MMTypes.Bytecode.init(.{
+                                    .ARG = .{
+                                        .arg_idx = val.arg_idx,
+                                        .src_idx = val.src_idx,
+                                    },
+                                }, bytecode.machine_type),
+                                Parser.Bytecode.Params.CallClass => MMTypes.Bytecode{
+                                    .type = bytecode.machine_type,
+                                    .op = op,
+                                    .params = @bitCast(MMTypes.CallClass{
+                                        .dst_idx = val.dst_idx,
+                                        .call_idx = @intCast((try codegen.genny.function_references.getOrPutValue(
+                                            val.function.function,
+                                            MMTypes.FunctionReference{
+                                                .name = @intCast((try codegen.genny.a_string_table.getOrPut(val.function.function.mangled_name.?)).index),
+                                                .type_reference = @intCast((try codegen.genny.type_references.getOrPut(val.type.resolved.fish)).index),
+                                            },
+                                        )).index),
+                                    }),
+                                },
+                                Parser.Bytecode.Params.ReturnClass => MMTypes.Bytecode.init(.{ .RET = .{
+                                    .src_idx = val.src_idx,
+                                } }, bytecode.machine_type),
+                                Parser.Bytecode.Params.BranchClass => MMTypes.Bytecode{
+                                    .type = bytecode.machine_type,
+                                    .op = op,
+                                    .params = @bitCast(MMTypes.BranchClass{
+                                        .src_idx = val.src_idx,
+                                        .branch_offset = @as(i32, @intCast(inline_asm.jump_targets.get(val.target).?)) - @as(i32, @intCast(i)),
+                                    }),
+                                },
+                                Parser.Bytecode.Params.CastClass => @panic("TODO"),
+                                Parser.Bytecode.Params.NewObjectClass => @panic("TODO"),
+                                Parser.Bytecode.Params.LoadVectorConst => MMTypes.Bytecode.init(.{ .LCv4 = .{
+                                    .dst_idx = val.dst_idx,
+                                    .constant_idx = @intCast((try codegen.genny.f32_constants.getOrPut(val.value)).index),
+                                } }, bytecode.machine_type),
+                                Parser.Bytecode.Params.LoadLongConst => MMTypes.Bytecode.init(.{ .LCs64 = .{
+                                    .dst_idx = val.dst_idx,
+                                    .constant_idx = @intCast((try codegen.genny.s64_constants.getOrPut(val.value)).index),
+                                } }, bytecode.machine_type),
+                                Parser.Bytecode.Params.ExternalInvokeClass => @panic("TODO"),
+                                else => @compileError("Unhandled type " ++ @typeName(ParamType)),
+                            };
+                            try codegen.appendBytecode(serialized_bytecode);
+                        },
+                    }
+                }
             },
             else => |tag| std.debug.panic("cant codegen for block {s} yet\n", .{@tagName(tag)}),
         }

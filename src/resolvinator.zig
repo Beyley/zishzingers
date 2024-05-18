@@ -878,6 +878,21 @@ fn resolveExpression(
                             function_variable_stack,
                         );
                     },
+                    .inline_asm_statement => |inline_asm| {
+                        for (inline_asm.bytecode) |*bytecode| {
+                            switch (bytecode.op) {
+                                .CALL => |*call_bytecode| {
+                                    call_bytecode.type = .{ .resolved = try resolveParsedType(
+                                        call_bytecode.type.parsed,
+                                        script,
+                                        script_table,
+                                        a_string_table,
+                                    ) };
+                                },
+                                else => {},
+                            }
+                        }
+                    },
                     else => |node_type| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(node_type)}),
                 }
             }
@@ -1850,6 +1865,9 @@ pub fn mangleFunctionName(
             .pointer => |pointer| pointer.fish.?,
             else => @panic("cant parameter this type, sorry"),
         };
+
+        for (0..parameter_type.dimension_count) |_|
+            try writer.writeByte('[');
 
         if (parameter_type.type_name != 0xFFFFFFFF) {
             const type_name = a_string_table.keys()[parameter_type.type_name];

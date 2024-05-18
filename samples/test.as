@@ -41,6 +41,19 @@ class Test(g1234568)
         NativeFunction(x, y, z, float4(0, 1, 2, 3), w);
     }
 
-    @NativeInvoke(0x123456, false)
+    pub fn InlineAsm() {
+        inline_asm 
+        {
+        label1:
+            NOP
+        label2:
+            ARG a0, r0 (s32)
+            LCsw r8, 'test \' this is a test\n'
+            B label1
+            BEZ label2, r0
+        }
+    }
+
+    @NativeInvoke(0x123456, 0)
     static fn NativeFunction(param1: void*, param2: Thing, param3: f32, param4: vec4, param5: bool) -> void*;
 }
