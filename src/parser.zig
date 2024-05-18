@@ -475,6 +475,7 @@ pub const Node = union(enum) {
     while_statement: *WhileStatement,
     attribute: *Attribute,
     inline_asm_statement: *InlineAsmStatement,
+    @"unreachable": void,
 };
 
 pub const Tree = struct {
@@ -545,7 +546,7 @@ pub fn parse(allocator: std.mem.Allocator, lexemes: []const Lexeme) Error!Tree {
     return tree;
 }
 
-const KeywordHash = u80;
+const KeywordHash = u88;
 
 fn maybeHashKeyword(keyword: []const u8) ?KeywordHash {
     if (keyword.len > (@bitSizeOf(KeywordHash) / 8)) {
@@ -912,6 +913,13 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
                     const inline_asm_statement = try consumeInlineAsmStatement(allocator, iter);
 
                     try body.append(inline_asm_statement);
+                    break :blk true;
+                },
+                hashKeyword("unreachable") => {
+                    try body.append(.@"unreachable");
+                    consumeArbitraryLexeme(iter, "unreachable");
+                    consumeSemicolon(iter);
+
                     break :blk true;
                 },
                 else => {

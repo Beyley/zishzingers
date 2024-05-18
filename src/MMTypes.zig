@@ -995,11 +995,11 @@ pub const TaggedInstruction = union(enum(u8)) {
     /// Does a bitwise XOR on the booleans stored in the source registers,
     /// storing the result as a boolean in the destination register
     BIT_XORb: BinaryClass = 0xbf,
-    /// Calls the specified method on the object, storing the result in the destination register
+    /// Calls the specified method on the object stored in a0, storing the result in the destination register
     ///
     /// Throws an exception if the object is NULL or the script object is invalid (TODO: does this just mean "if its a script or not"?)
     CALLVo: CallClass = 0xc0,
-    /// Calls the specified method on the safe ptr, storing the result in the destination register
+    /// Calls the specified method on the safe ptr stored in a0, storing the result in the destination register
     ///
     /// Throws an exception if the safe ptr lookup returns a NULL Thing
     CALLVsp: CallClass = 0xc1,

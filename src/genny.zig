@@ -1397,7 +1397,7 @@ fn compileBlock(
 ) Error!void {
     var local_variables_from_this_scope = std.ArrayList([]const u8).init(codegen.register_allocator.allocator);
 
-    var return_emit = false;
+    var return_or_unreachable_emit = false;
 
     for (block) |node| block_loop: {
         switch (node) {
@@ -1471,7 +1471,7 @@ fn compileBlock(
                     try codegen.emitRet(0, .void);
                 }
 
-                return_emit = true;
+                return_or_unreachable_emit = true;
 
                 // At a return statement, immediately break out of the block, we dont need to generate code after a return statement
                 break :block_loop;
@@ -1690,6 +1690,11 @@ fn compileBlock(
                     }
                 }
             },
+            .@"unreachable" => {
+                return_or_unreachable_emit = true;
+
+                try emitUnreachable(codegen);
+            },
             else => |tag| std.debug.panic("cant codegen for block {s} yet\n", .{@tagName(tag)}),
         }
     }
@@ -1705,7 +1710,7 @@ fn compileBlock(
         _ = scope_local_variables.swapRemove(local_variable_to_free);
     }
 
-    if (top_level and !return_emit) {
+    if (top_level and !return_or_unreachable_emit) {
         if (return_type == .void) {
             //On void return functions, we can emit an implicit RET
             try codegen.emitRet(0, .void);
@@ -1714,6 +1719,28 @@ fn compileBlock(
             std.debug.panic("non void return function does not return at end of function!", .{});
         }
     }
+}
+
+fn emitUnreachable(codegen: *Codegen) !void {
+    //TODO: let users put this safety feature under a debug flag
+
+    //TODO: let users force ASSERT to be used, since that can give nice names/text
+    //TODO: use WRITE if available, else try to use a patched runtime to call into that game's printf,
+    //      if that fails, THEN fall back to the CALLVo crash
+
+    // Allocate a register which will just have 0
+    const base_idx = try codegen.register_allocator.allocate(.object_ref);
+
+    // Load 0 into that instruction
+    try codegen.emitLoadConstInt(base_idx[0], 0);
+
+    // Copy into a0 so that CALLVo is calling off an invalid object
+    try codegen.emitArg(0, base_idx[0], .object_ref);
+
+    // Emit a call instruction which uses a nonsense target and 0 source, causing a script exception
+    try codegen.emitCallVo(0, 0, .void);
+
+    try codegen.register_allocator.free(base_idx);
 }
 
 fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser.Node.Class) !?MMTypes.FunctionDefinition {
@@ -1789,23 +1816,8 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         function.return_type.resolved.machineType(),
     );
 
-    //TODO: let users put this safety feature under a debug flag
-    {
-        //TODO: let users force ASSERT to be used, since that can give nice names/text
-        //TODO: use WRITE if available, else try to use a patched runtime to call into that game's printf,
-        //      if that fails, THEN fall back to the CALLVo crash
-
-        // Allocate a register which will just have 0
-        const call_idx = try codegen.register_allocator.allocate(.object_ref);
-
-        // Load 0 into that instruction
-        try codegen.emitLoadConstInt(call_idx[0], 0);
-
-        // Emit a call instruction which uses a nonsense target and 0 source, causing a script exception
-        try codegen.emitCallVo(call_idx[0], 0, .void);
-
-        try codegen.register_allocator.free(call_idx);
-    }
+    // Safety crash after a function RET
+    try emitUnreachable(&codegen);
 
     // Stack size is the highest used register + 1, since registers are zero indexed
     const stack_size = codegen.register_allocator.highest_register + 1;

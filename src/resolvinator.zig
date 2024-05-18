@@ -882,18 +882,42 @@ fn resolveExpression(
                         for (inline_asm.bytecode) |*bytecode| {
                             switch (bytecode.op) {
                                 .CALL => |*call_bytecode| {
+                                    const type_name = call_bytecode.type.parsed.name;
+
                                     call_bytecode.type = .{ .resolved = try resolveParsedType(
                                         call_bytecode.type.parsed,
                                         script,
                                         script_table,
                                         a_string_table,
                                     ) };
+
+                                    call_bytecode.function = .{
+                                        .function = blk: {
+                                            const referenced_script = script_table.get(type_name).?;
+
+                                            for (getScriptClassNode(referenced_script.ast).functions) |function| {
+                                                try resolveFunctionHead(
+                                                    function,
+                                                    referenced_script,
+                                                    script_table,
+                                                    a_string_table,
+                                                );
+
+                                                if (std.mem.eql(u8, call_bytecode.function.name, function.mangled_name.?)) {
+                                                    break :blk function;
+                                                }
+                                            }
+
+                                            std.debug.panic("could not find function {s} on type {s}", .{ call_bytecode.function.name, type_name });
+                                        },
+                                    };
                                 },
                                 else => {},
                             }
                         }
                     },
-                    else => |node_type| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(node_type)}),
+                    .@"unreachable" => {},
+                    else => |node_type| std.debug.panic("TODO: resolution of node type {s}", .{@tagName(node_type)}),
                 }
             }
         },
@@ -1163,6 +1187,10 @@ fn typeFromName(name: []const u8) Parser.Type {
 
 fn boolType() Parser.Type {
     return comptime .{ .resolved = resolveParsedType(Parser.Type.Parsed.fromFishType(.bool), null, null, null) catch unreachable };
+}
+
+fn voidType() Parser.Type {
+    return comptime .{ .resolved = resolveParsedType(Parser.Type.Parsed.fromFishType(.void), null, null, null) catch unreachable };
 }
 
 fn s32Type() Parser.Type {
