@@ -189,7 +189,7 @@ pub fn MMStream(comptime Stream: type) type {
                     }
 
                     const a_str_table: MMTypes.AStringTable = blk: {
-                        const indices = try self.readTable(allocator);
+                        const indices = try self.readIntVector(u32, allocator);
                         defer allocator.free(indices);
 
                         const str_buf_len = try self.readInt(u32);
@@ -221,7 +221,7 @@ pub fn MMStream(comptime Stream: type) type {
                     };
 
                     const w_str_table: MMTypes.WStringTable = blk: {
-                        const indices = try self.readTable(allocator);
+                        const indices = try self.readIntVector(u32, allocator);
                         defer allocator.free(indices);
 
                         const str_buf_len = try self.readInt(u32);
@@ -260,7 +260,7 @@ pub fn MMStream(comptime Stream: type) type {
 
                     const constant_table_s64: ?[]i64 =
                         if (self.revision.head >= 0x30c)
-                        try self.readArray(i64, allocator, null, ScriptReadType)
+                        try self.readIntVector(i64, allocator)
                     else
                         null;
 
@@ -295,6 +295,34 @@ pub fn MMStream(comptime Stream: type) type {
                     };
                 },
             }
+        }
+
+        pub fn readIntVector(self: *Self, comptime Type: type, allocator: std.mem.Allocator) ![]Type {
+            const UnsignedType = std.meta.Int(.unsigned, @bitSizeOf(Type));
+
+            if (!self.compression_flags.compressed_vectors) {
+                return self.readArray(Type, allocator, null, undefined);
+            }
+
+            const count = try self.readInt(u32);
+
+            if (count == 0)
+                return &.{};
+
+            const vector = try allocator.alloc(UnsignedType, count);
+            errdefer allocator.free(vector);
+
+            @memset(vector, 0);
+
+            const bytes = try self.readInt(u8);
+
+            for (0..bytes) |i| {
+                for (0..count) |j| {
+                    vector[j] |= @as(UnsignedType, try self.readInt(u8)) << @intCast(i * 8);
+                }
+            }
+
+            return @ptrCast(vector);
         }
 
         pub fn readResource(self: *Self, skip_flags: bool) !?MMTypes.ResourceIdentifier {
@@ -405,34 +433,6 @@ pub fn MMStream(comptime Stream: type) type {
             }
 
             return arr;
-        }
-
-        pub fn readTable(self: *Self, allocator: std.mem.Allocator) ![]u32 {
-            if (!self.compression_flags.compressed_vectors) {
-                return self.readArray(u32, allocator, null, undefined);
-            }
-
-            const index_count = try self.readInt(u32);
-
-            //If theres no indices, return nothing
-            if (index_count == 0) return &.{};
-
-            const table_count = try self.readInt(u32);
-
-            //If theres no tables, return a single 0 item
-            if (table_count == 0) return try allocator.dupe(u32, &.{0});
-
-            const values = try allocator.alloc(u32, index_count);
-
-            for (0..index_count) |i|
-                values[i] = try self.readInt(u8);
-
-            for (1..table_count) |_|
-                for (0..index_count) |j| {
-                    values[j] += @as(u32, try self.readInt(u8)) * 0x100;
-                };
-
-            return values;
         }
 
         pub fn writeInt(self: *Self, comptime T: type, val: T) !void {
@@ -553,7 +553,7 @@ pub fn MMStream(comptime Stream: type) type {
                             offset += @intCast(string.len + 1);
                         }
 
-                        try self.writeTable(indices);
+                        try self.writeIntVector(u32, indices);
                         try self.writeInt(u32, offset);
                         try self.stream.writer().writeAll(script.a_string_table.buf);
                     }
@@ -569,7 +569,7 @@ pub fn MMStream(comptime Stream: type) type {
                             offset += @intCast(string.len + 1);
                         }
 
-                        try self.writeTable(indices);
+                        try self.writeIntVector(u32, indices);
                         try self.writeInt(u32, offset);
                         //Write each char by hand, this will byte-swap if needed
                         for (script.w_string_table.buf) |c| {
@@ -579,11 +579,9 @@ pub fn MMStream(comptime Stream: type) type {
 
                     // In revision 0x30c a s64 constant table was added
                     if (self.revision.head >= 0x30c) {
-                        try self.writeArray(
+                        try self.writeIntVector(
                             i64,
                             script.constant_table_s64 orelse &.{},
-                            false,
-                            undefined,
                         );
                     }
 
@@ -601,18 +599,20 @@ pub fn MMStream(comptime Stream: type) type {
             }
         }
 
-        pub fn writeTable(self: *Self, indices: []const u32) !void {
+        pub fn writeIntVector(self: *Self, comptime DataType: type, indices: []const DataType) !void {
+            const UnsignedDataType = std.meta.Int(.unsigned, @bitSizeOf(DataType));
+
             //If we dont have compressed vectors, just write the array directly
             if (!self.compression_flags.compressed_vectors) {
-                return self.writeArray(u32, indices, false, undefined);
+                return self.writeArray(DataType, indices, false, undefined);
             }
 
             //If theres no indices, just write 0
             if (indices.len == 0)
                 return self.writeInt(u32, 0);
 
-            const highest_number: u32 = blk: {
-                var highest: u32 = 0;
+            const highest_number: DataType = blk: {
+                var highest: DataType = 0;
 
                 for (indices) |index|
                     highest = @max(highest, index);
@@ -627,13 +627,13 @@ pub fn MMStream(comptime Stream: type) type {
             }
 
             // Get the amount of tables needed (aka, amount of bytes used in the highest number)
-            const tables_needed: u8 = ((@bitSizeOf(u32) - @as(u8, @clz(highest_number))) + 7) / 8;
+            const bytes: u8 = ((@bitSizeOf(DataType) - @as(u8, @clz(highest_number))) + 7) / 8;
 
             try self.writeInt(u32, @intCast(indices.len));
-            try self.writeInt(u8, tables_needed);
-            for (0..tables_needed) |table| {
+            try self.writeInt(u8, bytes);
+            for (0..bytes) |table| {
                 for (indices) |index| {
-                    try self.writeInt(u8, @truncate(index >> @intCast(table * 8)));
+                    try self.writeInt(u8, @truncate(@as(UnsignedDataType, @bitCast(index)) >> @intCast(table * 8)));
                 }
             }
         }

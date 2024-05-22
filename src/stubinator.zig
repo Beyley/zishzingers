@@ -14,6 +14,8 @@ pub fn generateStubs(
     namespace: ?[]const u8,
     library: []const u8,
 ) !void {
+    std.debug.print("dumping script {s}\n", .{script.class_name});
+
     try writer.print("using library '{s}';", .{library});
     try writer.writeByte('\n');
     try writer.writeByte('\n');
@@ -52,7 +54,7 @@ pub fn generateStubs(
 
     try writer.writeByte('\n');
 
-    try writer.print("class {s}(g{d})", .{ script.class_name, script_guid });
+    try writer.print("{} class {s}(g{d})", .{ script.modifiers orelse MMTypes.Modifiers{}, script.class_name, script_guid });
     if (script.super_class_script) |super_script| {
         try writer.print(" extends {s}", .{script_lookup.get(super_script.guid).?.class_name});
     }
@@ -141,33 +143,32 @@ pub fn generateStubs(
             allocator.free(parameters.?);
         }
 
-        //Skip init functions
+        //Skip init function
         if (std.mem.eql(u8, demangled_name, ".init")) {
+            try writer.writeAll("    fn __init()");
             continue;
-        }
-
-        if (std.mem.eql(u8, demangled_name, ".ctor")) {
+        } else if (std.mem.eql(u8, demangled_name, ".ctor")) {
             try writer.print("    {} {s}", .{ function.modifiers, script.class_name });
             try writer.writeByte('(');
             try formatParameters(writer, script_lookup, function, script, parameters.?);
-            try writer.writeAll(");\n");
-            continue;
-        }
+            try writer.writeAll(")");
 
-        if (demangled_name[0] == '.') {
+            // constructor should always be void
+            std.debug.assert(script.type_references[function.type_reference].machine_type == .void);
+        } else if (demangled_name[0] == '.') {
             std.debug.panic("Bad special-cased func {s}, needs special handling above.", .{demangled_name});
+        } else {
+            try writer.print("    {} fn {s}", .{ function.modifiers, demangled_name });
+            try writer.writeByte('(');
+            try formatParameters(writer, script_lookup, function, script, parameters.?);
+            try writer.writeAll(") -> ");
+            try formatType(
+                writer,
+                script_lookup,
+                script,
+                script.type_references[function.type_reference],
+            );
         }
-
-        try writer.print("    {} fn {s}", .{ function.modifiers, demangled_name });
-        try writer.writeByte('(');
-        try formatParameters(writer, script_lookup, function, script, parameters.?);
-        try writer.writeAll(") -> ");
-        try formatType(
-            writer,
-            script_lookup,
-            script,
-            script.type_references[function.type_reference],
-        );
 
         const bytecode = function.bytecode.slice(script.bytecode);
 
