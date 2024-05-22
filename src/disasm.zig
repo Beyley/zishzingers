@@ -332,10 +332,16 @@ pub fn disassembleBytecode(
                                 params.src_idx,
                             });
                     },
-                    MMTypes.NewObjectClass => try writer.print("r{d}, {s}", .{
-                        params.dst_idx,
-                        script.a_string_table.strings[script.type_references[params.type_idx].type_name],
-                    }),
+                    MMTypes.NewObjectClass => if (script.type_references[params.type_idx].type_name == 0xFFFFFFFF)
+                        try writer.print("r{d}, g{d}", .{
+                            params.dst_idx,
+                            script.type_references[params.type_idx].script.?.guid,
+                        })
+                    else
+                        try writer.print("r{d}, {s}", .{
+                            params.dst_idx,
+                            script.a_string_table.strings[script.type_references[params.type_idx].type_name],
+                        }),
                     MMTypes.ExternalInvokeClass => try writer.print("r{d}, 0x{x}, {d}", .{
                         params.dst_idx,
                         params.call_address,
