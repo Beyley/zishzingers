@@ -4,7 +4,7 @@ A set of tools for working with the fish fingers (FF) bytecode script format use
 
 ## Compilation
 
-- Install the latest version of [Zig](https://ziglang.org/) (tested with version `0.13.0-dev.39+f6f7a47aa`)
+- Install the latest version of [Zig](https://ziglang.org/) (tested with version `0.13.0-dev.245+5fe9f88b1`)
 - Run `zig build`, which will place an executable file titled `zishzingers` in `zig-out/bin/`
 
 ## Usage
@@ -12,9 +12,10 @@ A set of tools for working with the fish fingers (FF) bytecode script format use
 All tools are compiled into the same `zishzingers` executable file, with each tool being available through a different subcommand
 
 ### `disasm`
+
 Disassembles script files into a human-readable format
 
-```
+```bash
 # When a script is inside the LBP resource container, just pass the script name
 $ zishzingers disasm compressed_script.ff
 # When a script is pre-decompressed, you need to specify the compression flags and the asset revision
@@ -22,23 +23,27 @@ $ zishzingers disasm -n decompressed_script.ff -c integers -c matrices -c vector
 ```
 
 ### `generate_library`
+
 Generates an A# library from a folder of extracted assets and a MAP file.
 
-```
+```bash
 # Read the help file `zishzingers generate_library --help` for details on what these options do!
 $ zishzingers generate_library -m blurayguids.map -o deploy_std/ -f game_data/ -s std -n lbpdeploy
 ```
 
 ### `compile`
+
 Compiles an A# file into an LBP script file.
 
 Compilation options for games:
+
+- Deploy `-r 0x2C2`
 - Vita `-r 0x3E2 -z 17457 -y 132`
 - LBP2 `-r 0x3E6`
 
-```
+```bash
 # Read the help file `zishzingers compile --help` for details on what these options do!
-# zishzingers compile compile samples/tweakegg.as -l lbpdeploy:deploy_std/ -i 1234
+$ zishzingers compile compile samples/tweakegg.as -l lbpdeploy:deploy_std/ -i 1234
 ```
 
 Sample scripts are provided in the `samples/` folder.

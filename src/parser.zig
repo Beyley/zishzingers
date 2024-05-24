@@ -164,6 +164,8 @@ pub const Node = union(enum) {
             resolved: struct {
                 name: []const u8,
                 ident: MMTypes.ResourceIdentifier,
+                has_parameterless_constructor: bool,
+                type_reference: MMTypes.TypeReference,
             },
         },
         identifier: ?*Expression,
@@ -172,7 +174,7 @@ pub const Node = union(enum) {
         properties: []const *Property,
         enums: []const *Enum,
         functions: []const *Function,
-        constructors: ?[]const *const Constructor,
+        constructors: []const *Constructor,
         modifiers: MMTypes.Modifiers,
 
         type_reference: ?MMTypes.TypeReference,
@@ -452,6 +454,7 @@ pub const Node = union(enum) {
         };
 
         native_invoke: NativeInvoke,
+        initializer: void,
     };
 
     pub const InlineAsmStatement = struct {
@@ -659,6 +662,12 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifi
                         .address = @intCast(parameters[0].contents.integer_literal.value),
                         .toc_index = @intCast(parameters[1].contents.integer_literal.value),
                     },
+                };
+            } else if (std.mem.eql(u8, "Initialize", name)) {
+                std.debug.assert(parameters.len == 0);
+
+                attribute.* = .{
+                    .initializer = {},
                 };
             } else {
                 std.debug.panic("Unknown attribute {s}", .{name});

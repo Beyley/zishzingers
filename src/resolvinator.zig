@@ -80,7 +80,12 @@ fn getImportPathFromImportTarget(allocator: std.mem.Allocator, target: []const u
     return import_path;
 }
 
-fn collectImportedTypes(class_name: []const u8, defined_libraries: Libraries, script_table: *ParsedScriptTable) Error!void {
+fn collectImportedTypes(
+    class_name: []const u8,
+    defined_libraries: Libraries,
+    script_table: *ParsedScriptTable,
+    a_string_table: *AStringTable,
+) Error!void {
     const script = script_table.get(class_name) orelse @panic("tsheointeonhsaoi");
 
     //TODO: we need to make sure to prevent two imported scripts from sharing the same GUID in the global script table
@@ -122,7 +127,13 @@ fn collectImportedTypes(class_name: []const u8, defined_libraries: Libraries, sc
                     const class = getScriptClassNode(ast);
 
                     if (script_table.get(class.name) == null)
-                        try recursivelyResolveScript(ast, defined_libraries, script_table, null);
+                        try recursivelyResolveScript(
+                            ast,
+                            defined_libraries,
+                            script_table,
+                            null,
+                            a_string_table,
+                        );
 
                     switch (comptime import_type) {
                         .import => {
@@ -185,7 +196,13 @@ fn collectImportedLibraries(script: *ParsedScript, defined_libraries: Libraries)
     }
 }
 
-fn recursivelyResolveScript(tree: Parser.Tree, defined_libraries: Libraries, script_table: *ParsedScriptTable, script_identifier: ?MMTypes.ResourceIdentifier) Error!void {
+fn recursivelyResolveScript(
+    tree: Parser.Tree,
+    defined_libraries: Libraries,
+    script_table: *ParsedScriptTable,
+    script_identifier: ?MMTypes.ResourceIdentifier,
+    a_string_table: *AStringTable,
+) Error!void {
     const class = getScriptClassNode(tree);
 
     const script = try tree.allocator.create(ParsedScript);
@@ -206,13 +223,16 @@ fn recursivelyResolveScript(tree: Parser.Tree, defined_libraries: Libraries, scr
     };
     try script_table.putNoClobber(script.class_name, script);
 
+    // Add the script to its own import table, so it can reference itself
+    try script.imported_types.putNoClobber(script.class_name, {});
+
     std.debug.print("resolving script {s}\n", .{script.class_name});
 
     //Collect all the libraries which are imported by the script
     try collectImportedLibraries(script, defined_libraries);
 
     //Collect all the script types which are imported
-    try collectImportedTypes(script.class_name, defined_libraries, script_table);
+    try collectImportedTypes(script.class_name, defined_libraries, script_table, a_string_table);
 
     script.is_thing = isScriptThing(script, script_table);
 
@@ -223,10 +243,32 @@ fn recursivelyResolveScript(tree: Parser.Tree, defined_libraries: Libraries, scr
 
         const base_script = script_table.get(parsed_base_class).?;
 
-        class.base_class = .{ .resolved = .{
-            .ident = base_script.resource_identifier,
-            .name = parsed_base_class,
-        } };
+        class.base_class = .{
+            .resolved = .{
+                .ident = base_script.resource_identifier,
+                .name = parsed_base_class,
+                .has_parameterless_constructor = blk: {
+                    const base_class = getScriptClassNode(base_script.ast);
+
+                    // If its static, theres no constructors at all
+                    if (base_class.modifiers.static)
+                        break :blk false;
+
+                    // If theres no constructor, then it has a default parameterless one
+                    if (base_class.constructors.len == 0)
+                        break :blk true;
+
+                    // If the base classes constructor has no parameters, then we've found it
+                    for (base_class.constructors) |constructor| {
+                        if (constructor.parameters.len == 0)
+                            break :blk true;
+                    }
+
+                    break :blk false;
+                },
+                .type_reference = (try typeReferenceFromScript(base_script, 0, a_string_table)).fish,
+            },
+        };
     }
 
     std.debug.print("script {s} is {} thing/notthing\n", .{ script.class_name, script.is_thing });
@@ -262,7 +304,13 @@ pub fn resolve(
     var script_table = ParsedScriptTable.init(tree.allocator);
     defer script_table.deinit();
 
-    try recursivelyResolveScript(tree, defined_libraries, &script_table, script_identifier);
+    try recursivelyResolveScript(
+        tree,
+        defined_libraries,
+        &script_table,
+        script_identifier,
+        a_string_table,
+    );
 
     //Get the class of the script
     const class = getScriptClassNode(tree);
@@ -895,7 +943,25 @@ fn resolveExpression(
                                         .function = blk: {
                                             const referenced_script = script_table.get(type_name).?;
 
-                                            for (getScriptClassNode(referenced_script.ast).functions) |function| {
+                                            const class = getScriptClassNode(referenced_script.ast);
+
+                                            if (std.mem.eql(u8, call_bytecode.function.name, ".init__")) {
+                                                if (class.modifiers.static) {
+                                                    std.debug.panic("cannot call init func non static class {s}", .{class.name});
+                                                }
+
+                                                @panic("TODO: calling init function from inline asm");
+                                            }
+
+                                            if (std.mem.eql(u8, call_bytecode.function.name, ".ctor__")) {
+                                                if (class.modifiers.static) {
+                                                    std.debug.panic("cannot call ctor on static class", .{});
+                                                }
+
+                                                @panic("TODO: calling ctor from inline asm");
+                                            }
+
+                                            for (class.functions) |function| {
                                                 try resolveFunctionHead(
                                                     function,
                                                     referenced_script,

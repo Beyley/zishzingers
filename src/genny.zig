@@ -25,7 +25,7 @@ pub const FloatConstantTable = std.ArrayHashMap([4]f32, void, struct {
 }, true);
 pub const TypeReferenceTable = std.AutoArrayHashMap(MMTypes.TypeReference, void);
 pub const FieldReferenceTable = std.AutoArrayHashMap(MMTypes.FieldReference, void);
-pub const FunctionReferenceTable = std.AutoArrayHashMap(*Parser.Node.Function, MMTypes.FunctionReference);
+pub const FunctionReferenceTable = std.AutoArrayHashMap(MMTypes.FunctionReference, void);
 pub const BytecodeList = std.ArrayList(MMTypes.Bytecode);
 pub const ArgumentList = std.ArrayList(MMTypes.Argument);
 pub const LineNumberList = std.ArrayList(u16);
@@ -909,7 +909,7 @@ fn compileExpression(
 
             const function = function_call.function.function;
 
-            const called_function_idx: u16 = @intCast((try codegen.genny.function_references.getOrPutValue(function.function, .{
+            const called_function_idx: u16 = @intCast((try codegen.genny.function_references.getOrPut(.{
                 .name = @intCast((try codegen.genny.a_string_table.getOrPut(function.function.mangled_name.?)).index),
                 .type_reference = @intCast((try codegen.genny.type_references.getOrPut(function.owning_type)).index),
             })).index);
@@ -1652,8 +1652,7 @@ fn compileBlock(
                                     .op = op,
                                     .params = @bitCast(MMTypes.CallClass{
                                         .dst_idx = val.dst_idx,
-                                        .call_idx = @intCast((try codegen.genny.function_references.getOrPutValue(
-                                            val.function.function,
+                                        .call_idx = @intCast((try codegen.genny.function_references.getOrPut(
                                             MMTypes.FunctionReference{
                                                 .name = @intCast((try codegen.genny.a_string_table.getOrPut(val.function.function.mangled_name.?)).index),
                                                 .type_reference = @intCast((try codegen.genny.type_references.getOrPut(val.type.resolved.fish)).index),
@@ -1743,11 +1742,28 @@ fn emitUnreachable(codegen: *Codegen) !void {
     try codegen.register_allocator.free(base_idx);
 }
 
-fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser.Node.Class) !?MMTypes.FunctionDefinition {
-    for (function.attributes) |attribute| {
-        if (attribute.* == .native_invoke)
-            return null;
-    }
+fn compileFunction(
+    self: *Genny,
+    function: union(enum) {
+        function: *Parser.Node.Function,
+        constructor: *Parser.Node.Constructor,
+    },
+    class: *Parser.Node.Class,
+) !?MMTypes.FunctionDefinition {
+    const initializer = blk: {
+        var initializer = false;
+
+        if (function == .function)
+            for (function.function.attributes) |attribute| {
+                if (attribute.* == .native_invoke)
+                    return null;
+
+                if (attribute.* == .initializer)
+                    initializer = true;
+            };
+
+        break :blk initializer;
+    };
 
     var arguments = ArgumentList.init(self.ast.allocator);
     var local_variables = LocalVariableTable.init(self.ast.allocator);
@@ -1766,8 +1782,13 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         .genny = self,
     };
 
+    const modifiers = switch (function) {
+        .function => |ast_function| ast_function.modifiers,
+        .constructor => |constructor| constructor.modifiers,
+    };
+
     //If the function isnt static, then we need to allocate `r0-r3` for the `this` reference
-    if (!function.modifiers.static) {
+    if (!modifiers.static) {
         const self_reg = try codegen.register_allocator.allocateArgument(.object_ref);
 
         std.debug.assert(self_reg[0] == 0);
@@ -1785,7 +1806,12 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         try scope_local_variables.put("this", self_variable);
     }
 
-    for (function.parameters) |parameter| {
+    const parameters = switch (function) {
+        .function => |ast_function| ast_function.parameters,
+        .constructor => |constructor| constructor.parameters,
+    };
+
+    for (parameters) |parameter| {
         const fish_type_reference = parameter.type.resolved.valueTypeReference();
 
         const register = try codegen.register_allocator.allocateArgument(fish_type_reference.machine_type);
@@ -1806,15 +1832,30 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
         });
     }
 
-    //TODO: arrow expression functions
-    try compileBlock(
-        &codegen,
-        &local_variables,
-        &scope_local_variables,
-        function.body.?.contents.block,
-        true,
-        function.return_type.resolved.machineType(),
-    );
+    switch (function) {
+        .function => |ast_function| {
+            //TODO: arrow expression functions
+            try compileBlock(
+                &codegen,
+                &local_variables,
+                &scope_local_variables,
+                ast_function.body.?.contents.block,
+                true,
+                ast_function.return_type.resolved.machineType(),
+            );
+        },
+        .constructor => |constructor| {
+            //TODO: arrow expression functions
+            try compileBlock(
+                &codegen,
+                &local_variables,
+                &scope_local_variables,
+                constructor.body.?.contents.block,
+                true,
+                .void,
+            );
+        },
+    }
 
     // Safety crash after a function RET
     try emitUnreachable(&codegen);
@@ -1823,10 +1864,27 @@ fn compileFunction(self: *Genny, function: *Parser.Node.Function, class: *Parser
     const stack_size = codegen.register_allocator.highest_register + 1;
 
     return .{
-        .name = @intCast((try self.a_string_table.getOrPut(function.mangled_name.?)).index),
-        .modifiers = function.modifiers,
+        .name = @intCast((try self.a_string_table.getOrPut(if (initializer)
+            ".init__"
+        else if (function == .constructor) blk: {
+            if (parameters.len > 0)
+                std.debug.panic("unable to compile constructor with parameters", .{});
+
+            break :blk ".ctor__";
+        } else function.function.mangled_name.?)).index),
+        .modifiers = modifiers,
         .stack_size = stack_size,
-        .type_reference = @intCast((try self.type_references.getOrPut(function.return_type.resolved.valueTypeReference())).index),
+        .type_reference = @intCast((try self.type_references.getOrPut(switch (function) {
+            .function => function.function.return_type.resolved.valueTypeReference(),
+            .constructor => MMTypes.TypeReference{
+                .array_base_machine_type = .void,
+                .dimension_count = 0,
+                .fish_type = .void,
+                .machine_type = .void,
+                .script = null,
+                .type_name = 0xFFFFFFFF,
+            },
+        })).index),
         .bytecode = blk: {
             const start = self.bytecode.items.len;
 
@@ -1883,8 +1941,102 @@ pub fn generate(self: *Genny) !MMTypes.Script {
         var functions = std.ArrayList(MMTypes.FunctionDefinition).init(self.ast.allocator);
 
         for (class.functions) |ast_function| {
-            if (try self.compileFunction(ast_function, class)) |function|
+            if (try self.compileFunction(.{ .function = ast_function }, class)) |function|
                 try functions.append(function);
+        }
+
+        for (class.constructors) |constructor| {
+            try functions.append((try self.compileFunction(.{ .constructor = constructor }, class)).?);
+        }
+
+        // If theres no constructors, or this class is not static, then we need to create a default parameterless constructor
+        if (class.constructors.len == 0 and !class.modifiers.static) {
+            var local_variables = LocalVariableTable.init(self.ast.allocator);
+
+            var codegen: Codegen = .{
+                .bytecode = BytecodeList.init(self.ast.allocator),
+                .line_numbers = LineNumberList.init(self.ast.allocator),
+                .register_allocator = try Codegen.RegisterAllocator.init(
+                    self.ast.allocator,
+                    self.revision,
+                    &local_variables,
+                    self,
+                ),
+                .revision = self.revision,
+                .genny = self,
+            };
+
+            try local_variables.put("self", .{
+                .modifiers = .{},
+                .name = @intCast((try self.a_string_table.getOrPut("self")).index),
+                .offset = 0,
+                .type_reference = @intCast((try self.type_references.getOrPut(class.type_reference.?)).index),
+            });
+
+            std.debug.assert(class.type_reference.?.machine_type == .safe_ptr or class.type_reference.?.machine_type == .object_ref);
+
+            // If the base class has a parameterless constructor, then we need to emit a "call super class"
+            if (class.base_class == .resolved and class.base_class.resolved.has_parameterless_constructor) {
+                try codegen.emitArg(0, 0, class.type_reference.?.machine_type);
+                try codegen.emitCall(
+                    std.math.maxInt(u16),
+                    @intCast((try self.function_references.getOrPut(MMTypes.FunctionReference{
+                        .name = @intCast((try self.a_string_table.getOrPut(".ctor__")).index),
+                        .type_reference = @intCast((try self.type_references.getOrPut(class.base_class.resolved.type_reference)).index),
+                    })).index),
+                    .void,
+                );
+            }
+
+            try codegen.emitRet(0, .void);
+
+            try functions.append(MMTypes.FunctionDefinition{
+                .name = @intCast((try self.a_string_table.getOrPut(".ctor__")).index),
+                // This holds the self ptr
+                .stack_size = 4,
+                .local_variables = blk: {
+                    const start = self.local_variables.items.len;
+
+                    const local_variable_values = local_variables.values();
+
+                    try self.local_variables.appendSlice(local_variable_values);
+
+                    break :blk .{
+                        .begin = @intCast(start),
+                        .end = @intCast(start + local_variable_values.len),
+                    };
+                },
+                .type_reference = @intCast((try self.type_references.getOrPut(MMTypes.TypeReference{
+                    .array_base_machine_type = .void,
+                    .dimension_count = 0,
+                    .fish_type = .void,
+                    .machine_type = .void,
+                    .script = null,
+                    .type_name = 0xFFFFFFFF,
+                })).index),
+                .modifiers = .{},
+                .arguments = .{ .begin = 0, .end = 0 },
+                .bytecode = blk: {
+                    const start = self.bytecode.items.len;
+
+                    try self.bytecode.appendSlice(codegen.bytecode.items);
+
+                    break :blk .{
+                        .begin = @intCast(start),
+                        .end = @intCast(start + codegen.bytecode.items.len),
+                    };
+                },
+                .line_numbers = blk: {
+                    const start = self.line_numbers.items.len;
+
+                    try self.line_numbers.appendSlice(codegen.line_numbers.items);
+
+                    break :blk .{
+                        .begin = @intCast(start),
+                        .end = @intCast(start + codegen.line_numbers.items.len),
+                    };
+                },
+            });
         }
 
         return .{
@@ -1910,7 +2062,7 @@ pub fn generate(self: *Genny) !MMTypes.Script {
             .arguments = self.arguments.items,
             .line_numbers = self.line_numbers.items,
             .local_variables = self.local_variables.items,
-            .function_references = self.function_references.values(),
+            .function_references = self.function_references.keys(),
             .constant_table_s64 = self.s64_constants.keys(),
             .constant_table_float = std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(self.f32_constants.keys())),
             .field_references = self.field_references.keys(),
