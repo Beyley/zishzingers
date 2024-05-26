@@ -185,7 +185,7 @@ pub const Node = union(enum) {
     };
 
     pub const Constructor = struct {
-        body: ?*const Node.Expression,
+        body: ?*Node.Expression,
         parameters: []Function.Parameter,
         modifiers: MMTypes.Modifiers,
     };
@@ -2659,6 +2659,8 @@ pub const Bytecode = struct {
             function: union(enum) {
                 name: []const u8,
                 function: *Node.Function,
+                initializer: void,
+                constructor: []const u8,
             },
             type: Type,
         };
@@ -2669,7 +2671,9 @@ pub const Bytecode = struct {
             src_idx: u16,
             target: []const u8,
         };
-        pub const ExternalInvokeClass = struct {};
+        pub const ExternalInvokeClass = struct {
+            dst_idx: u16,
+        };
 
         pub const LoadBoolConst = struct {
             dst_idx: u16,

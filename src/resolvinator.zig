@@ -329,10 +329,51 @@ pub fn resolve(
         try resolveField(field, script, &script_table, a_string_table);
     }
 
+    for (class.constructors) |constructor| {
+        try resolveConstructorHead(constructor, script, &script_table, a_string_table);
+        try resolveConstructorBody(constructor, script, &script_table, a_string_table);
+    }
+
     for (class.functions) |function| {
         try resolveFunctionHead(function, script, &script_table, a_string_table);
         try resolveFunctionBody(function, script, &script_table, a_string_table);
     }
+}
+
+fn resolveConstructorHead(
+    constructor: *Parser.Node.Constructor,
+    script: *ParsedScript,
+    script_table: *ParsedScriptTable,
+    a_string_table: *AStringTable,
+) Error!void {
+    for (constructor.parameters) |*parameter| {
+        parameter.type = .{ .resolved = try resolveParsedType(parameter.type.parsed, script, script_table, a_string_table) };
+    }
+}
+
+fn resolveConstructorBody(
+    constructor: *Parser.Node.Constructor,
+    script: *ParsedScript,
+    script_table: *ParsedScriptTable,
+    a_string_table: *AStringTable,
+) Error!void {
+    var variable_stack = FunctionVariableStack.init(script.ast.allocator);
+    defer variable_stack.deinit();
+
+    var stack_info: FunctionVariableStackInfo = .{
+        .current_level = 0,
+        .stack = &variable_stack,
+        .function = .{ .constructor = constructor },
+    };
+
+    try resolveExpression(
+        constructor.body.?,
+        voidType(),
+        script,
+        script_table,
+        a_string_table,
+        &stack_info,
+    );
 }
 
 fn resolveFunctionBody(
@@ -348,7 +389,7 @@ fn resolveFunctionBody(
         var stack_info: FunctionVariableStackInfo = .{
             .current_level = 0,
             .stack = &variable_stack,
-            .function = function,
+            .function = .{ .function = function },
         };
 
         if (body.type != .resolved)
@@ -444,7 +485,10 @@ const FunctionVariableStack = std.StringArrayHashMap(struct {
 const FunctionVariableStackInfo = struct {
     const StackLevel = u8;
 
-    function: *Parser.Node.Function,
+    function: union(enum) {
+        function: *Parser.Node.Function,
+        constructor: *Parser.Node.Constructor,
+    },
     current_level: StackLevel,
     stack: *FunctionVariableStack,
 };
@@ -561,7 +605,12 @@ fn resolveExpression(
                     .type = typeFromName(variable_or_class_access),
                 };
             } else {
-                if (!function_variable_stack.?.function.modifiers.static and std.mem.eql(u8, variable_or_class_access, "this")) {
+                const func_modifiers = switch (function_variable_stack.?.function) {
+                    .function => |function| function.modifiers,
+                    .constructor => |constructor| constructor.modifiers,
+                };
+
+                if (!func_modifiers.static and std.mem.eql(u8, variable_or_class_access, "this")) {
                     expression.* = .{
                         .contents = .{ .variable_access = variable_or_class_access },
                         .type = .{ .resolved = try typeReferenceFromScript(
@@ -776,9 +825,14 @@ fn resolveExpression(
                 function_variable_stack.?.current_level -= 1;
             }
 
+            const func_params = switch (function_variable_stack.?.function) {
+                .function => |function| function.parameters,
+                .constructor => |constructor| constructor.parameters,
+            };
+
             //Only add the function parameters on the first scope level (eg. function scope)
             if (function_variable_stack.?.current_level == 1)
-                for (function_variable_stack.?.function.parameters) |parameter| {
+                for (func_params) |parameter| {
                     try function_variable_stack.?.stack.put(parameter.name, .{
                         .level = function_variable_stack.?.current_level,
                         .type = parameter.type,
@@ -853,20 +907,26 @@ fn resolveExpression(
                         );
                     },
                     .return_statement => |return_statement| {
-                        const return_machine_type = switch (function_variable_stack.?.function.return_type.resolved) {
-                            .fish => |fish| fish.machine_type,
-                            .pointer => .s32,
-                            else => unreachable,
+                        const return_machine_type: MMTypes.MachineType = switch (function_variable_stack.?.function) {
+                            .function => |function| switch (function.return_type.resolved) {
+                                .fish => |fish| fish.machine_type,
+                                .pointer => .s32,
+                                else => unreachable,
+                            },
+                            .constructor => .void,
                         };
 
                         if (return_machine_type != .void and return_statement.expression == null)
-                            std.debug.panic("you cant return nothing when the function wants {}", .{function_variable_stack.?.function.return_type.resolved});
+                            std.debug.panic("you cant return nothing when the function wants {}", .{function_variable_stack.?.function.function.return_type.resolved});
 
                         //If this return statement has an expression, type resolve that to the return type of the function
                         if (return_statement.expression) |return_value| {
                             try resolveExpression(
                                 return_value,
-                                function_variable_stack.?.function.return_type,
+                                switch (function_variable_stack.?.function) {
+                                    .function => |function| function.return_type,
+                                    .constructor => voidType(),
+                                },
                                 script,
                                 script_table,
                                 a_string_table,
@@ -929,7 +989,7 @@ fn resolveExpression(
                     .inline_asm_statement => |inline_asm| {
                         for (inline_asm.bytecode) |*bytecode| {
                             switch (bytecode.op) {
-                                .CALL => |*call_bytecode| {
+                                .CALL, .CALLVo, .CALLVsp => |*call_bytecode| {
                                     const type_name = call_bytecode.type.parsed.name;
 
                                     call_bytecode.type = .{ .resolved = try resolveParsedType(
@@ -939,43 +999,41 @@ fn resolveExpression(
                                         a_string_table,
                                     ) };
 
-                                    call_bytecode.function = .{
-                                        .function = blk: {
-                                            const referenced_script = script_table.get(type_name).?;
+                                    call_bytecode.function = blk: {
+                                        const referenced_script = script_table.get(type_name).?;
 
-                                            const class = getScriptClassNode(referenced_script.ast);
+                                        const class = getScriptClassNode(referenced_script.ast);
 
-                                            if (std.mem.eql(u8, call_bytecode.function.name, ".init__")) {
-                                                if (class.modifiers.static) {
-                                                    std.debug.panic("cannot call init func non static class {s}", .{class.name});
-                                                }
-
-                                                @panic("TODO: calling init function from inline asm");
+                                        if (std.mem.eql(u8, call_bytecode.function.name, ".init__")) {
+                                            if (class.modifiers.static) {
+                                                std.debug.panic("cannot call init func on static class {s}", .{class.name});
                                             }
 
-                                            if (std.mem.eql(u8, call_bytecode.function.name, ".ctor__")) {
-                                                if (class.modifiers.static) {
-                                                    std.debug.panic("cannot call ctor on static class", .{});
-                                                }
+                                            break :blk .initializer;
+                                        }
 
-                                                @panic("TODO: calling ctor from inline asm");
+                                        if (std.mem.startsWith(u8, call_bytecode.function.name, ".ctor__")) {
+                                            if (class.modifiers.static) {
+                                                std.debug.panic("cannot call ctor on static class", .{});
                                             }
 
-                                            for (class.functions) |function| {
-                                                try resolveFunctionHead(
-                                                    function,
-                                                    referenced_script,
-                                                    script_table,
-                                                    a_string_table,
-                                                );
+                                            break :blk .{ .constructor = call_bytecode.function.name };
+                                        }
 
-                                                if (std.mem.eql(u8, call_bytecode.function.name, function.mangled_name.?)) {
-                                                    break :blk function;
-                                                }
+                                        for (class.functions) |function| {
+                                            try resolveFunctionHead(
+                                                function,
+                                                referenced_script,
+                                                script_table,
+                                                a_string_table,
+                                            );
+
+                                            if (std.mem.eql(u8, call_bytecode.function.name, function.mangled_name.?)) {
+                                                break :blk .{ .function = function };
                                             }
+                                        }
 
-                                            std.debug.panic("could not find function {s} on type {s}", .{ call_bytecode.function.name, type_name });
-                                        },
+                                        std.debug.panic("could not find function {s} on type {s}", .{ call_bytecode.function.name, type_name });
                                     };
                                 },
                                 else => {},

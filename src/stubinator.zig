@@ -145,10 +145,10 @@ pub fn generateStubs(
 
         //Skip init function
         if (std.mem.eql(u8, demangled_name, ".init")) {
-            try writer.writeAll(
+            try writer.print(
                 \\    @Initialize()
-                \\    fn __init()
-            );
+                \\    {} fn __init()
+            , .{function.modifiers});
 
             // init should always be void
             std.debug.assert(script.type_references[function.type_reference].machine_type == .void);

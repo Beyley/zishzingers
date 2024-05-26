@@ -75,7 +75,7 @@ pub fn main() !void {
             var diag = clap.Diagnostic{};
             var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &arg_iter, .{
                 .diagnostic = &diag,
-                .allocator = gpa.allocator(),
+                .allocator = allocator,
             }) catch |err| {
                 // Report useful error and exit
                 diag.report(std.io.getStdErr().writer(), err) catch {};
@@ -169,6 +169,7 @@ pub fn main() !void {
                 \\-r, --revision <u32>             The revision of the asset to be serialized
                 \\-z, --branch-id <u16>            The branch ID of the asset to be serialized
                 \\-y, --branch-revision <u16>      The branch revision of the asset to be serialized
+                \\--optimize <str>                 Specify the compilation mode used, defaults to Debug (Debug, ReleaseSafe, ReleaseFast, ReleaseSmall)
                 \\                                 this overrides the GUID specified in the file.
                 \\<str>                            The source file
                 \\
@@ -177,7 +178,7 @@ pub fn main() !void {
             var diag = clap.Diagnostic{};
             var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &arg_iter, .{
                 .diagnostic = &diag,
-                .allocator = gpa.allocator(),
+                .allocator = allocator,
             }) catch |err| {
                 // Report useful error and exit
                 diag.report(std.io.getStdErr().writer(), err) catch {};
@@ -263,13 +264,21 @@ pub fn main() !void {
                 };
                 try debug.dumpAst(ast);
 
-                const revision = .{
-                    .head = res.args.revision.?,
-                    .branch_revision = res.args.@"branch-revision" orelse 0,
-                    .branch_id = res.args.@"branch-id" orelse 0,
+                const compilation_options: Genny.CompilationOptions = .{
+                    .optimization_mode = if (res.args.optimize) |optimize| std.meta.stringToEnum(std.builtin.OptimizeMode, optimize).? else .Debug,
+                    .revision = .{
+                        .head = res.args.revision.?,
+                        .branch_revision = res.args.@"branch-revision" orelse 0,
+                        .branch_id = res.args.@"branch-id" orelse 0,
+                    },
                 };
 
-                var genny = Genny.init(ast, &a_string_table, &w_string_table, revision);
+                var genny = Genny.init(
+                    ast,
+                    &a_string_table,
+                    &w_string_table,
+                    compilation_options,
+                );
                 defer genny.deinit();
 
                 const script = try genny.generate();
@@ -292,7 +301,7 @@ pub fn main() !void {
                         .pos = 0,
                     },
                     .compression_flags = compression_flags,
-                    .revision = revision,
+                    .revision = compilation_options.revision,
                 };
                 defer resource_stream.stream.array_list.deinit();
 
@@ -311,7 +320,7 @@ pub fn main() !void {
                     .script,
                     compression_flags,
                     dependencies.keys(), //TODO: write out dependencies by pulling referenced files
-                    revision,
+                    compilation_options.revision,
                     &file_stream,
                     resource_stream.stream.array_list.items,
                     allocator,
@@ -338,7 +347,7 @@ pub fn main() !void {
             var diag = clap.Diagnostic{};
             var res = clap.parseEx(clap.Help, &params, clap.parsers.default, &arg_iter, .{
                 .diagnostic = &diag,
-                .allocator = gpa.allocator(),
+                .allocator = allocator,
             }) catch |err| {
                 // Report useful error and exit
                 diag.report(std.io.getStdErr().writer(), err) catch {};

@@ -10,6 +10,11 @@ const Genny = @This();
 
 pub const Error = std.mem.Allocator.Error || error{InvalidUtf8};
 
+pub const CompilationOptions = struct {
+    revision: MMTypes.Revision,
+    optimization_mode: std.builtin.OptimizeMode,
+};
+
 pub const S64ConstantTable = std.AutoArrayHashMap(i64, void);
 pub const FloatConstantTable = std.ArrayHashMap([4]f32, void, struct {
     pub fn hash(self: @This(), s: [4]f32) u32 {
@@ -44,13 +49,13 @@ bytecode: BytecodeList,
 arguments: ArgumentList,
 line_numbers: LineNumberList,
 local_variables: LocalVariableList,
-revision: MMTypes.Revision,
+compilation_options: CompilationOptions,
 
 pub fn init(
     ast: Parser.Tree,
     a_string_table: *Resolvinator.AStringTable,
     w_string_table: *Resolvinator.WStringTable,
-    revision: MMTypes.Revision,
+    compilation_options: CompilationOptions,
 ) Genny {
     return .{
         .ast = ast,
@@ -65,7 +70,7 @@ pub fn init(
         .local_variables = LocalVariableList.init(ast.allocator),
         .function_references = FunctionReferenceTable.init(ast.allocator),
         .field_references = FieldReferenceTable.init(ast.allocator),
-        .revision = revision,
+        .compilation_options = compilation_options,
     };
 }
 
@@ -97,13 +102,13 @@ const Codegen = struct {
         free_spaces: FreeSpaceList,
         /// The highest register in use
         highest_register: u16,
-        revision: MMTypes.Revision,
+        compilation_options: CompilationOptions,
         local_variables: *LocalVariableTable,
         genny: *Genny,
 
         pub fn init(
             allocator: std.mem.Allocator,
-            revision: MMTypes.Revision,
+            compilation_options: CompilationOptions,
             local_variables: *LocalVariableTable,
             genny: *Genny,
         ) !RegisterAllocator {
@@ -123,7 +128,7 @@ const Codegen = struct {
                 .free_spaces = free_spaces,
                 .highest_register = 0,
                 .allocator = allocator,
-                .revision = revision,
+                .compilation_options = compilation_options,
                 .local_variables = local_variables,
                 .genny = genny,
             };
@@ -226,7 +231,7 @@ const Codegen = struct {
     line_numbers: LineNumberList,
     register_allocator: RegisterAllocator,
     genny: *Genny,
-    revision: MMTypes.Revision,
+    compilation_options: CompilationOptions,
 
     fn ensureAlignment(address: u16, machine_type: MMTypes.MachineType) void {
         // 4 % 0 is UB
@@ -1580,6 +1585,240 @@ fn compileBlock(
                         inline else => |val, op| {
                             const ParamType = @TypeOf(val);
 
+                            switch (ParamType) {
+                                Parser.Bytecode.Params.NopClass => {},
+                                Parser.Bytecode.Params.LoadBoolConst => codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx),
+                                Parser.Bytecode.Params.LoadCharConst => codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 1),
+                                Parser.Bytecode.Params.LoadIntConst => codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3),
+                                Parser.Bytecode.Params.LoadFloatConst => codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3),
+                                Parser.Bytecode.Params.LoadWideStringConst => codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3),
+                                Parser.Bytecode.Params.LoadAsciiStringConst => codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3),
+                                Parser.Bytecode.Params.LoadNullConst => codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3),
+                                Parser.Bytecode.Params.UnaryClass => switch (op) {
+                                    .MOVb, .LOG_NEGb => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx);
+                                    },
+                                    .MOVc => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 1);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 1);
+                                    },
+                                    .MOVi,
+                                    .INCi,
+                                    .DECi,
+                                    .NEGi,
+                                    .BIT_NEGi,
+                                    .LOG_NEGi,
+                                    .ABSi,
+                                    .MOVf,
+                                    .NEGf,
+                                    .ABSf,
+                                    .SQRTf,
+                                    .SINf,
+                                    .COSf,
+                                    .TANf,
+                                    .MOVrp,
+                                    .MOVsp,
+                                    .MOVo,
+                                    => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 3);
+                                    },
+                                    .MOVv4,
+                                    .NEGv4,
+                                    => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 15);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 15);
+                                    },
+                                    .MOVm44 => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 63);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 63);
+                                    },
+                                    .MOVs64 => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 7);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 7);
+                                    },
+                                    .INTb, .FLOATb => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx);
+                                    },
+                                    .INTc, .FLOATc => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 1);
+                                    },
+                                    .INTf, .FLOATi, .EXT_LOAD, .EXT_STORE => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 3);
+                                    },
+                                    .BOOLi => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 3);
+                                    },
+                                    .BOOLc => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 1);
+                                    },
+                                    .BOOLf => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 3);
+                                    },
+                                    .EXT_ADDRESS => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                    },
+                                    // This is a NOP in the runtime
+                                    .MOVcp => {},
+                                    else => @compileError("unhandled op " ++ @tagName(op)),
+                                },
+                                Parser.Bytecode.Params.BinaryClass => switch (op) {
+                                    .EQb, .NEb, .BIT_ORb, .BIT_ANDb, .BIT_XORb => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_a_idx);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_b_idx);
+                                    },
+                                    .LTc, .LTEc, .GTc, .GTEc, .EQc, .NEc => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_a_idx + 1);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_b_idx + 1);
+                                    },
+                                    .ADDi,
+                                    .SUBi,
+                                    .MULi,
+                                    .DIVi,
+                                    .MODi,
+                                    .MINi,
+                                    .MAXi,
+                                    .SLAi,
+                                    .SRAi,
+                                    .SRLi,
+                                    .BIT_ORi,
+                                    .BIT_ANDi,
+                                    .BIT_XORi,
+                                    .ADDf,
+                                    .SUBf,
+                                    .MULf,
+                                    .DIVf,
+                                    .MINf,
+                                    .MAXf,
+                                    => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_a_idx + 3);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_b_idx + 3);
+                                    },
+                                    .ADDs64,
+                                    => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_a_idx + 3);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_b_idx + 3);
+                                    },
+                                    .ADDv4,
+                                    .SUBv4,
+                                    .MULSv4,
+                                    .DIVSv4,
+                                    .DOT2v4,
+                                    .DOT3v4,
+                                    .DOT4v4,
+                                    .CROSS3v4,
+                                    => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 15);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_a_idx + 15);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_b_idx + 15);
+                                    },
+                                    .MULm44 => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 63);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_a_idx + 63);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_b_idx + 63);
+                                    },
+                                    .LTi,
+                                    .LTEi,
+                                    .GTi,
+                                    .GTEi,
+                                    .EQi,
+                                    .NEi,
+                                    .LTf,
+                                    .LTEf,
+                                    .GTf,
+                                    .GTEf,
+                                    .EQf,
+                                    .NEf,
+                                    .EQrp,
+                                    .NErp,
+                                    .EQo,
+                                    .NEo,
+                                    .EQsp,
+                                    .NEsp,
+                                    => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_a_idx + 3);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_b_idx + 3);
+                                    },
+                                    .EQs64,
+                                    .NEs64,
+                                    => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_a_idx + 7);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_b_idx + 7);
+                                    },
+                                    .BIT_ORs64,
+                                    .BIT_ANDs64,
+                                    .BIT_XORs64,
+                                    => {
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 7);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_a_idx + 7);
+                                        codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_b_idx + 7);
+                                    },
+                                    // This is a NOP in the runtime
+                                    .MOVcp, .IT_RESERVED0_C, .IT_RESERVED1_C => {},
+                                    else => @compileError("unhandled op " ++ @tagName(op)),
+                                },
+                                Parser.Bytecode.Params.GetBuiltinMemberClass, Parser.Bytecode.Params.GetMemberClass, Parser.Bytecode.Params.GetElementClass => if (bytecode.machine_type != .void) {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + bytecode.machine_type.size() - 1);
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.base_idx + 3);
+                                },
+                                Parser.Bytecode.Params.SetBuiltinMemberClass, Parser.Bytecode.Params.SetMemberClass, Parser.Bytecode.Params.SetElementClass => if (bytecode.machine_type != .void) {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + bytecode.machine_type.size() - 1);
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.base_idx + 3);
+                                },
+                                Parser.Bytecode.Params.NewArrayClass => {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.size_idx + 3);
+                                },
+                                Parser.Bytecode.Params.ArgClass => if (bytecode.machine_type != .void) {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.arg_idx + bytecode.machine_type.size() - 1);
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + bytecode.machine_type.size() - 1);
+                                },
+                                Parser.Bytecode.Params.CallClass => if (bytecode.machine_type != .void) {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + bytecode.machine_type.size() - 1);
+                                },
+                                Parser.Bytecode.Params.ReturnClass => if (bytecode.machine_type != .void) {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + bytecode.machine_type.size() - 1);
+                                },
+                                Parser.Bytecode.Params.WriteClass => codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + bytecode.machine_type.size() - 1),
+                                Parser.Bytecode.Params.BranchClass => switch (op) {
+                                    .B => {},
+                                    .BEZ,
+                                    .BNEZ,
+                                    => codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx),
+                                    else => @compileError("unhandled op " ++ @tagName(op)),
+                                },
+                                Parser.Bytecode.Params.CastClass => {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.src_idx + 3);
+                                },
+                                Parser.Bytecode.Params.NewObjectClass => {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                },
+                                Parser.Bytecode.Params.LoadVectorConst => {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 15);
+                                },
+                                Parser.Bytecode.Params.LoadLongConst => {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 7);
+                                },
+                                Parser.Bytecode.Params.ExternalInvokeClass => {
+                                    codegen.register_allocator.highest_register = @max(codegen.register_allocator.highest_register, val.dst_idx + 3);
+                                },
+                                else => @compileError("unhandled type " ++ @typeName(ParamType)),
+                            }
+
                             const serialized_bytecode: MMTypes.Bytecode = switch (ParamType) {
                                 Parser.Bytecode.Params.NopClass => MMTypes.Bytecode.init(.{ .NOP = .{} }, bytecode.machine_type),
                                 Parser.Bytecode.Params.LoadBoolConst => MMTypes.Bytecode.init(.{ .LCb = .{
@@ -1654,7 +1893,12 @@ fn compileBlock(
                                         .dst_idx = val.dst_idx,
                                         .call_idx = @intCast((try codegen.genny.function_references.getOrPut(
                                             MMTypes.FunctionReference{
-                                                .name = @intCast((try codegen.genny.a_string_table.getOrPut(val.function.function.mangled_name.?)).index),
+                                                .name = @intCast((try codegen.genny.a_string_table.getOrPut(switch (val.function) {
+                                                    .function => |function| function.mangled_name.?,
+                                                    .initializer => ".init__",
+                                                    .constructor => |constructor| constructor, //TODO: actually check this value
+                                                    .name => |name| std.debug.panic("name {s} not resolved", .{name}),
+                                                })).index),
                                                 .type_reference = @intCast((try codegen.genny.type_references.getOrPut(val.type.resolved.fish)).index),
                                             },
                                         )).index),
@@ -1721,7 +1965,11 @@ fn compileBlock(
 }
 
 fn emitUnreachable(codegen: *Codegen) !void {
-    //TODO: let users put this safety feature under a debug flag
+    // Only emit unreachable in debug and release safe
+    switch (codegen.compilation_options.optimization_mode) {
+        .Debug, .ReleaseSafe => {},
+        .ReleaseFast, .ReleaseSmall => return,
+    }
 
     //TODO: let users force ASSERT to be used, since that can give nice names/text
     //TODO: use WRITE if available, else try to use a patched runtime to call into that game's printf,
@@ -1774,11 +2022,11 @@ fn compileFunction(
         .line_numbers = LineNumberList.init(self.ast.allocator),
         .register_allocator = try Codegen.RegisterAllocator.init(
             self.ast.allocator,
-            self.revision,
+            self.compilation_options,
             &local_variables,
             self,
         ),
-        .revision = self.revision,
+        .compilation_options = self.compilation_options,
         .genny = self,
     };
 
@@ -1958,11 +2206,11 @@ pub fn generate(self: *Genny) !MMTypes.Script {
                 .line_numbers = LineNumberList.init(self.ast.allocator),
                 .register_allocator = try Codegen.RegisterAllocator.init(
                     self.ast.allocator,
-                    self.revision,
+                    self.compilation_options,
                     &local_variables,
                     self,
                 ),
-                .revision = self.revision,
+                .compilation_options = self.compilation_options,
                 .genny = self,
             };
 
