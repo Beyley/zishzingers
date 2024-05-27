@@ -12,6 +12,10 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(exe);
 
+    // In non-debug modes we use c_allocator
+    if (optimize != .Debug and optimize != .ReleaseSafe)
+        exe.linkLibC();
+
     if (b.option(bool, "use_llvm", "Uses LLVM/LLD for compilation") orelse false) {
         exe.use_llvm = false;
         exe.use_lld = false;
