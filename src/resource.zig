@@ -47,7 +47,7 @@ pub fn writeResource(
     //In this revision the dependency table was added
     if (revision.head >= 0x109) {
         //Write a standin value, which will later be replaced by the dependency offset
-        try writer.writeInt(u32, undefined, .big);
+        try writer.writeInt(u32, 0xFFFFFFFF, .big);
     }
 
     //In this revision, compression flag was added to non-static mesh assets
