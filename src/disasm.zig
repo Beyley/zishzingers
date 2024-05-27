@@ -277,11 +277,24 @@ pub fn disassembleBytecode(
                     },
                     MMTypes.GetElementClass => try writer.print("r{d}, r{d}, r{d}", .{ params.dst_idx, params.base_idx, params.src_or_index_idx }),
                     MMTypes.SetElementClass => try writer.print("r{d}, r{d}, r{d}", .{ params.base_idx, params.src_idx, params.index_idx }),
-                    MMTypes.NewArrayClass => try writer.print("r{d}, t{d}, r{d}", .{
-                        params.dst_idx,
-                        params.type_idx,
-                        params.size_idx,
-                    }),
+                    MMTypes.NewArrayClass => {
+                        const type_reference = script.type_references[params.type_idx];
+                        if (type_reference.machine_type != .safe_ptr and type_reference.machine_type != .object_ref)
+                            try writer.print("r{d}, {s}, r{d}", .{
+                                params.dst_idx,
+                                @tagName(type_reference.machine_type),
+                                params.size_idx,
+                            })
+                        else if (type_reference.type_name == 0xFFFFFFFF) try writer.print("r{d}, g{d}, r{d}", .{
+                            params.dst_idx,
+                            type_reference.script.?.guid,
+                            params.size_idx,
+                        }) else try writer.print("r{d}, {s}, r{d}", .{
+                            params.dst_idx,
+                            script.a_string_table.strings[type_reference.type_name],
+                            params.size_idx,
+                        });
+                    },
                     MMTypes.WriteClass => try writer.print("r{d}", .{params.src_idx}),
                     MMTypes.ArgClass => try writer.print("a{d}, r{d}", .{ params.arg_idx, params.src_idx }),
                     MMTypes.CallClass => {
