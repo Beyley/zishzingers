@@ -57,6 +57,10 @@ pub const ParsedScriptTable = std.StringHashMap(*ParsedScript);
 
 pub const Error = std.mem.Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError || Parser.Error;
 
+const Self = @This();
+
+type_intern_pool: *Parser.TypeInternPool,
+
 fn getScriptClassNode(tree: Parser.Tree) *Parser.Node.Class {
     for (tree.root_elements.items) |node| {
         switch (node) {
@@ -81,6 +85,7 @@ fn getImportPathFromImportTarget(allocator: std.mem.Allocator, target: []const u
 }
 
 fn collectImportedTypes(
+    self: *Self,
     class_name: []const u8,
     defined_libraries: Libraries,
     script_table: *ParsedScriptTable,
@@ -122,13 +127,13 @@ fn collectImportedTypes(
                         break :blk try lexemes.toOwnedSlice();
                     };
 
-                    const ast = try Parser.parse(script.ast.allocator, lexemes);
+                    const parser = try Parser.parse(script.ast.allocator, lexemes, self.type_intern_pool);
 
-                    const class = getScriptClassNode(ast);
+                    const class = getScriptClassNode(parser.tree);
 
                     if (script_table.get(class.name) == null)
-                        try recursivelyResolveScript(
-                            ast,
+                        try self.recursivelyResolveScript(
+                            parser.tree,
                             defined_libraries,
                             script_table,
                             null,
@@ -197,6 +202,7 @@ fn collectImportedLibraries(script: *ParsedScript, defined_libraries: Libraries)
 }
 
 fn recursivelyResolveScript(
+    self: *Self,
     tree: Parser.Tree,
     defined_libraries: Libraries,
     script_table: *ParsedScriptTable,
@@ -232,7 +238,7 @@ fn recursivelyResolveScript(
     try collectImportedLibraries(script, defined_libraries);
 
     //Collect all the script types which are imported
-    try collectImportedTypes(script.class_name, defined_libraries, script_table, a_string_table);
+    try self.collectImportedTypes(script.class_name, defined_libraries, script_table, a_string_table);
 
     script.is_thing = isScriptThing(script, script_table);
 
@@ -300,11 +306,16 @@ pub fn resolve(
     defined_libraries: Libraries,
     a_string_table: *AStringTable,
     script_identifier: ?MMTypes.ResourceIdentifier,
+    type_intern_pool: *Parser.TypeInternPool,
 ) Error!void {
     var script_table = ParsedScriptTable.init(tree.allocator);
     defer script_table.deinit();
 
-    try recursivelyResolveScript(
+    var self: Self = .{
+        .type_intern_pool = type_intern_pool,
+    };
+
+    try self.recursivelyResolveScript(
         tree,
         defined_libraries,
         &script_table,
@@ -326,32 +337,39 @@ pub fn resolve(
     std.debug.print("type resolving {s}\n", .{script.class_name});
 
     for (class.fields) |field| {
-        try resolveField(field, script, &script_table, a_string_table);
+        try self.resolveField(field, script, &script_table, a_string_table);
     }
 
     for (class.constructors) |constructor| {
-        try resolveConstructorHead(constructor, script, &script_table, a_string_table);
-        try resolveConstructorBody(constructor, script, &script_table, a_string_table);
+        try self.resolveConstructorHead(constructor, script, &script_table, a_string_table);
+        try self.resolveConstructorBody(constructor, script, &script_table, a_string_table);
     }
 
     for (class.functions) |function| {
-        try resolveFunctionHead(function, script, &script_table, a_string_table);
-        try resolveFunctionBody(function, script, &script_table, a_string_table);
+        try self.resolveFunctionHead(function, script, &script_table, a_string_table);
+        try self.resolveFunctionBody(function, script, &script_table, a_string_table);
     }
 }
 
 fn resolveConstructorHead(
+    self: *Self,
     constructor: *Parser.Node.Constructor,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
 ) Error!void {
     for (constructor.parameters) |*parameter| {
-        parameter.type = .{ .resolved = try resolveParsedType(parameter.type.parsed, script, script_table, a_string_table) };
+        parameter.type = .{ .resolved = try self.resolveParsedType(
+            parameter.type.parsed,
+            script,
+            script_table,
+            a_string_table,
+        ) };
     }
 }
 
 fn resolveConstructorBody(
+    self: *Self,
     constructor: *Parser.Node.Constructor,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
@@ -366,7 +384,7 @@ fn resolveConstructorBody(
         .function = .{ .constructor = constructor },
     };
 
-    try resolveExpression(
+    try self.resolveExpression(
         constructor.body.?,
         voidType(),
         script,
@@ -377,11 +395,13 @@ fn resolveConstructorBody(
 }
 
 fn resolveFunctionBody(
+    self: *Self,
     function: *Parser.Node.Function,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
 ) Error!void {
+    _ = self; // autofix
     if (function.body) |body| {
         var variable_stack = FunctionVariableStack.init(script.ast.allocator);
         defer variable_stack.deinit();
@@ -410,11 +430,13 @@ fn resolveFunctionBody(
 }
 
 fn resolveFunctionHead(
+    self: *Self,
     function: *Parser.Node.Function,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
 ) Error!void {
+    _ = self; // autofix
     std.debug.print("resolving function head {s}\n", .{function.name});
 
     if (function.return_type != .resolved)
@@ -479,7 +501,7 @@ fn asciiStringType(a_string_table: *AStringTable) Error!Parser.Type.Resolved {
 
 const FunctionVariableStack = std.StringArrayHashMap(struct {
     level: u8,
-    type: Parser.Type,
+    type: Parser.TypeInternPool.Index,
 });
 
 const FunctionVariableStackInfo = struct {
@@ -494,13 +516,15 @@ const FunctionVariableStackInfo = struct {
 };
 
 fn resolveExpression(
+    self: *Self,
     expression: *Parser.Node.Expression,
-    target_type: ?Parser.Type,
+    target_type: ?Parser.TypeInternPool.Index,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
     function_variable_stack: ?*FunctionVariableStackInfo,
 ) Error!void {
+    _ = self; // autofix
     //If this expression has already been resolved, do nothing
     if (expression.type == .resolved) {
         if (target_type) |target_parsed_type|
@@ -1812,51 +1836,58 @@ fn scriptDerivesOtherScript(script: *ParsedScript, other: *ParsedScript, script_
 }
 
 fn resolveParsedType(
-    parsed_type: Parser.Type.Parsed,
+    self: *Self,
+    parsed_type: *Parser.TypeInternPool.Type,
     script: ?*ParsedScript,
     script_table: ?*ParsedScriptTable,
     a_string_table: ?*AStringTable,
-) Error!Parser.Type.Resolved {
+) Error!void {
+    _ = self; // autofix
+
     if (parsed_type.indirection_count > 0) {
-        return Parser.Type.Resolved{
-            .pointer = .{
-                //TODO: arrays of pointers?
-                .indirection_count = parsed_type.indirection_count,
-                .type = .{ .fish = std.meta.stringToEnum(MMTypes.FishType, parsed_type.name).? },
-                .fish = .{
-                    .array_base_machine_type = .void,
-                    .dimension_count = 0,
-                    .fish_type = .s32,
-                    .machine_type = .s32,
-                    .script = null,
-                    .type_name = @intCast((try a_string_table.?.getOrPut("ptr")).index),
+        parsed_type.* = .{
+            .resolved = .{
+                .pointer = .{
+                    //TODO: arrays of pointers?
+                    .indirection_count = parsed_type.indirection_count,
+                    .type = .{ .fish = std.meta.stringToEnum(MMTypes.FishType, parsed_type.name).? },
+                    .fish = .{
+                        .array_base_machine_type = .void,
+                        .dimension_count = 0,
+                        .fish_type = .s32,
+                        .machine_type = .s32,
+                        .script = null,
+                        .type_name = @intCast((try a_string_table.?.getOrPut("ptr")).index),
+                    },
                 },
             },
         };
     }
 
     if (std.meta.stringToEnum(MMTypes.FishType, parsed_type.name)) |fish_type| {
-        return .{
-            .fish = if (parsed_type.dimension_count > 0)
-                MMTypes.TypeReference{
-                    .array_base_machine_type = fish_type.toMachineType(),
-                    .dimension_count = parsed_type.dimension_count,
-                    .fish_type = .void,
-                    .machine_type = .object_ref,
-                    //null
-                    .type_name = 0xFFFFFFFF,
-                    .script = null,
-                }
-            else
-                MMTypes.TypeReference{
-                    .array_base_machine_type = .void,
-                    .dimension_count = 0,
-                    .fish_type = fish_type,
-                    .machine_type = fish_type.toMachineType(),
-                    //null
-                    .type_name = 0xFFFFFFFF,
-                    .script = null,
-                },
+        parsed_type.* = .{
+            .resolved = .{
+                .fish = if (parsed_type.dimension_count > 0)
+                    MMTypes.TypeReference{
+                        .array_base_machine_type = fish_type.toMachineType(),
+                        .dimension_count = parsed_type.dimension_count,
+                        .fish_type = .void,
+                        .machine_type = .object_ref,
+                        //null
+                        .type_name = 0xFFFFFFFF,
+                        .script = null,
+                    }
+                else
+                    MMTypes.TypeReference{
+                        .array_base_machine_type = .void,
+                        .dimension_count = 0,
+                        .fish_type = fish_type,
+                        .machine_type = fish_type.toMachineType(),
+                        //null
+                        .type_name = 0xFFFFFFFF,
+                        .script = null,
+                    },
+            },
         };
     } else {
         if (parsed_type.base_type) |base_type| {
@@ -1890,7 +1921,12 @@ fn resolveParsedType(
     }
 }
 
-pub fn typeReferenceFromScriptEnum(script: *const ParsedScript, enumeration: *Parser.Node.Enum, dimension_count: u8, a_string_table: *AStringTable) Error!Parser.Type.Resolved {
+pub fn typeReferenceFromScriptEnum(
+    script: *const ParsedScript,
+    enumeration: *Parser.Node.Enum,
+    dimension_count: u8,
+    a_string_table: *AStringTable,
+) Error!MMTypes.TypeReference {
     //Qualify the name
     const qualified_name = try std.fmt.allocPrint(script.ast.allocator, "{s}.{s}", .{ script.class_name, enumeration.name });
 
@@ -1903,7 +1939,7 @@ pub fn typeReferenceFromScriptEnum(script: *const ParsedScript, enumeration: *Pa
 
     const base_type = enumeration.backing_type.resolved.fish;
 
-    return .{ .fish = if (dimension_count > 0)
+    return if (dimension_count > 0)
         MMTypes.TypeReference{
             .array_base_machine_type = base_type.machine_type,
             .dimension_count = dimension_count,
@@ -1920,10 +1956,14 @@ pub fn typeReferenceFromScriptEnum(script: *const ParsedScript, enumeration: *Pa
             .machine_type = base_type.machine_type,
             .type_name = @intCast(name_idx.index),
             .script = null,
-        } };
+        };
 }
 
-pub fn typeReferenceFromScript(script: *ParsedScript, dimension_count: u8, a_string_table: *AStringTable) Error!Parser.Type.Resolved {
+pub fn typeReferenceFromScript(
+    script: *ParsedScript,
+    dimension_count: u8,
+    a_string_table: *AStringTable,
+) Error!Parser.TypeInternPool.Type.Resolved {
     //Get the idx of the name of this script, or put into the string table
     const name_idx = try a_string_table.getOrPut(script.class_name);
 
@@ -1948,6 +1988,7 @@ pub fn typeReferenceFromScript(script: *ParsedScript, dimension_count: u8, a_str
 }
 
 fn resolveField(
+    self: *Self,
     field: *Parser.Node.Field,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
@@ -1955,13 +1996,15 @@ fn resolveField(
 ) Error!void {
     std.debug.print("type resolving field {s}\n", .{field.name});
 
+    const field_type = self.type_intern_pool.get(field.type);
+
     //early return if its already resolved
-    if (field.type == .resolved)
+    if (field_type == .resolved)
         return;
 
-    switch (field.type) {
+    switch (field_type) {
         .parsed => |parsed_type| {
-            field.type = .{
+            field_type.* = .{
                 .resolved = try resolveParsedType(
                     parsed_type,
                     script,

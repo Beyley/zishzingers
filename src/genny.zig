@@ -1,4 +1,4 @@
-//! Generates a script file from a type resolved AST
+//! Generates a compiled script file from a type resolved AST
 
 const std = @import("std");
 
