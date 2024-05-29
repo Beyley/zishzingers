@@ -92,11 +92,15 @@ pub const TypeInternPool = struct {
         _,
     };
 
-    pub fn get(self: *const TypeInternPool, index: Index) *Type {
+    pub fn get(self: *const TypeInternPool, index: Index) *const Type {
         return &self.hash_map.values()[@intFromEnum(index)];
     }
 
-    pub fn getKey(self: *const TypeInternPool, index: Index) *Key {
+    pub fn getMutable(self: *const TypeInternPool, index: Index) *Type {
+        return &self.hash_map.values()[@intFromEnum(index)];
+    }
+
+    pub fn getKey(self: *const TypeInternPool, index: Index) *const Key {
         return &self.hash_map.keys()[@intFromEnum(index)];
     }
 

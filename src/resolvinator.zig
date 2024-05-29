@@ -359,10 +359,8 @@ fn resolveConstructorHead(
     a_string_table: *AStringTable,
 ) Error!void {
     for (constructor.parameters) |*parameter| {
-        const parameter_type = self.type_intern_pool.get(parameter.type);
-
         try self.resolveParsedType(
-            parameter_type,
+            parameter.type,
             script,
             script_table,
             a_string_table,
@@ -444,7 +442,7 @@ fn resolveFunctionHead(
     const return_type = self.type_intern_pool.get(function.return_type);
 
     try self.resolveParsedType(
-        return_type,
+        function.return_type,
         script,
         script_table,
         a_string_table,
@@ -456,7 +454,7 @@ fn resolveFunctionHead(
         const parameter_type = self.type_intern_pool.get(parameter.type);
 
         try self.resolveParsedType(
-            parameter_type,
+            parameter.type,
             script,
             script_table,
             a_string_table,
@@ -520,7 +518,7 @@ fn resolveExpression(
 
     if (target_type) |intern_target_type| {
         try self.resolveParsedType(
-            self.type_intern_pool.get(intern_target_type),
+            intern_target_type,
             script,
             script_table,
             a_string_table,
@@ -628,7 +626,7 @@ fn resolveExpression(
                     .indirection_count = 0,
                 } });
                 try self.resolveParsedType(
-                    self.type_intern_pool.get(intern_type),
+                    intern_type,
                     script,
                     script_table,
                     a_string_table,
@@ -659,7 +657,7 @@ fn resolveExpression(
 
                     // Resolve the parsed type
                     try self.resolveParsedType(
-                        self.type_intern_pool.get(expression.type),
+                        expression.type,
                         script,
                         script_table,
                         a_string_table,
@@ -684,7 +682,7 @@ fn resolveExpression(
             expression.type = try self.type_intern_pool.fromFishType(.bool);
             // Resolve the type
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -693,7 +691,7 @@ fn resolveExpression(
         .wide_string_literal => {
             expression.type = try self.type_intern_pool.wideStringType();
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -702,7 +700,7 @@ fn resolveExpression(
         .ascii_string_literal => {
             expression.type = try self.type_intern_pool.asciiStringType();
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -856,7 +854,7 @@ fn resolveExpression(
         .block => |block| {
             expression.type = try self.type_intern_pool.fromFishType(.void);
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -927,7 +925,7 @@ fn resolveExpression(
                         } else {
                             //Resolve the variable declaration type
                             try self.resolveParsedType(
-                                self.type_intern_pool.get(variable_declaration.type),
+                                variable_declaration.type,
                                 script,
                                 script_table,
                                 a_string_table,
@@ -1053,7 +1051,7 @@ fn resolveExpression(
                                     const type_name = call_bytecode_type.parsed.name;
 
                                     try self.resolveParsedType(
-                                        call_bytecode_type,
+                                        call_bytecode.type,
                                         script,
                                         script_table,
                                         a_string_table,
@@ -1120,7 +1118,7 @@ fn resolveExpression(
 
             expression.type = try self.type_intern_pool.fromFishType(.vec2);
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1141,7 +1139,7 @@ fn resolveExpression(
 
             expression.type = try self.type_intern_pool.fromFishType(.vec4);
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1168,7 +1166,7 @@ fn resolveExpression(
 
             expression.type = try self.type_intern_pool.fromFishType(.bool);
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1245,7 +1243,7 @@ fn resolveExpression(
 
             expression.type = try self.type_intern_pool.fromFishType(.bool);
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1272,7 +1270,7 @@ fn resolveExpression(
 
             expression.type = try self.type_intern_pool.fromFishType(.bool);
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1302,7 +1300,7 @@ fn resolveExpression(
 
             expression.type = math_op.lefthand.type;
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1310,7 +1308,7 @@ fn resolveExpression(
         },
         .cast => |cast_expression| {
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1362,7 +1360,7 @@ fn resolveExpression(
             } else try self.type_intern_pool.fromFishType(dereference_type.resolved.pointer.type.fish);
 
             try self.resolveParsedType(
-                self.type_intern_pool.get(expression.type),
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1888,11 +1886,13 @@ fn scriptDerivesOtherScript(script: *ParsedScript, other: *ParsedScript, script_
 
 fn resolveParsedType(
     self: *Self,
-    intern_type: *Parser.TypeInternPool.Type,
+    type_index: Parser.TypeInternPool.Index,
     script: ?*ParsedScript,
     script_table: ?*ParsedScriptTable,
     a_string_table: ?*AStringTable,
 ) Error!void {
+    const intern_type = self.type_intern_pool.getMutable(type_index);
+
     if (intern_type.* == .resolved)
         return;
 
@@ -1993,7 +1993,12 @@ pub fn typeReferenceFromScriptEnum(
     const backing_type = self.type_intern_pool.get(enumeration.backing_type);
 
     // Resolve the enumeration's backing type, if needed
-    try self.resolveParsedType(backing_type, script, script_table, a_string_table);
+    try self.resolveParsedType(
+        enumeration.backing_type,
+        script,
+        script_table,
+        a_string_table,
+    );
 
     const base_type = backing_type.resolved.fish;
 
@@ -2063,7 +2068,7 @@ fn resolveField(
     switch (field_type.*) {
         .parsed => {
             try self.resolveParsedType(
-                field_type,
+                field.type,
                 script,
                 script_table,
                 a_string_table,
