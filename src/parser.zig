@@ -46,24 +46,42 @@ pub const FromImportWanted = union(enum) {
 };
 
 pub const TypeInternPool = struct {
-    pub const HashMap = std.ArrayHashMap(Type.Parsed, Type, struct {
-        pub fn hash(self: @This(), s: Type.Parsed) u32 {
+    const Key = union(enum(u8)) {
+        parsed: Type.Parsed = 0,
+        integer_literal: void = 1,
+        float_literal: void = 2,
+        null_literal: void = 3,
+    };
+
+    pub const HashMap = std.ArrayHashMap(Key, Type, struct {
+        pub fn hash(self: @This(), s: Key) u32 {
             _ = self;
 
-            return @truncate(
-                std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(@as([]const u64, &.{
-                    (@as(u64, @intFromBool(s.base_type == null)) << 9) | (@as(u64, s.indirection_count) << 8) | s.dimension_count,
-                }))) ^
-                    std.hash.Wyhash.hash(0, s.base_type orelse "") ^
-                    std.hash.Wyhash.hash(0, s.name),
-            );
+            const tag = std.hash.uint32(@intFromEnum(s));
+
+            return switch (s) {
+                .integer_literal, .float_literal, .null_literal => tag,
+                .parsed => |parsed| @truncate(
+                    std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(@as([]const u64, &.{
+                        (@as(u64, @intFromBool(parsed.base_type == null)) << 9) | (@as(u64, parsed.indirection_count) << 8) | parsed.dimension_count,
+                    }))) ^
+                        std.hash.Wyhash.hash(0, parsed.base_type orelse "") ^
+                        std.hash.Wyhash.hash(0, parsed.name) ^
+                        tag,
+                ),
+            };
         }
 
-        pub fn eql(self: @This(), a: Type.Parsed, b: Type.Parsed, b_index: usize) bool {
+        pub fn eql(self: @This(), a: Key, b: Key, b_index: usize) bool {
             _ = self; // autofix
             _ = b_index; // autofix
 
-            return a.eql(b);
+            return switch (a) {
+                .parsed => |parsed| b == .parsed and parsed.eql(b.parsed),
+                .integer_literal => b == .integer_literal,
+                .float_literal => b == .float_literal,
+                .null_literal => b == .null_literal,
+            };
         }
     }, true);
 
@@ -78,7 +96,11 @@ pub const TypeInternPool = struct {
         return &self.hash_map.values()[@intFromEnum(index)];
     }
 
-    pub fn getIndex(self: *const TypeInternPool, parsed: Type.Parsed) ?Index {
+    pub fn getKey(self: *const TypeInternPool, index: Index) *Key {
+        return &self.hash_map.keys()[@intFromEnum(index)];
+    }
+
+    pub fn getIndex(self: *const TypeInternPool, parsed: Key) ?Index {
         const index = self.hash_map.getIndex(parsed);
 
         if (index) |idx|
@@ -87,14 +109,26 @@ pub const TypeInternPool = struct {
             return null;
     }
 
-    pub fn put(self: *TypeInternPool, value: Type) !Index {
-        try self.hash_map.putNoClobber(value.parsed, value);
+    pub fn putParsed(self: *TypeInternPool, value: Type) !Index {
+        try self.hash_map.putNoClobber(.{ .parsed = value.parsed }, value);
 
-        return self.getIndex(value.parsed).?;
+        return self.getIndex(.{ .parsed = value.parsed }).?;
     }
 
-    pub fn getOrPut(self: *TypeInternPool, value: Type) !Index {
-        return self.getIndex(value.parsed) orelse self.put(value);
+    pub fn getOrPutParsed(self: *TypeInternPool, value: Type) !Index {
+        return self.getIndex(.{ .parsed = value.parsed }) orelse self.putParsed(value);
+    }
+
+    pub fn integerLiteral(self: *TypeInternPool) !Index {
+        return @enumFromInt((try self.hash_map.getOrPutValue(.integer_literal, .{ .resolved = .integer_literal })).index);
+    }
+
+    pub fn floatLiteral(self: *TypeInternPool) !Index {
+        return @enumFromInt((try self.hash_map.getOrPutValue(.float_literal, .{ .resolved = .float_literal })).index);
+    }
+
+    pub fn nullLiteral(self: *TypeInternPool) !Index {
+        return @enumFromInt((try self.hash_map.getOrPutValue(.null_literal, .{ .resolved = .null_literal })).index);
     }
 
     pub fn fromFishType(self: *TypeInternPool, machine_type: MMTypes.FishType) !Index {
@@ -107,10 +141,28 @@ pub const TypeInternPool = struct {
             },
         };
 
-        if (self.getIndex(value.parsed)) |index|
+        if (self.getIndex(.{ .parsed = value.parsed })) |index|
             return index;
 
-        return self.put(value);
+        return self.putParsed(value);
+    }
+
+    pub fn wideStringType(self: *TypeInternPool) !Index {
+        return self.getOrPutParsed(.{ .parsed = .{
+            .name = "String",
+            .base_type = null,
+            .indirection_count = 0,
+            .dimension_count = 0,
+        } });
+    }
+
+    pub fn asciiStringType(self: *TypeInternPool) !Index {
+        return self.getOrPutParsed(.{ .parsed = .{
+            .name = "StringA",
+            .base_type = null,
+            .indirection_count = 0,
+            .dimension_count = 0,
+        } });
     }
 
     pub const Type = union(enum) {
@@ -165,7 +217,6 @@ pub const TypeInternPool = struct {
 
             fish: MMTypes.TypeReference,
             pointer: Pointer,
-            type: []const u8,
             integer_literal: void,
             float_literal: void,
             null_literal: void,
@@ -177,7 +228,6 @@ pub const TypeInternPool = struct {
                 return switch (self) {
                     .fish => |fish| fish.eql(other.fish),
                     .pointer => |pointer| pointer.eql(other.pointer),
-                    .type => |comptime_type| std.mem.eql(u8, comptime_type, other.type),
                     .integer_literal, .float_literal, .null_literal => true,
                 };
             }
@@ -323,11 +373,7 @@ pub const Node = union(enum) {
                 if (std.meta.activeTag(self.type) != std.meta.activeTag(other.type))
                     return false;
 
-                return switch (self.type) {
-                    .parsed => self.type.parsed.eql(other.type.parsed),
-                    .resolved => self.type.resolved.eql(other.type.resolved),
-                    .unknown => return true,
-                };
+                return self.type == other.type;
             }
 
             pub fn sliceEql(self: []const *const Parameter, other: []const *const Parameter) bool {
@@ -1211,7 +1257,7 @@ fn consumeInlineAsmStatement(self: *Self) !Node {
                                     break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
                                         .dst_idx = dst_idx,
                                         .base_idx = base_idx,
-                                        .type = try self.type_intern_pool.getOrPut(.{ .parsed = .{
+                                        .type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
                                             .name = type_name,
                                             .base_type = null,
                                             .dimension_count = 0,
@@ -1246,7 +1292,7 @@ fn consumeInlineAsmStatement(self: *Self) !Node {
 
                                     break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
                                         .base_idx = base_idx,
-                                        .type = try self.type_intern_pool.getOrPut(.{
+                                        .type = try self.type_intern_pool.getOrPutParsed(.{
                                             .parsed = .{
                                                 .name = type_name,
                                                 .base_type = null,
@@ -1300,7 +1346,7 @@ fn consumeInlineAsmStatement(self: *Self) !Node {
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
                                     .dst_idx = try self.consumeRegister(true),
-                                    .type = try self.type_intern_pool.getOrPut(.{ .parsed = .{
+                                    .type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
                                         .base_type = null,
                                         .dimension_count = 0,
                                         .indirection_count = 0,
@@ -1348,7 +1394,7 @@ fn consumeInlineAsmStatement(self: *Self) !Node {
 
                                     break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
                                         .dst_idx = dst_idx,
-                                        .type = try self.type_intern_pool.getOrPut(.{ .parsed = .{
+                                        .type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
                                             .name = type_name,
                                             .base_type = null,
                                             .dimension_count = 0,
@@ -1395,7 +1441,7 @@ fn consumeInlineAsmStatement(self: *Self) !Node {
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
                                     .dst_idx = try self.consumeRegister(true),
-                                    .type = try self.type_intern_pool.getOrPut(.{
+                                    .type = try self.type_intern_pool.getOrPutParsed(.{
                                         .parsed = .{
                                             .name = self.iter.next().?,
                                             .base_type = null,
@@ -1421,7 +1467,7 @@ fn consumeInlineAsmStatement(self: *Self) !Node {
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
                                     .dst_idx = try self.consumeRegister(true),
-                                    .type = try self.type_intern_pool.getOrPut(.{ .parsed = .{
+                                    .type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
                                         .base_type = null,
                                         .dimension_count = 0,
                                         .indirection_count = 0,
@@ -1509,7 +1555,7 @@ fn consumePrimaryExpression(self: *Self) Error!*Node.Expression {
 
                 expression.* = .{
                     .contents = .null_literal,
-                    .type = try self.type_intern_pool.getOrPut(.{ .parsed = .{
+                    .type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
                         .name = "null",
                         .dimension_count = 0,
                         .base_type = null,
@@ -2086,7 +2132,7 @@ fn consumeTypeName(self: *Self) !TypeInternPool.Index {
     while (self.consumeArbitraryLexemeIfAvailable("*"))
         indirection_count += 1;
 
-    return try self.type_intern_pool.getOrPut(.{ .parsed = .{
+    return try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
         .name = name,
         .dimension_count = dimension_count,
         .base_type = base_type,
