@@ -9,6 +9,7 @@ const Error = std.io.AnyWriter.Error;
 indent: usize,
 writer: std.io.AnyWriter,
 a_string_table: *Resolvinator.AStringTable,
+type_intern_pool: *Parser.TypeInternPool,
 
 const Self = @This();
 
@@ -133,7 +134,9 @@ fn printClass(self: *Self, class: *Node.Class) Error!void {
     }
 }
 
-fn printType(self: *Self, tree_type: Parser.Type) Error!void {
+fn printType(self: *Self, tree_type_index: Parser.TypeInternPool.Index) Error!void {
+    const tree_type = self.type_intern_pool.get(tree_type_index).*;
+
     switch (tree_type) {
         .parsed => |parsed| {
             if (parsed.dimension_count > 0) {
@@ -178,7 +181,6 @@ fn printType(self: *Self, tree_type: Parser.Type) Error!void {
                 .integer_literal => try self.writer.print("Integer Literal", .{}),
                 .float_literal => try self.writer.print("Float Literal", .{}),
                 .null_literal => try self.writer.print("Null Literal", .{}),
-                .type => |type_name| try self.writer.writeAll(type_name),
             }
         },
         .unknown => try self.writer.writeAll("unknown"),

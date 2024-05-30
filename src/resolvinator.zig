@@ -113,9 +113,12 @@ fn collectImportedTypes(
 
                     std.debug.print("reading {s}\n", .{import_path});
 
+                    //TODO: let the user specify a "system allocator" separate from the script allocator
+                    var lexeme_allocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+
                     //Get all the lexemes into a single big array
                     const lexemes = blk: {
-                        var lexemes = std.ArrayList([]const u8).init(script.ast.allocator);
+                        var lexemes = std.ArrayList([]const u8).init(lexeme_allocator.allocator());
                         defer lexemes.deinit();
 
                         var lexizer = Parser.Lexemeizer{ .source = try import_file.readToEndAlloc(script.ast.allocator, std.math.maxInt(usize)) };
@@ -128,6 +131,7 @@ fn collectImportedTypes(
                     };
 
                     const parser = try Parser.parse(script.ast.allocator, lexemes, self.type_intern_pool);
+                    lexeme_allocator.deinit();
 
                     const class = getScriptClassNode(parser.tree);
 
@@ -272,7 +276,7 @@ fn recursivelyResolveScript(
 
                     break :blk false;
                 },
-                .type_reference = try typeReferenceFromScript(base_script, 0, a_string_table),
+                .type_reference = null,
             },
         };
     }
@@ -331,6 +335,17 @@ pub fn resolve(
         0,
         a_string_table,
     ));
+
+    var scripts = script_table.valueIterator();
+    while (scripts.next()) |script| {
+        const script_class = getScriptClassNode(script.*.ast);
+
+        if (script_class.base_class != .none) {
+            const base_class = script_class.base_class.resolved;
+
+            script_class.base_class.resolved.type_reference = try typeReferenceFromScript(script_table.get(base_class.name).?, 0, a_string_table);
+        }
+    }
 
     const script = script_table.get(class.name) orelse unreachable;
 
@@ -411,9 +426,7 @@ fn resolveFunctionBody(
             .function = .{ .function = function },
         };
 
-        const body_type = self.type_intern_pool.get(body.type);
-
-        if (body_type.* != .resolved)
+        if (body.type == .unknown or self.type_intern_pool.get(body.type).* != .resolved)
             //TODO: once i parse the `=>` syntax for function bodies, this `null` for target type needs to be made correct!!!
             //      should i make function_body a special expression type? im not sure yet.
             //      maybe this could be as simple as "if block, target type == void, if not block, target type is the function return type" that should work
@@ -500,7 +513,7 @@ fn resolveExpression(
     a_string_table: *AStringTable,
     function_variable_stack: ?*FunctionVariableStackInfo,
 ) Error!void {
-    {
+    if (expression.type != .unknown) {
         const expression_type = self.type_intern_pool.get(expression.type);
 
         //If this expression has already been resolved, do nothing
@@ -511,8 +524,6 @@ fn resolveExpression(
                 if (!target_parsed_type.resolved.eql(expression_type.resolved))
                     std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression_type.resolved });
             }
-
-            return;
         }
     }
 
@@ -784,7 +795,9 @@ fn resolveExpression(
 
                     std.debug.panic("unable to find function {s}", .{function_call.function.name});
                 };
+
                 std.debug.print("found func {s} for call {s}\n", .{ function.name, function_call.function.name });
+
                 try self.resolveFunctionHead(
                     function,
                     function_script,
@@ -820,6 +833,10 @@ fn resolveExpression(
                 }
 
                 expression.type = function.return_type;
+            }
+
+            if (function_call.function != .function) {
+                std.debug.panic("function call is not resolved correctly {s}", .{function_call.function.name});
             }
         },
         .logical_negation => |logical_negation| {
@@ -1046,7 +1063,7 @@ fn resolveExpression(
                         for (inline_asm.bytecode) |*bytecode| {
                             switch (bytecode.op) {
                                 .CALL, .CALLVo, .CALLVsp => |*call_bytecode| {
-                                    const call_bytecode_type = self.type_intern_pool.get(call_bytecode.type);
+                                    const call_bytecode_type = self.type_intern_pool.getKey(call_bytecode.type);
 
                                     const type_name = call_bytecode_type.parsed.name;
 
@@ -1693,131 +1710,136 @@ fn findFunction(
     defer candidates.deinit();
 
     if (source_expression) |function_source_expression| {
+        const function_source_expression_contents_type = function_source_expression.contents;
         const function_source_expression_type = self.type_intern_pool.get(function_source_expression.type);
 
-        switch (function_source_expression_type.resolved) {
-            .fish => |fish| {
-                switch (fish.machine_type) {
-                    .object_ref, .safe_ptr => {
-                        const source_class_name = a_string_table.keys()[fish.type_name];
+        switch (function_source_expression_contents_type) {
+            .class_access => |class| {
+                const type_script = script_table.get(class).?;
 
-                        //Recursively go through all the parent classes, and try to find a matching function
-                        var source_script = script_table.get(source_class_name).?;
-                        var class = getScriptClassNode(source_script.ast);
-                        while (true) {
-                            for (class.functions) |function| {
-                                //If the function name is wrong, continue
-                                if (!std.mem.eql(u8, function.name, name))
-                                    continue;
+                const type_class = getScriptClassNode(type_script.ast);
 
-                                // If the parameter count is not equal to the calling parameter count, or
-                                // if its static and the calling parameter count is does not equal parameter count - 1
-                                // (eg. special cased static functions which act as member functions), then skip this overload
-                                if (function.parameters.len != calling_parameters.len and
-                                    !(function.modifiers.static and
-                                    function.parameters.len > 0 and
-                                    function.parameters.len - 1 == calling_parameters.len))
-                                {
-                                    std.debug.print("skipping... cus param mismatch\n", .{});
-                                    continue;
-                                }
+                //TODO: this needs to recurse the types, so you can call parent type static methods aswell
+                for (type_class.functions) |function| {
+                    // Skip non static functions, since we are calling directly on a class
+                    if (!function.modifiers.static)
+                        continue;
 
-                                // Type resolve the function
-                                try self.resolveFunctionHead(
-                                    function,
-                                    source_script,
-                                    script_table,
-                                    a_string_table,
-                                );
+                    // If we found the function, return it
+                    if (std.mem.eql(u8, function.name, name)) {
+                        // Type resolve the function
+                        try self.resolveFunctionHead(
+                            function,
+                            type_script,
+                            script_table,
+                            a_string_table,
+                        );
 
-                                // You usually cant call static functions as member functions, aside from the case of
-                                if (function.modifiers.static) {
-                                    //The first parameter being the class being used as the source can be called with this syntax
-                                    //since these are special cased to be callable as member functions
-                                    if (function.parameters.len > 0) blk: {
-                                        const first_parameter = function.parameters[0];
+                        // Skip overloads which have the wrong count of parameters
+                        if (function.parameters.len != calling_parameters.len)
+                            continue;
 
-                                        const first_parameter_type = self.type_intern_pool.get(first_parameter.type);
+                        try candidates.append(.{
+                            function,
+                            try typeReferenceFromScript(type_script, 0, a_string_table),
+                        });
+                    }
+                }
+            },
+            else => {
+                switch (function_source_expression_type.resolved) {
+                    .fish => |fish| {
+                        switch (fish.machine_type) {
+                            .object_ref, .safe_ptr => {
+                                const source_class_name = a_string_table.keys()[fish.type_name];
 
-                                        //If the first parameter is not an object ref or safe ptr, then its definitely not special cased
-                                        if (first_parameter_type.resolved.fish.machine_type != .safe_ptr and
-                                            first_parameter_type.resolved.fish.machine_type != .object_ref)
-                                            break :blk;
+                                //Recursively go through all the parent classes, and try to find a matching function
+                                var source_script = script_table.get(source_class_name).?;
+                                var class = getScriptClassNode(source_script.ast);
+                                while (true) {
+                                    for (class.functions) |function| {
+                                        //If the function name is wrong, continue
+                                        if (!std.mem.eql(u8, function.name, name))
+                                            continue;
 
-                                        //If its a safe_ptr or object_ref, the type name should always be known
-                                        std.debug.assert(first_parameter_type.resolved.fish.type_name != 0xFFFFFFFF);
+                                        // If the parameter count is not equal to the calling parameter count, or
+                                        // if its static and the calling parameter count is does not equal parameter count - 1
+                                        // (eg. special cased static functions which act as member functions), then skip this overload
+                                        if (function.parameters.len != calling_parameters.len and
+                                            !(function.modifiers.static and
+                                            function.parameters.len > 0 and
+                                            function.parameters.len - 1 == calling_parameters.len))
+                                        {
+                                            std.debug.print("skipping... cus param mismatch\n", .{});
+                                            continue;
+                                        }
 
-                                        const type_name = a_string_table.keys()[first_parameter_type.resolved.fish.type_name];
-
-                                        // If the calling script derives the parameter's script, then this *can* be a member function, allow through
-                                        if (scriptDerivesOtherScript(
-                                            calling_script,
-                                            script_table.get(type_name).?,
+                                        // Type resolve the function
+                                        try self.resolveFunctionHead(
+                                            function,
+                                            source_script,
                                             script_table,
-                                        )) try candidates.append(.{
+                                            a_string_table,
+                                        );
+
+                                        // You usually cant call static functions as member functions, aside from the case of
+                                        if (function.modifiers.static) {
+                                            //The first parameter being the class being used as the source can be called with this syntax
+                                            //since these are special cased to be callable as member functions
+                                            if (function.parameters.len > 0) blk: {
+                                                const first_parameter = function.parameters[0];
+
+                                                const first_parameter_type = self.type_intern_pool.get(first_parameter.type);
+
+                                                //If the first parameter is not an object ref or safe ptr, then its definitely not special cased
+                                                if (first_parameter_type.resolved.fish.machine_type != .safe_ptr and
+                                                    first_parameter_type.resolved.fish.machine_type != .object_ref)
+                                                    break :blk;
+
+                                                //If its a safe_ptr or object_ref, the type name should always be known
+                                                std.debug.assert(first_parameter_type.resolved.fish.type_name != 0xFFFFFFFF);
+
+                                                const type_name = a_string_table.keys()[first_parameter_type.resolved.fish.type_name];
+
+                                                // If the calling script derives the parameter's script, then this *can* be a member function, allow through
+                                                if (scriptDerivesOtherScript(
+                                                    calling_script,
+                                                    script_table.get(type_name).?,
+                                                    script_table,
+                                                )) try candidates.append(.{
+                                                    function,
+                                                    try typeReferenceFromScript(source_script, 0, a_string_table),
+                                                });
+
+                                                continue;
+                                            }
+
+                                            std.debug.panic("you cant member call a static function {s}, sorry bub", .{function.name});
+                                        }
+
+                                        try candidates.append(.{
                                             function,
                                             try typeReferenceFromScript(source_script, 0, a_string_table),
                                         });
-
-                                        continue;
                                     }
 
-                                    std.debug.panic("you cant member call a static function {s}, sorry bub", .{function.name});
+                                    if (class.base_class == .none)
+                                        break;
+
+                                    source_script = script_table.get(class.base_class.resolved.name).?;
+                                    class = getScriptClassNode(source_script.ast);
                                 }
-
-                                try candidates.append(.{
-                                    function,
-                                    try typeReferenceFromScript(source_script, 0, a_string_table),
-                                });
-                            }
-
-                            if (class.base_class == .none)
-                                break;
-
-                            source_script = script_table.get(class.base_class.resolved.name).?;
-                            class = getScriptClassNode(source_script.ast);
+                            },
+                            else => |machine_type| std.debug.panic(
+                                "you cannot do field access on a variable with machine type {s}. must be object_ref or safe_ptr",
+                                .{@tagName(machine_type)},
+                            ),
                         }
                     },
-                    else => |machine_type| std.debug.panic(
-                        "you cannot do field access on a variable with machine type {s}. must be object_ref or safe_ptr",
-                        .{@tagName(machine_type)},
-                    ),
+
+                    else => |tag| std.debug.panic("cant call member function on {s}", .{@tagName(tag)}),
                 }
             },
-            //TODO: is this actually needed
-            // .type => |comptime_type| {
-            //     const type_script = script_table.get(comptime_type).?;
-
-            //     const type_class = getScriptClassNode(type_script.ast);
-
-            //     //TODO: this needs to recurse the types, so you can call parent type static methods aswell
-            //     for (type_class.functions) |function| {
-            //         // Skip non static functions, since we are calling directly on a class
-            //         if (!function.modifiers.static)
-            //             continue;
-
-            //         // If we found the function, return it
-            //         if (std.mem.eql(u8, function.name, name)) {
-            //             // Type resolve the function
-            //             try resolveFunctionHead(
-            //                 function,
-            //                 type_script,
-            //                 script_table,
-            //                 a_string_table,
-            //             );
-
-            //             // Skip overloads which have the wrong count of parameters
-            //             if (function.parameters.len != calling_parameters.len)
-            //                 continue;
-
-            //             try candidates.append(.{
-            //                 function,
-            //                 (try typeReferenceFromScript(type_script, 0, a_string_table)).fish,
-            //             });
-            //         }
-            //     }
-            // },
-            else => |tag| std.debug.panic("cant call member function on {s}", .{@tagName(tag)}),
         }
     }
 
@@ -1916,6 +1938,8 @@ fn resolveParsedType(
                 },
             },
         };
+
+        return;
     }
 
     if (std.meta.stringToEnum(MMTypes.FishType, parsed_type.name)) |fish_type| {
@@ -1943,6 +1967,8 @@ fn resolveParsedType(
                     },
             },
         };
+
+        return;
     } else {
         if (parsed_type.base_type) |base_type| {
             if (script.?.imported_types.get(base_type) != null) {
@@ -1959,6 +1985,8 @@ fn resolveParsedType(
                             parsed_type.dimension_count,
                             a_string_table.?,
                         ) } };
+
+                        return;
                     }
                 }
             }
@@ -1970,10 +1998,14 @@ fn resolveParsedType(
                 parsed_type.dimension_count,
                 a_string_table.?,
             ) } };
+
+            return;
         }
 
         std.debug.panic("no script {s} ({?s}) found in import table for script {s}", .{ parsed_type.name, parsed_type.base_type, script.?.class_name });
     }
+
+    unreachable;
 }
 
 pub fn typeReferenceFromScriptEnum(

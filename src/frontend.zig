@@ -205,6 +205,7 @@ pub fn compile(
         var type_intern_pool = Parser.TypeInternPool{
             .hash_map = Parser.TypeInternPool.HashMap.init(allocator),
         };
+        defer type_intern_pool.deinit();
 
         const parser = try Parser.parse(
             ast_allocator,
@@ -232,6 +233,7 @@ pub fn compile(
             .indent = 0,
             .writer = stdout.any(),
             .a_string_table = &a_string_table,
+            .type_intern_pool = &type_intern_pool,
         };
         try debug.dumpAst(parser.tree);
 
@@ -249,6 +251,7 @@ pub fn compile(
             &a_string_table,
             &w_string_table,
             compilation_options,
+            &type_intern_pool,
         );
         defer genny.deinit();
 

@@ -92,15 +92,25 @@ pub const TypeInternPool = struct {
         _,
     };
 
+    pub fn deinit(self: *TypeInternPool) void {
+        self.hash_map.deinit();
+    }
+
     pub fn get(self: *const TypeInternPool, index: Index) *const Type {
+        std.debug.assert(index != .unknown);
+
         return &self.hash_map.values()[@intFromEnum(index)];
     }
 
     pub fn getMutable(self: *const TypeInternPool, index: Index) *Type {
+        std.debug.assert(index != .unknown);
+
         return &self.hash_map.values()[@intFromEnum(index)];
     }
 
     pub fn getKey(self: *const TypeInternPool, index: Index) *const Key {
+        std.debug.assert(index != .unknown);
+
         return &self.hash_map.keys()[@intFromEnum(index)];
     }
 
@@ -295,7 +305,7 @@ pub const Node = union(enum) {
                 name: []const u8,
                 ident: MMTypes.ResourceIdentifier,
                 has_parameterless_constructor: bool,
-                type_reference: MMTypes.TypeReference,
+                type_reference: ?MMTypes.TypeReference,
             },
         },
         identifier: ?*Expression,
@@ -372,9 +382,6 @@ pub const Node = union(enum) {
 
             pub fn eql(self: Parameter, other: Parameter) bool {
                 if (!std.mem.eql(u8, self.name, other.name))
-                    return false;
-
-                if (std.meta.activeTag(self.type) != std.meta.activeTag(other.type))
                     return false;
 
                 return self.type == other.type;
