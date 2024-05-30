@@ -57,19 +57,19 @@ pub const TypeInternPool = struct {
         pub fn hash(self: @This(), s: Key) u32 {
             _ = self;
 
-            const tag = std.hash.uint32(@intFromEnum(s));
+            var h = std.hash.Wyhash.init(0);
 
-            return switch (s) {
-                .integer_literal, .float_literal, .null_literal => tag,
-                .parsed => |parsed| @truncate(
-                    std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(@as([]const u64, &.{
-                        (@as(u64, @intFromBool(parsed.base_type == null)) << 9) | (@as(u64, parsed.indirection_count) << 8) | parsed.dimension_count,
-                    }))) ^
-                        std.hash.Wyhash.hash(0, parsed.base_type orelse "") ^
-                        std.hash.Wyhash.hash(0, parsed.name) ^
-                        tag,
-                ),
-            };
+            h.update(std.mem.asBytes(&@intFromEnum(s)));
+            switch (s) {
+                .integer_literal, .float_literal, .null_literal => {},
+                .parsed => |parsed| {
+                    h.update(&.{ @intFromBool(parsed.base_type == null), parsed.indirection_count, parsed.dimension_count });
+                    h.update(parsed.base_type orelse "");
+                    h.update(parsed.name);
+                },
+            }
+
+            return @truncate(h.final());
         }
 
         pub fn eql(self: @This(), a: Key, b: Key, b_index: usize) bool {
