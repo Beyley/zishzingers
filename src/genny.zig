@@ -107,7 +107,21 @@ const Codegen = struct {
         highest_register: u16,
         compilation_options: CompilationOptions,
         local_variables: *LocalVariableTable,
+        register_local_variables: LocalVariableList,
+        local_variable_register_name_table: std.AutoHashMap(u16, []const u8),
         genny: *Genny,
+
+        pub fn registerName(self: *RegisterAllocator, register: u16) ![]const u8 {
+            if (self.genny.compilation_options.optimization_mode != .Debug and self.genny.compilation_options.optimization_mode != .ReleaseSafe)
+                return "";
+
+            const get_or_put = try self.local_variable_register_name_table.getOrPut(register);
+
+            if (!get_or_put.found_existing)
+                get_or_put.value_ptr.* = try std.fmt.allocPrint(self.allocator, "$r{d}", .{register});
+
+            return get_or_put.value_ptr.*;
+        }
 
         pub fn init(
             allocator: std.mem.Allocator,
@@ -133,6 +147,8 @@ const Codegen = struct {
                 .allocator = allocator,
                 .compilation_options = compilation_options,
                 .local_variables = local_variables,
+                .register_local_variables = LocalVariableList.init(allocator),
+                .local_variable_register_name_table = std.AutoHashMap(u16, []const u8).init(allocator),
                 .genny = genny,
             };
         }
@@ -196,10 +212,9 @@ const Codegen = struct {
 
                 if (create_local_vars and machine_type == .object_ref or machine_type == .safe_ptr) {
                     //TODO: make this optional under a debug option
-                    const name = try std.fmt.allocPrint(self.local_variables.allocator, "r{d}", .{start});
+                    const name = try self.registerName(start);
 
-                    try self.local_variables.put(
-                        name,
+                    try self.register_local_variables.append(
                         MMTypes.LocalVariable{
                             .modifiers = .{},
                             .name = @intCast((try self.genny.a_string_table.getOrPut(name)).index),
@@ -1589,8 +1604,111 @@ fn compileBlock(
             .inline_asm_statement => |inline_asm| {
                 for (inline_asm.bytecode, 0..) |bytecode, i| {
                     switch (bytecode.op) {
-                        inline else => |val, op| {
+                        inline else => |val, op| blk: {
                             const ParamType = @TypeOf(val);
+
+                            switch (op) {
+                                .MOVo,
+                                .LC_NULLo,
+                                .LCsw,
+                                .LCsa,
+                                .NEW_ARRAY,
+                                .NEW_OBJECT,
+                                .CALL,
+                                .CALLVo,
+                                .CALLVsp,
+                                .CASTo,
+                                .GET_RP_MEMBER,
+                                .GET_SP_MEMBER,
+                                .GET_OBJ_MEMBER,
+                                .GET_SP_NATIVE_MEMBER,
+                                .GET_ELEMENT,
+                                => {
+                                    // If its any of the machine type dependent instructions, dont add if the target isnt object ref
+                                    if ((op == .GET_RP_MEMBER or
+                                        op == .GET_SP_MEMBER or
+                                        op == .GET_OBJ_MEMBER or
+                                        op == .GET_SP_NATIVE_MEMBER or
+                                        op == .CALL or
+                                        op == .CALLVo or
+                                        op == .CALLVsp or
+                                        op == .GET_ELEMENT) and
+                                        bytecode.machine_type != .object_ref)
+                                    {
+                                        std.debug.print("skipping\n", .{});
+
+                                        break :blk;
+                                    }
+
+                                    const dst_idx = val.dst_idx;
+
+                                    const register_name = try codegen.register_allocator.registerName(dst_idx);
+
+                                    try codegen.register_allocator.register_local_variables.append(.{
+                                        .name = @intCast((try codegen.genny.a_string_table.getOrPut(register_name)).index),
+                                        .modifiers = .{},
+                                        .offset = dst_idx,
+                                        .type_reference = @intCast((try codegen.genny.type_references.getOrPut(MMTypes.TypeReference{
+                                            .type_name = 0xFFFFFFFF,
+                                            .array_base_machine_type = .void,
+                                            .dimension_count = 0,
+                                            .fish_type = .void,
+                                            .machine_type = .object_ref,
+                                            .script = null,
+                                        })).index),
+                                    });
+                                },
+                                else => {},
+                            }
+
+                            switch (op) {
+                                .MOVsp,
+                                .LC_NULLsp,
+                                .CALL,
+                                .CALLVo,
+                                .CALLVsp,
+                                .CASTsp,
+                                .GET_RP_MEMBER,
+                                .GET_SP_MEMBER,
+                                .GET_OBJ_MEMBER,
+                                .GET_SP_NATIVE_MEMBER,
+                                .GET_ELEMENT,
+                                => {
+                                    // If its any of the machine type dependent instructions, dont add if the target isnt object ref
+                                    if ((op == .GET_RP_MEMBER or
+                                        op == .GET_SP_MEMBER or
+                                        op == .GET_OBJ_MEMBER or
+                                        op == .GET_SP_NATIVE_MEMBER or
+                                        op == .CALL or
+                                        op == .CALLVo or
+                                        op == .CALLVsp or
+                                        op == .GET_ELEMENT) and
+                                        bytecode.machine_type != .object_ref)
+                                    {
+                                        std.debug.print("skipping\n", .{});
+                                        break :blk;
+                                    }
+
+                                    const dst_idx = val.dst_idx;
+
+                                    const register_name = try codegen.register_allocator.registerName(dst_idx);
+
+                                    try codegen.register_allocator.register_local_variables.append(.{
+                                        .name = @intCast((try codegen.genny.a_string_table.getOrPut(register_name)).index),
+                                        .modifiers = .{},
+                                        .offset = dst_idx,
+                                        .type_reference = @intCast((try codegen.genny.type_references.getOrPut(MMTypes.TypeReference{
+                                            .type_name = 0xFFFFFFFF,
+                                            .array_base_machine_type = .void,
+                                            .dimension_count = 0,
+                                            .fish_type = .void,
+                                            .machine_type = .safe_ptr,
+                                            .script = null,
+                                        })).index),
+                                    });
+                                },
+                                else => {},
+                            }
 
                             switch (ParamType) {
                                 Parser.Bytecode.Params.NopClass => {},
@@ -2174,12 +2292,14 @@ fn compileFunction(
             const start = self.local_variables.items.len;
 
             const local_variable_values = local_variables.values();
+            const register_local_variables = codegen.register_allocator.register_local_variables.items;
 
             try self.local_variables.appendSlice(local_variable_values);
+            try self.local_variables.appendSlice(register_local_variables);
 
             break :blk .{
                 .begin = @intCast(start),
-                .end = @intCast(start + local_variable_values.len),
+                .end = @intCast(start + local_variable_values.len + register_local_variables.len),
             };
         },
     };
