@@ -57,6 +57,10 @@ pub const ParsedScriptTable = std.StringHashMap(*ParsedScript);
 
 pub const Error = std.mem.Allocator.Error || std.fs.File.OpenError || std.fs.File.ReadError || Parser.Error;
 
+const Self = @This();
+
+type_intern_pool: *Parser.TypeInternPool,
+
 fn getScriptClassNode(tree: Parser.Tree) *Parser.Node.Class {
     for (tree.root_elements.items) |node| {
         switch (node) {
@@ -81,6 +85,7 @@ fn getImportPathFromImportTarget(allocator: std.mem.Allocator, target: []const u
 }
 
 fn collectImportedTypes(
+    self: *Self,
     class_name: []const u8,
     defined_libraries: Libraries,
     script_table: *ParsedScriptTable,
@@ -108,9 +113,12 @@ fn collectImportedTypes(
 
                     std.debug.print("reading {s}\n", .{import_path});
 
+                    //TODO: let the user specify a "system allocator" separate from the script allocator
+                    var lexeme_allocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+
                     //Get all the lexemes into a single big array
                     const lexemes = blk: {
-                        var lexemes = std.ArrayList([]const u8).init(script.ast.allocator);
+                        var lexemes = std.ArrayList([]const u8).init(lexeme_allocator.allocator());
                         defer lexemes.deinit();
 
                         var lexizer = Parser.Lexemeizer{ .source = try import_file.readToEndAlloc(script.ast.allocator, std.math.maxInt(usize)) };
@@ -122,13 +130,14 @@ fn collectImportedTypes(
                         break :blk try lexemes.toOwnedSlice();
                     };
 
-                    const ast = try Parser.parse(script.ast.allocator, lexemes);
+                    const parser = try Parser.parse(script.ast.allocator, lexemes, self.type_intern_pool);
+                    lexeme_allocator.deinit();
 
-                    const class = getScriptClassNode(ast);
+                    const class = getScriptClassNode(parser.tree);
 
                     if (script_table.get(class.name) == null)
-                        try recursivelyResolveScript(
-                            ast,
+                        try self.recursivelyResolveScript(
+                            parser.tree,
                             defined_libraries,
                             script_table,
                             null,
@@ -197,6 +206,7 @@ fn collectImportedLibraries(script: *ParsedScript, defined_libraries: Libraries)
 }
 
 fn recursivelyResolveScript(
+    self: *Self,
     tree: Parser.Tree,
     defined_libraries: Libraries,
     script_table: *ParsedScriptTable,
@@ -232,7 +242,7 @@ fn recursivelyResolveScript(
     try collectImportedLibraries(script, defined_libraries);
 
     //Collect all the script types which are imported
-    try collectImportedTypes(script.class_name, defined_libraries, script_table, a_string_table);
+    try self.collectImportedTypes(script.class_name, defined_libraries, script_table, a_string_table);
 
     script.is_thing = isScriptThing(script, script_table);
 
@@ -266,7 +276,7 @@ fn recursivelyResolveScript(
 
                     break :blk false;
                 },
-                .type_reference = (try typeReferenceFromScript(base_script, 0, a_string_table)).fish,
+                .type_reference = null,
             },
         };
     }
@@ -300,11 +310,16 @@ pub fn resolve(
     defined_libraries: Libraries,
     a_string_table: *AStringTable,
     script_identifier: ?MMTypes.ResourceIdentifier,
+    type_intern_pool: *Parser.TypeInternPool,
 ) Error!void {
     var script_table = ParsedScriptTable.init(tree.allocator);
     defer script_table.deinit();
 
-    try recursivelyResolveScript(
+    var self: Self = .{
+        .type_intern_pool = type_intern_pool,
+    };
+
+    try self.recursivelyResolveScript(
         tree,
         defined_libraries,
         &script_table,
@@ -319,39 +334,57 @@ pub fn resolve(
         script_table.get(class.name).?,
         0,
         a_string_table,
-    )).fish;
+    ));
+
+    var scripts = script_table.valueIterator();
+    while (scripts.next()) |script| {
+        const script_class = getScriptClassNode(script.*.ast);
+
+        if (script_class.base_class != .none) {
+            const base_class = script_class.base_class.resolved;
+
+            script_class.base_class.resolved.type_reference = try typeReferenceFromScript(script_table.get(base_class.name).?, 0, a_string_table);
+        }
+    }
 
     const script = script_table.get(class.name) orelse unreachable;
 
     std.debug.print("type resolving {s}\n", .{script.class_name});
 
     for (class.fields) |field| {
-        try resolveField(field, script, &script_table, a_string_table);
+        try self.resolveField(field, script, &script_table, a_string_table);
     }
 
     for (class.constructors) |constructor| {
-        try resolveConstructorHead(constructor, script, &script_table, a_string_table);
-        try resolveConstructorBody(constructor, script, &script_table, a_string_table);
+        try self.resolveConstructorHead(constructor, script, &script_table, a_string_table);
+        try self.resolveConstructorBody(constructor, script, &script_table, a_string_table);
     }
 
     for (class.functions) |function| {
-        try resolveFunctionHead(function, script, &script_table, a_string_table);
-        try resolveFunctionBody(function, script, &script_table, a_string_table);
+        try self.resolveFunctionHead(function, script, &script_table, a_string_table);
+        try self.resolveFunctionBody(function, script, &script_table, a_string_table);
     }
 }
 
 fn resolveConstructorHead(
+    self: *Self,
     constructor: *Parser.Node.Constructor,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
 ) Error!void {
     for (constructor.parameters) |*parameter| {
-        parameter.type = .{ .resolved = try resolveParsedType(parameter.type.parsed, script, script_table, a_string_table) };
+        try self.resolveParsedType(
+            parameter.type,
+            script,
+            script_table,
+            a_string_table,
+        );
     }
 }
 
 fn resolveConstructorBody(
+    self: *Self,
     constructor: *Parser.Node.Constructor,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
@@ -366,9 +399,9 @@ fn resolveConstructorBody(
         .function = .{ .constructor = constructor },
     };
 
-    try resolveExpression(
+    try self.resolveExpression(
         constructor.body.?,
-        voidType(),
+        try self.type_intern_pool.fromFishType(.void),
         script,
         script_table,
         a_string_table,
@@ -377,6 +410,7 @@ fn resolveConstructorBody(
 }
 
 fn resolveFunctionBody(
+    self: *Self,
     function: *Parser.Node.Function,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
@@ -392,11 +426,11 @@ fn resolveFunctionBody(
             .function = .{ .function = function },
         };
 
-        if (body.type != .resolved)
+        if (body.type == .unknown or self.type_intern_pool.get(body.type).* != .resolved)
             //TODO: once i parse the `=>` syntax for function bodies, this `null` for target type needs to be made correct!!!
             //      should i make function_body a special expression type? im not sure yet.
             //      maybe this could be as simple as "if block, target type == void, if not block, target type is the function return type" that should work
-            try resolveExpression(
+            try self.resolveExpression(
                 body,
                 null,
                 script,
@@ -410,6 +444,7 @@ fn resolveFunctionBody(
 }
 
 fn resolveFunctionHead(
+    self: *Self,
     function: *Parser.Node.Function,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
@@ -417,36 +452,34 @@ fn resolveFunctionHead(
 ) Error!void {
     std.debug.print("resolving function head {s}\n", .{function.name});
 
-    if (function.return_type != .resolved)
-        function.return_type = .{
-            .resolved = try resolveParsedType(
-                function.return_type.parsed,
-                script,
-                script_table,
-                a_string_table,
-            ),
-        };
+    const return_type = self.type_intern_pool.get(function.return_type);
 
-    std.debug.print("resolved function return type as {}\n", .{function.return_type.resolved});
+    try self.resolveParsedType(
+        function.return_type,
+        script,
+        script_table,
+        a_string_table,
+    );
+
+    std.debug.print("resolved function return type as {}\n", .{return_type.resolved});
 
     for (function.parameters) |*parameter| {
-        if (parameter.type != .resolved)
-            parameter.type = .{
-                .resolved = try resolveParsedType(
-                    parameter.type.parsed,
-                    script,
-                    script_table,
-                    a_string_table,
-                ),
-            };
+        const parameter_type = self.type_intern_pool.get(parameter.type);
 
-        std.debug.print("resolved function parameter {s} as {}\n", .{ parameter.name, parameter.type.resolved });
+        try self.resolveParsedType(
+            parameter.type,
+            script,
+            script_table,
+            a_string_table,
+        );
+
+        std.debug.print("resolved function parameter {s} as {}\n", .{ parameter.name, parameter_type.resolved });
     }
 
     std.debug.print("resolved function head {s}\n", .{function.name});
 
     var mangled_name = std.ArrayList(u8).init(script_table.allocator);
-    try mangleFunctionName(
+    try self.mangleFunctionName(
         mangled_name.writer(),
         a_string_table,
         function.name,
@@ -455,31 +488,9 @@ fn resolveFunctionHead(
     function.mangled_name = mangled_name.items;
 }
 
-fn wideStringType(a_string_table: *AStringTable) Error!Parser.Type.Resolved {
-    return .{ .fish = .{
-        .script = .{ .guid = 16491 },
-        .type_name = @intCast((try a_string_table.getOrPut("String")).index),
-        .machine_type = .object_ref,
-        .fish_type = .void,
-        .dimension_count = 0,
-        .array_base_machine_type = .void,
-    } };
-}
-
-fn asciiStringType(a_string_table: *AStringTable) Error!Parser.Type.Resolved {
-    return .{ .fish = .{
-        .script = .{ .guid = 22442 },
-        .type_name = @intCast((try a_string_table.getOrPut("StringA")).index),
-        .machine_type = .object_ref,
-        .fish_type = .void,
-        .dimension_count = 0,
-        .array_base_machine_type = .void,
-    } };
-}
-
 const FunctionVariableStack = std.StringArrayHashMap(struct {
     level: u8,
-    type: Parser.Type,
+    type: Parser.TypeInternPool.Index,
 });
 
 const FunctionVariableStackInfo = struct {
@@ -494,37 +505,52 @@ const FunctionVariableStackInfo = struct {
 };
 
 fn resolveExpression(
+    self: *Self,
     expression: *Parser.Node.Expression,
-    target_type: ?Parser.Type,
+    target_type: ?Parser.TypeInternPool.Index,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
     function_variable_stack: ?*FunctionVariableStackInfo,
 ) Error!void {
-    //If this expression has already been resolved, do nothing
-    if (expression.type == .resolved) {
-        if (target_type) |target_parsed_type|
-            if (!target_parsed_type.resolved.eql(expression.type.resolved))
-                std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression.type.resolved });
+    if (expression.type != .unknown) {
+        const expression_type = self.type_intern_pool.get(expression.type);
 
-        return;
+        //If this expression has already been resolved, do nothing
+        if (expression_type.* == .resolved) {
+            if (target_type) |target_parsed_index| {
+                const target_parsed_type = self.type_intern_pool.get(target_parsed_index);
+
+                if (!target_parsed_type.resolved.eql(expression_type.resolved))
+                    std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression_type.resolved });
+            }
+        }
+    }
+
+    if (target_type) |intern_target_type| {
+        try self.resolveParsedType(
+            intern_target_type,
+            script,
+            script_table,
+            a_string_table,
+        );
     }
 
     std.debug.print("resolving {}\n", .{expression.contents});
 
     switch (expression.contents) {
         .integer_literal => {
-            expression.type = .{ .resolved = .integer_literal };
+            expression.type = try self.type_intern_pool.integerLiteral();
         },
         .float_literal => {
-            expression.type = .{ .resolved = .float_literal };
+            expression.type = try self.type_intern_pool.floatLiteral();
         },
         .null_literal => {
-            expression.type = .{ .resolved = .null_literal };
+            expression.type = try self.type_intern_pool.nullLiteral();
         },
         .assignment => |assignment| {
             //Resolve the type of the destination
-            try resolveExpression(
+            try self.resolveExpression(
                 assignment.destination,
                 target_type,
                 script,
@@ -533,10 +559,12 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            std.debug.assert(assignment.destination.type.resolved == .fish or assignment.destination.type.resolved == .pointer);
+            const assignment_destination_type = self.type_intern_pool.get(assignment.destination.type);
+
+            std.debug.assert(assignment_destination_type.resolved == .fish or assignment_destination_type.resolved == .pointer);
 
             //Resolve the type of the value, which should be the same type as the destination
-            try resolveExpression(
+            try self.resolveExpression(
                 assignment.value,
                 assignment.destination.type,
                 script,
@@ -551,7 +579,7 @@ fn resolveExpression(
         },
         .field_access => |field_access| {
             //Resolve the source expression
-            try resolveExpression(
+            try self.resolveExpression(
                 field_access.source,
                 null,
                 script,
@@ -560,9 +588,11 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            const field = switch (field_access.source.type.resolved.fish.machine_type) {
+            const field_access_source_type = self.type_intern_pool.get(field_access.source.type);
+
+            const field = switch (field_access_source_type.resolved.fish.machine_type) {
                 .object_ref, .safe_ptr => field_resolution: {
-                    const source_class_name = a_string_table.keys()[field_access.source.type.resolved.fish.type_name];
+                    const source_class_name = a_string_table.keys()[field_access_source_type.resolved.fish.type_name];
 
                     const source_script = script_table.get(source_class_name).?;
 
@@ -574,7 +604,7 @@ fn resolveExpression(
                             continue;
 
                         // Type resolve the field
-                        try resolveField(
+                        try self.resolveField(
                             field,
                             source_script,
                             script_table,
@@ -600,9 +630,22 @@ fn resolveExpression(
             if (script.imported_types.get(variable_or_class_access)) |_| {
                 const class = script_table.get(variable_or_class_access).?;
 
+                const intern_type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
+                    .name = variable_or_class_access,
+                    .base_type = null,
+                    .dimension_count = 0,
+                    .indirection_count = 0,
+                } });
+                try self.resolveParsedType(
+                    intern_type,
+                    script,
+                    script_table,
+                    a_string_table,
+                );
+
                 expression.* = .{
                     .contents = .{ .class_access = class.class_name },
-                    .type = typeFromName(variable_or_class_access),
+                    .type = intern_type,
                 };
             } else {
                 const func_modifiers = switch (function_variable_stack.?.function) {
@@ -610,15 +653,26 @@ fn resolveExpression(
                     .constructor => |constructor| constructor.modifiers,
                 };
 
+                // If we arent static and we are accessing a variable called `this`, then its a self access
                 if (!func_modifiers.static and std.mem.eql(u8, variable_or_class_access, "this")) {
-                    expression.* = .{
-                        .contents = .{ .variable_access = variable_or_class_access },
-                        .type = .{ .resolved = try typeReferenceFromScript(
-                            script,
-                            0,
-                            a_string_table,
-                        ) },
-                    };
+                    // Update the contents to a variable access
+                    expression.contents = .{ .variable_access = variable_or_class_access };
+
+                    // Set the type of the variable to the self class
+                    expression.type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
+                        .name = script.class_name,
+                        .base_type = null,
+                        .dimension_count = 0,
+                        .indirection_count = 0,
+                    } });
+
+                    // Resolve the parsed type
+                    try self.resolveParsedType(
+                        expression.type,
+                        script,
+                        script_table,
+                        a_string_table,
+                    );
                 } else {
                     const variable = function_variable_stack.?.stack.get(variable_or_class_access) orelse std.debug.panic(
                         "could not find variable {s}",
@@ -635,27 +689,38 @@ fn resolveExpression(
             std.debug.assert(expression.contents != .variable_or_class_access);
         },
         .bool_literal => {
-            expression.type = .{
-                .resolved = try resolveParsedType(
-                    Parser.Type.Parsed.fromFishType(.bool),
-                    script,
-                    script_table,
-                    a_string_table,
-                ),
-            };
+            // Set the type to a bool
+            expression.type = try self.type_intern_pool.fromFishType(.bool);
+            // Resolve the type
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         .wide_string_literal => {
-            //TODO: make try to pull in a `String` script, not just "some object ref"
-            expression.type = .{ .resolved = try wideStringType(a_string_table) };
+            expression.type = try self.type_intern_pool.wideStringType();
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         .ascii_string_literal => {
-            //TODO: make try to pull in a `StringA` script, not just "some object ref"
-            expression.type = .{ .resolved = try asciiStringType(a_string_table) };
+            expression.type = try self.type_intern_pool.asciiStringType();
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         .function_call => |*function_call| {
             if (function_call.source != null) {
                 //Resolve the source expression
-                try resolveExpression(
+                try self.resolveExpression(
                     function_call.source.?,
                     null,
                     script,
@@ -664,7 +729,7 @@ fn resolveExpression(
                     function_variable_stack,
                 );
 
-                const function = try findFunction(
+                const function = try self.findFunction(
                     function_call.function.name,
                     function_call.parameters,
                     script.ast.allocator,
@@ -681,7 +746,7 @@ fn resolveExpression(
                     function.found_function.parameters;
 
                 for (function_parameters_to_check, function_call.parameters) |function_parameter, call_parameter| {
-                    try resolveExpression(
+                    try self.resolveExpression(
                         call_parameter,
                         function_parameter.type,
                         script,
@@ -730,8 +795,10 @@ fn resolveExpression(
 
                     std.debug.panic("unable to find function {s}", .{function_call.function.name});
                 };
+
                 std.debug.print("found func {s} for call {s}\n", .{ function.name, function_call.function.name });
-                try resolveFunctionHead(
+
+                try self.resolveFunctionHead(
                     function,
                     function_script,
                     script_table,
@@ -741,11 +808,11 @@ fn resolveExpression(
                 function_call.function = .{
                     .function = .{
                         .function = function,
-                        .owning_type = (try typeReferenceFromScript(
+                        .owning_type = try typeReferenceFromScript(
                             function_script,
                             0,
                             a_string_table,
-                        )).fish,
+                        ),
                     },
                 };
 
@@ -755,7 +822,7 @@ fn resolveExpression(
 
                 // Resolve all the call parameter expressions to the types of the function parameters
                 for (function.parameters, function_call.parameters) |parameter, call_parameter| {
-                    try resolveExpression(
+                    try self.resolveExpression(
                         call_parameter,
                         parameter.type,
                         script,
@@ -767,12 +834,16 @@ fn resolveExpression(
 
                 expression.type = function.return_type;
             }
+
+            if (function_call.function != .function) {
+                std.debug.panic("function call is not resolved correctly {s}", .{function_call.function.name});
+            }
         },
         .logical_negation => |logical_negation| {
             // Resolve the sub-expression of the negation
-            try resolveExpression(
+            try self.resolveExpression(
                 logical_negation,
-                boolType(),
+                try self.type_intern_pool.fromFishType(.bool),
                 script,
                 script_table,
                 a_string_table,
@@ -783,7 +854,7 @@ fn resolveExpression(
         },
         .numeric_negation => |numeric_negation| {
             // Resolve the sub-expression of the negation
-            try resolveExpression(
+            try self.resolveExpression(
                 numeric_negation,
                 null,
                 script,
@@ -792,20 +863,19 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            if (!isNumberLike(numeric_negation.type.resolved))
+            if (!isNumberLike(self.type_intern_pool.get(numeric_negation.type)))
                 std.debug.panic("numeric negation is not number-like", .{});
 
             expression.type = numeric_negation.type;
         },
         .block => |block| {
-            expression.type = .{
-                .resolved = try resolveParsedType(
-                    Parser.Type.Parsed.fromFishType(.void),
-                    script,
-                    script_table,
-                    a_string_table,
-                ),
-            };
+            expression.type = try self.type_intern_pool.fromFishType(.void);
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
 
             function_variable_stack.?.current_level += 1;
             defer {
@@ -846,7 +916,7 @@ fn resolveExpression(
                         if (variable_declaration.type == .unknown) {
                             //If the type of the variable declaration is unspecified, we need to resolve the value expression first
                             if (variable_declaration.value) |value| {
-                                try resolveExpression(
+                                try self.resolveExpression(
                                     value,
                                     null,
                                     script,
@@ -855,11 +925,13 @@ fn resolveExpression(
                                     function_variable_stack,
                                 );
 
+                                const value_type = self.type_intern_pool.get(value.type);
+
                                 //Panic if the resolved type is not knowable at runtime
-                                if (value.type.resolved != .fish and value.type.resolved != .pointer)
+                                if (value_type.resolved != .fish and value_type.resolved != .pointer)
                                     std.debug.panic(
                                         "variable declaration {s}'s default value's is unknown at runtime, currently is {s}",
-                                        .{ variable_declaration.name, @tagName(value.type.resolved) },
+                                        .{ variable_declaration.name, @tagName(value_type.resolved) },
                                     );
 
                                 //Then we can use the type of the value expression for the type of the variable declaration
@@ -869,18 +941,16 @@ fn resolveExpression(
                             else unreachable;
                         } else {
                             //Resolve the variable declaration type
-                            variable_declaration.type = .{
-                                .resolved = try resolveParsedType(
-                                    variable_declaration.type.parsed,
-                                    script,
-                                    script_table,
-                                    a_string_table,
-                                ),
-                            };
+                            try self.resolveParsedType(
+                                variable_declaration.type,
+                                script,
+                                script_table,
+                                a_string_table,
+                            );
 
                             //If the variable declaration has a value set, resolve the value expression to the type of the variable
                             if (variable_declaration.value) |value| {
-                                try resolveExpression(
+                                try self.resolveExpression(
                                     value,
                                     variable_declaration.type,
                                     script,
@@ -897,7 +967,7 @@ fn resolveExpression(
                         });
                     },
                     .expression => |node_expression| {
-                        try resolveExpression(
+                        try self.resolveExpression(
                             node_expression,
                             target_type,
                             script,
@@ -908,7 +978,7 @@ fn resolveExpression(
                     },
                     .return_statement => |return_statement| {
                         const return_machine_type: MMTypes.MachineType = switch (function_variable_stack.?.function) {
-                            .function => |function| switch (function.return_type.resolved) {
+                            .function => |function| switch (self.type_intern_pool.get(function.return_type).resolved) {
                                 .fish => |fish| fish.machine_type,
                                 .pointer => .s32,
                                 else => unreachable,
@@ -917,15 +987,18 @@ fn resolveExpression(
                         };
 
                         if (return_machine_type != .void and return_statement.expression == null)
-                            std.debug.panic("you cant return nothing when the function wants {}", .{function_variable_stack.?.function.function.return_type.resolved});
+                            std.debug.panic(
+                                "you cant return nothing when the function wants {}",
+                                .{self.type_intern_pool.get(function_variable_stack.?.function.function.return_type).resolved},
+                            );
 
                         //If this return statement has an expression, type resolve that to the return type of the function
                         if (return_statement.expression) |return_value| {
-                            try resolveExpression(
+                            try self.resolveExpression(
                                 return_value,
                                 switch (function_variable_stack.?.function) {
                                     .function => |function| function.return_type,
-                                    .constructor => voidType(),
+                                    .constructor => try self.type_intern_pool.fromFishType(.void),
                                 },
                                 script,
                                 script_table,
@@ -938,16 +1011,16 @@ fn resolveExpression(
                         std.debug.print("condition {}\n", .{if_statement.condition});
 
                         //Resolve the condition
-                        try resolveExpression(
+                        try self.resolveExpression(
                             if_statement.condition,
-                            boolType(),
+                            try self.type_intern_pool.fromFishType(.bool),
                             script,
                             script_table,
                             a_string_table,
                             function_variable_stack,
                         );
 
-                        try resolveExpression(
+                        try self.resolveExpression(
                             if_statement.body,
                             null,
                             script,
@@ -957,7 +1030,7 @@ fn resolveExpression(
                         );
 
                         if (if_statement.else_body) |else_body| {
-                            try resolveExpression(
+                            try self.resolveExpression(
                                 else_body,
                                 null,
                                 script,
@@ -968,16 +1041,16 @@ fn resolveExpression(
                         }
                     },
                     .while_statement => |while_statement| {
-                        try resolveExpression(
+                        try self.resolveExpression(
                             while_statement.condition,
-                            boolType(),
+                            try self.type_intern_pool.fromFishType(.bool),
                             script,
                             script_table,
                             a_string_table,
                             function_variable_stack,
                         );
 
-                        try resolveExpression(
+                        try self.resolveExpression(
                             while_statement.body,
                             null,
                             script,
@@ -990,14 +1063,16 @@ fn resolveExpression(
                         for (inline_asm.bytecode) |*bytecode| {
                             switch (bytecode.op) {
                                 .CALL, .CALLVo, .CALLVsp => |*call_bytecode| {
-                                    const type_name = call_bytecode.type.parsed.name;
+                                    const call_bytecode_type = self.type_intern_pool.getKey(call_bytecode.type);
 
-                                    call_bytecode.type = .{ .resolved = try resolveParsedType(
-                                        call_bytecode.type.parsed,
+                                    const type_name = call_bytecode_type.parsed.name;
+
+                                    try self.resolveParsedType(
+                                        call_bytecode.type,
                                         script,
                                         script_table,
                                         a_string_table,
-                                    ) };
+                                    );
 
                                     call_bytecode.function = blk: {
                                         const referenced_script = script_table.get(type_name).?;
@@ -1021,7 +1096,7 @@ fn resolveExpression(
                                         }
 
                                         for (class.functions) |function| {
-                                            try resolveFunctionHead(
+                                            try self.resolveFunctionHead(
                                                 function,
                                                 referenced_script,
                                                 script_table,
@@ -1048,9 +1123,9 @@ fn resolveExpression(
         .vec2_construction => |vec2_construction| {
             //Resolve the expressions into f32s
             for (vec2_construction) |param| {
-                try resolveExpression(
+                try self.resolveExpression(
                     param,
-                    f32Type(),
+                    try self.type_intern_pool.fromFishType(.f32),
                     script,
                     script_table,
                     a_string_table,
@@ -1058,14 +1133,20 @@ fn resolveExpression(
                 );
             }
 
-            expression.type = vec2Type();
+            expression.type = try self.type_intern_pool.fromFishType(.vec2);
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         .vec4_construction => |vec4_construction| {
             //Resolve the expressions into f32s
             for (vec4_construction) |param| {
-                try resolveExpression(
+                try self.resolveExpression(
                     param,
-                    f32Type(),
+                    try self.type_intern_pool.fromFishType(.f32),
                     script,
                     script_table,
                     a_string_table,
@@ -1073,10 +1154,16 @@ fn resolveExpression(
                 );
             }
 
-            expression.type = vec4Type();
+            expression.type = try self.type_intern_pool.fromFishType(.vec4);
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         .less_than, .less_than_or_equal, .greater_than, .greater_than_or_equal => |comparison| {
-            try resolveExpression(
+            try self.resolveExpression(
                 comparison.lefthand,
                 null,
                 script,
@@ -1085,7 +1172,7 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            try resolveExpression(
+            try self.resolveExpression(
                 comparison.righthand,
                 comparison.lefthand.type,
                 script,
@@ -1094,11 +1181,17 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            expression.type = boolType();
+            expression.type = try self.type_intern_pool.fromFishType(.bool);
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         .bitwise_and => |bitwise_and| {
             //Resolve the lefthand expression to whatever type it naturally wants to be
-            try resolveExpression(
+            try self.resolveExpression(
                 bitwise_and.lefthand,
                 null,
                 script,
@@ -1107,7 +1200,9 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            switch (bitwise_and.lefthand.type.resolved.fish.machine_type) {
+            const bitwise_and_lefthand_type = self.type_intern_pool.get(bitwise_and.lefthand.type);
+
+            switch (bitwise_and_lefthand_type.resolved.fish.machine_type) {
                 .s32, .bool, .s64 => {},
                 else => |tag| std.debug.panic(
                     "lefthand side of bitwise type must be s32, bool, or s64, currently is {s}",
@@ -1116,7 +1211,7 @@ fn resolveExpression(
             }
 
             //Resolve the righthand expression to the same type as the lefthand expression
-            try resolveExpression(
+            try self.resolveExpression(
                 bitwise_and.righthand,
                 bitwise_and.lefthand.type,
                 script,
@@ -1125,11 +1220,11 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            expression.type = .{ .resolved = bitwise_and.lefthand.type.resolved };
+            expression.type = bitwise_and.lefthand.type;
         },
         .not_equal, .equal => |equality| {
             //Resolve the lefthand expression to whatever type it naturally wants to be
-            try resolveExpression(
+            try self.resolveExpression(
                 equality.lefthand,
                 null,
                 script,
@@ -1138,7 +1233,9 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            switch (equality.lefthand.type.resolved) {
+            const equality_lefthand_type = self.type_intern_pool.get(equality.lefthand.type);
+
+            switch (equality_lefthand_type.resolved) {
                 .fish => |fish| switch (fish.machine_type) {
                     //NEb   NEc    NEi   NEf   NEs64 NErp      NEo          NEsp
                     .bool, .char, .s32, .f32, .s64, .raw_ptr, .object_ref, .safe_ptr => {},
@@ -1152,7 +1249,7 @@ fn resolveExpression(
             }
 
             //Resolve the righthand expression to the same type as the lefthand expression
-            try resolveExpression(
+            try self.resolveExpression(
                 equality.righthand,
                 equality.lefthand.type,
                 script,
@@ -1161,31 +1258,43 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            expression.type = boolType();
+            expression.type = try self.type_intern_pool.fromFishType(.bool);
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         .logical_and, .logical_or => |logical_op| {
-            try resolveExpression(
+            try self.resolveExpression(
                 logical_op.lefthand,
-                boolType(),
+                try self.type_intern_pool.fromFishType(.bool),
                 script,
                 script_table,
                 a_string_table,
                 function_variable_stack,
             );
 
-            try resolveExpression(
+            try self.resolveExpression(
                 logical_op.righthand,
-                boolType(),
+                try self.type_intern_pool.fromFishType(.bool),
                 script,
                 script_table,
                 a_string_table,
                 function_variable_stack,
             );
 
-            expression.type = boolType();
+            expression.type = try self.type_intern_pool.fromFishType(.bool);
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         .addition, .subtraction => |math_op| {
-            try resolveExpression(
+            try self.resolveExpression(
                 math_op.lefthand,
                 null,
                 script,
@@ -1194,10 +1303,12 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            try resolveExpression(
+            const math_op_lefthand_type = self.type_intern_pool.get(math_op.lefthand.type);
+
+            try self.resolveExpression(
                 math_op.righthand,
                 // For simple math ops, the righthand side should always be an s32
-                if (math_op.lefthand.type.resolved == .pointer) s32Type() else math_op.lefthand.type,
+                if (math_op_lefthand_type.resolved == .pointer) try self.type_intern_pool.fromFishType(.s32) else math_op.lefthand.type,
                 script,
                 script_table,
                 a_string_table,
@@ -1205,16 +1316,22 @@ fn resolveExpression(
             );
 
             expression.type = math_op.lefthand.type;
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         .cast => |cast_expression| {
-            const resolved_cast_target_type = try resolveParsedType(
-                expression.type.parsed,
+            try self.resolveParsedType(
+                expression.type,
                 script,
                 script_table,
                 a_string_table,
             );
 
-            try resolveExpression(
+            try self.resolveExpression(
                 cast_expression,
                 null,
                 script,
@@ -1223,9 +1340,9 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            if (try coerceExpression(
+            if (try self.coerceExpression(
                 script.ast.allocator,
-                resolved_cast_target_type,
+                expression.type,
                 cast_expression,
                 script_table,
                 a_string_table,
@@ -1233,11 +1350,11 @@ fn resolveExpression(
             )) |new_expression| {
                 expression.* = new_expression;
             } else {
-                expression.type = .{ .resolved = resolved_cast_target_type };
+                expression.type = expression.type;
             }
         },
         .dereference => |dereference| {
-            try resolveExpression(
+            try self.resolveExpression(
                 dereference,
                 null,
                 script,
@@ -1246,35 +1363,40 @@ fn resolveExpression(
                 function_variable_stack,
             );
 
-            std.debug.assert(dereference.type.resolved == .pointer);
+            const dereference_type = self.type_intern_pool.get(dereference.type);
 
-            expression.type = if (dereference.type.resolved.pointer.indirection_count > 1) .{
-                .resolved = .{
-                    .pointer = .{
-                        .indirection_count = dereference.type.resolved.pointer.indirection_count - 1,
-                        .fish = dereference.type.resolved.pointer.fish,
-                        .type = dereference.type.resolved.pointer.type,
-                    },
-                },
-            } else .{ .resolved = try resolveParsedType(
-                Parser.Type.Parsed.fromFishType(dereference.type.resolved.pointer.type.fish),
-                null,
-                null,
-                null,
-            ) };
+            std.debug.assert(dereference_type.resolved == .pointer);
+
+            expression.type = if (dereference_type.resolved.pointer.indirection_count > 1) blk: {
+                var new_parsed = self.type_intern_pool.getKey(dereference.type).parsed;
+                new_parsed.indirection_count -= 1;
+
+                const new_type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = new_parsed });
+
+                break :blk new_type;
+            } else try self.type_intern_pool.fromFishType(dereference_type.resolved.pointer.type.fish);
+
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }
 
-    std.debug.assert(expression.type == .resolved);
+    std.debug.assert(self.type_intern_pool.get(expression.type).* == .resolved);
 
-    if (target_type) |target_parsed_type| {
-        switch (target_parsed_type) {
+    if (target_type) |target_parsed_type_index| {
+        const target_parsed_type = self.type_intern_pool.get(target_parsed_type_index);
+
+        switch (target_parsed_type.*) {
             .resolved => {
                 //If we have a target type, try to coerce to that type
-                if (try coerceExpression(
+                if (try self.coerceExpression(
                     script.ast.allocator,
-                    target_parsed_type.resolved,
+                    target_parsed_type_index,
                     expression,
                     script_table,
                     a_string_table,
@@ -1285,17 +1407,19 @@ fn resolveExpression(
             else => |tag| std.debug.panic("target type must be a resolved type, cannot be {s}", .{@tagName(tag)}),
         }
 
+        const expression_type = self.type_intern_pool.get(expression.type);
+
         //If we couldnt coerce, then we've hit an unresolvable situation
-        if (!target_parsed_type.resolved.eql(expression.type.resolved))
-            std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression.type.resolved });
+        if (!target_parsed_type.resolved.eql(expression_type.resolved))
+            std.debug.panic("wanted type {}, got type {}", .{ target_parsed_type.resolved, expression_type.resolved });
     }
 
-    std.debug.assert(expression.type == .resolved);
+    std.debug.assert(self.type_intern_pool.get(expression.type).* == .resolved);
 }
 
-fn isNumberLike(resolved_type: Parser.Type.Resolved) bool {
-    return switch (resolved_type) {
-        .type, .null_literal => false,
+fn isNumberLike(resolved_type: *const Parser.TypeInternPool.Type) bool {
+    return switch (resolved_type.resolved) {
+        .null_literal => false,
         .float_literal, .integer_literal => true,
         .fish => |fish| switch (fish.machine_type) {
             .s32, .s64, .f32, .f64 => true,
@@ -1305,57 +1429,14 @@ fn isNumberLike(resolved_type: Parser.Type.Resolved) bool {
     };
 }
 
-fn typeFromName(name: []const u8) Parser.Type {
-    return .{ .resolved = .{ .type = name } };
-}
-
-fn boolType() Parser.Type {
-    return comptime .{ .resolved = resolveParsedType(Parser.Type.Parsed.fromFishType(.bool), null, null, null) catch unreachable };
-}
-
-fn voidType() Parser.Type {
-    return comptime .{ .resolved = resolveParsedType(Parser.Type.Parsed.fromFishType(.void), null, null, null) catch unreachable };
-}
-
-fn s32Type() Parser.Type {
-    return comptime .{ .resolved = resolveParsedType(Parser.Type.Parsed.fromFishType(.s32), null, null, null) catch unreachable };
-}
-
-fn vec2Type() Parser.Type {
-    return .{ .resolved = resolveParsedType(
-        Parser.Type.Parsed.fromFishType(.vec2),
-        null,
-        null,
-        null,
-    ) catch unreachable };
-}
-
-fn vec4Type() Parser.Type {
-    return .{ .resolved = resolveParsedType(
-        Parser.Type.Parsed.fromFishType(.vec4),
-        null,
-        null,
-        null,
-    ) catch unreachable };
-}
-
-fn f32Type() Parser.Type {
-    return .{ .resolved = resolveParsedType(
-        Parser.Type.Parsed.fromFishType(.f32),
-        null,
-        null,
-        null,
-    ) catch unreachable };
-}
-
-fn resolveComptimeInteger(expression: *Parser.Node.Expression) !void {
-    std.debug.assert(expression.type.resolved == .integer_literal);
+fn resolveComptimeInteger(self: *Self, expression: *Parser.Node.Expression) !void {
+    std.debug.assert(self.type_intern_pool.get(expression.type).resolved == .integer_literal);
 
     switch (expression.contents) {
         // Do nothing if its already just an integer literal
         .integer_literal => {},
         .numeric_negation => |negation| {
-            try resolveComptimeInteger(negation);
+            try self.resolveComptimeInteger(negation);
 
             const literal = negation.contents.integer_literal;
             expression.contents = .{ .integer_literal = .{
@@ -1368,15 +1449,15 @@ fn resolveComptimeInteger(expression: *Parser.Node.Expression) !void {
     }
 }
 
-fn resolveComptimeFloat(expression: *Parser.Node.Expression) !void {
-    std.debug.assert(expression.type.resolved == .float_literal);
+fn resolveComptimeFloat(self: *Self, expression: *Parser.Node.Expression) !void {
+    std.debug.assert(self.type_intern_pool.get(expression.type).resolved == .float_literal);
 
     switch (expression.contents) {
         // Do nothing if its already just a float literal
         .float_literal => {},
         //At compile time, resolve the numeric negation
         .numeric_negation => |numeric_negation| {
-            try resolveComptimeFloat(numeric_negation);
+            try self.resolveComptimeFloat(numeric_negation);
 
             expression.contents = .{
                 .float_literal = .{
@@ -1393,14 +1474,17 @@ fn resolveComptimeFloat(expression: *Parser.Node.Expression) !void {
 
 ///Attempts to coerce the expression to the target type, modifying the expression in the meantime
 fn coerceExpression(
+    self: *Self,
     allocator: std.mem.Allocator,
-    target_type: Parser.Type.Resolved,
+    intern_target_type: Parser.TypeInternPool.Index,
     expression: *Parser.Node.Expression,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
     hard_cast: bool,
 ) !?Parser.Node.Expression {
-    const expression_type = expression.type.resolved;
+    const expression_type = self.type_intern_pool.get(expression.type).resolved;
+
+    const target_type = self.type_intern_pool.get(intern_target_type).resolved;
 
     //If the types already match, then do nothing
     if (expression_type.eql(target_type))
@@ -1412,7 +1496,7 @@ fn coerceExpression(
 
             // Integer literal -> ptr conversion
             if (expression_type == .integer_literal) {
-                try resolveComptimeInteger(expression);
+                try self.resolveComptimeInteger(expression);
 
                 //Dupe the source expression since this pointer will get overwritten later on with the value that we return
                 const cast_target_expression = try allocator.create(Parser.Node.Expression);
@@ -1420,7 +1504,7 @@ fn coerceExpression(
 
                 return .{
                     .contents = .{ .integer_literal_to_ptr = cast_target_expression },
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
 
@@ -1432,14 +1516,14 @@ fn coerceExpression(
 
                 return .{
                     .contents = .null_literal_to_ptr,
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
         },
         .fish => |target_fish_type| {
             // Iterate the base classes of the source expression, to try to see if we can implicitly cast the type to its base type
-            if (expression.type.resolved == .fish and target_fish_type.script != null) {
-                var script_name = a_string_table.keys()[expression.type.resolved.fish.type_name];
+            if (expression_type == .fish and target_fish_type.script != null) {
+                var script_name = a_string_table.keys()[expression_type.fish.type_name];
 
                 base_check: while (true) {
                     const parsed_script = script_table.get(script_name).?;
@@ -1454,7 +1538,7 @@ fn coerceExpression(
 
                         return .{
                             .contents = .{ .cast = cast_target_expression },
-                            .type = .{ .resolved = target_type },
+                            .type = intern_target_type,
                         };
                     }
 
@@ -1470,7 +1554,7 @@ fn coerceExpression(
 
             // Integer literal -> safe_ptr coercion, only allowed in hard casts
             if (hard_cast and target_fish_type.machine_type == .safe_ptr and expression_type == .integer_literal) {
-                try resolveComptimeInteger(expression);
+                try self.resolveComptimeInteger(expression);
 
                 //Dupe the source expression since this pointer will get overwritten later on with the value that we return
                 const cast_target_expression = try allocator.create(Parser.Node.Expression);
@@ -1478,13 +1562,13 @@ fn coerceExpression(
 
                 return .{
                     .contents = .{ .integer_literal_to_safe_ptr = cast_target_expression },
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
 
             // Integer literal -> s32 coercion
             if (target_fish_type.machine_type == .s32 and expression_type == .integer_literal) {
-                try resolveComptimeInteger(expression);
+                try self.resolveComptimeInteger(expression);
 
                 //Dupe the source expression since this pointer will get overwritten later on with the value that we return
                 const cast_target_expression = try allocator.create(Parser.Node.Expression);
@@ -1492,13 +1576,13 @@ fn coerceExpression(
 
                 return .{
                     .contents = .{ .integer_literal_to_s32 = cast_target_expression },
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
 
             //Integer literal -> s64 coercion
             if (target_fish_type.machine_type == .s64 and expression_type == .integer_literal) {
-                try resolveComptimeInteger(expression);
+                try self.resolveComptimeInteger(expression);
 
                 //Dupe the source expression since this pointer will get overwritten later on with the value that we return
                 const cast_target_expression = try allocator.create(Parser.Node.Expression);
@@ -1506,13 +1590,13 @@ fn coerceExpression(
 
                 return .{
                     .contents = .{ .integer_literal_to_s64 = cast_target_expression },
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
 
             // Integer literal -> f32 coercion
             if (target_fish_type.machine_type == .f32 and expression_type == .integer_literal) {
-                try resolveComptimeInteger(expression);
+                try self.resolveComptimeInteger(expression);
 
                 //Dupe the source expression since this pointer will get overwritten later on with the value that we return
                 const cast_target_expression = try allocator.create(Parser.Node.Expression);
@@ -1520,13 +1604,13 @@ fn coerceExpression(
 
                 return .{
                     .contents = .{ .integer_literal_to_f32 = cast_target_expression },
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
 
             //Integer literal -> f64 coercion
             if (target_fish_type.machine_type == .f64 and expression_type == .integer_literal) {
-                try resolveComptimeInteger(expression);
+                try self.resolveComptimeInteger(expression);
 
                 //Dupe the source expression since this pointer will get overwritten later on with the value that we return
                 const cast_target_expression = try allocator.create(Parser.Node.Expression);
@@ -1534,13 +1618,13 @@ fn coerceExpression(
 
                 return .{
                     .contents = .{ .integer_literal_to_f64 = cast_target_expression },
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
 
             // Float literal -> f32 coercion
             if (target_fish_type.machine_type == .f32 and expression_type == .float_literal) {
-                try resolveComptimeFloat(expression);
+                try self.resolveComptimeFloat(expression);
 
                 //Dupe the source expression since this pointer will get overwritten later on with the value that we return
                 const cast_target_expression = try allocator.create(Parser.Node.Expression);
@@ -1548,13 +1632,13 @@ fn coerceExpression(
 
                 return .{
                     .contents = .{ .float_literal_to_f32 = cast_target_expression },
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
 
             //Float literal -> f64 coercion
             if (target_fish_type.machine_type == .f64 and expression_type == .float_literal) {
-                try resolveComptimeFloat(expression);
+                try self.resolveComptimeFloat(expression);
 
                 //Dupe the source expression since this pointer will get overwritten later on with the value that we return
                 const cast_target_expression = try allocator.create(Parser.Node.Expression);
@@ -1562,7 +1646,7 @@ fn coerceExpression(
 
                 return .{
                     .contents = .{ .float_literal_to_f64 = cast_target_expression },
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
 
@@ -1574,7 +1658,7 @@ fn coerceExpression(
 
                 return .{
                     .contents = .{ .cast = cast_target_expression },
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
 
@@ -1586,7 +1670,7 @@ fn coerceExpression(
 
                 return .{
                     .contents = .null_literal_to_safe_ptr,
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
 
@@ -1598,7 +1682,7 @@ fn coerceExpression(
 
                 return .{
                     .contents = .null_literal_to_object_ptr,
-                    .type = .{ .resolved = target_type },
+                    .type = intern_target_type,
                 };
             }
         },
@@ -1609,6 +1693,7 @@ fn coerceExpression(
 }
 
 fn findFunction(
+    self: *Self,
     name: []const u8,
     calling_parameters: []const *Parser.Node.Expression,
     allocator: std.mem.Allocator,
@@ -1625,95 +1710,12 @@ fn findFunction(
     defer candidates.deinit();
 
     if (source_expression) |function_source_expression| {
-        switch (function_source_expression.type.resolved) {
-            .fish => |fish| {
-                switch (fish.machine_type) {
-                    .object_ref, .safe_ptr => {
-                        const source_class_name = a_string_table.keys()[fish.type_name];
+        const function_source_expression_contents_type = function_source_expression.contents;
+        const function_source_expression_type = self.type_intern_pool.get(function_source_expression.type);
 
-                        //Recursively go through all the parent classes, and try to find a matching function
-                        var source_script = script_table.get(source_class_name).?;
-                        var class = getScriptClassNode(source_script.ast);
-                        while (true) {
-                            for (class.functions) |function| {
-                                //If the function name is wrong, continue
-                                if (!std.mem.eql(u8, function.name, name))
-                                    continue;
-
-                                // If the parameter count is not equal to the calling parameter count, or
-                                // if its static and the calling parameter count is does not equal parameter count - 1
-                                // (eg. special cased static functions which act as member functions), then skip this overload
-                                if (function.parameters.len != calling_parameters.len and
-                                    !(function.modifiers.static and
-                                    function.parameters.len > 0 and
-                                    function.parameters.len - 1 == calling_parameters.len))
-                                {
-                                    std.debug.print("skipping... cus param mismatch\n", .{});
-                                    continue;
-                                }
-
-                                // Type resolve the function
-                                try resolveFunctionHead(
-                                    function,
-                                    source_script,
-                                    script_table,
-                                    a_string_table,
-                                );
-
-                                // You usually cant call static functions as member functions, aside from the case of
-                                if (function.modifiers.static) {
-                                    //The first parameter being the class being used as the source can be called with this syntax
-                                    //since these are special cased to be callable as member functions
-                                    if (function.parameters.len > 0) blk: {
-                                        const first_parameter = function.parameters[0];
-
-                                        //If the first parameter is not an object ref or safe ptr, then its definitely not special cased
-                                        if (first_parameter.type.resolved.fish.machine_type != .safe_ptr and
-                                            first_parameter.type.resolved.fish.machine_type != .object_ref)
-                                            break :blk;
-
-                                        //If its a safe_ptr or object_ref, the type name should always be known
-                                        std.debug.assert(first_parameter.type.resolved.fish.type_name != 0xFFFFFFFF);
-
-                                        const type_name = a_string_table.keys()[first_parameter.type.resolved.fish.type_name];
-
-                                        // If the calling script derives the parameter's script, then this *can* be a member function, allow through
-                                        if (scriptDerivesOtherScript(
-                                            calling_script,
-                                            script_table.get(type_name).?,
-                                            script_table,
-                                        )) try candidates.append(.{
-                                            function,
-                                            (try typeReferenceFromScript(source_script, 0, a_string_table)).fish,
-                                        });
-
-                                        continue;
-                                    }
-
-                                    std.debug.panic("you cant member call a static function {s}, sorry bub", .{function.name});
-                                }
-
-                                try candidates.append(.{
-                                    function,
-                                    (try typeReferenceFromScript(source_script, 0, a_string_table)).fish,
-                                });
-                            }
-
-                            if (class.base_class == .none)
-                                break;
-
-                            source_script = script_table.get(class.base_class.resolved.name).?;
-                            class = getScriptClassNode(source_script.ast);
-                        }
-                    },
-                    else => |machine_type| std.debug.panic(
-                        "you cannot do field access on a variable with machine type {s}. must be object_ref or safe_ptr",
-                        .{@tagName(machine_type)},
-                    ),
-                }
-            },
-            .type => |comptime_type| {
-                const type_script = script_table.get(comptime_type).?;
+        switch (function_source_expression_contents_type) {
+            .class_access => |class| {
+                const type_script = script_table.get(class).?;
 
                 const type_class = getScriptClassNode(type_script.ast);
 
@@ -1726,7 +1728,7 @@ fn findFunction(
                     // If we found the function, return it
                     if (std.mem.eql(u8, function.name, name)) {
                         // Type resolve the function
-                        try resolveFunctionHead(
+                        try self.resolveFunctionHead(
                             function,
                             type_script,
                             script_table,
@@ -1739,12 +1741,105 @@ fn findFunction(
 
                         try candidates.append(.{
                             function,
-                            (try typeReferenceFromScript(type_script, 0, a_string_table)).fish,
+                            try typeReferenceFromScript(type_script, 0, a_string_table),
                         });
                     }
                 }
             },
-            else => |tag| std.debug.panic("cant call member function on {s}", .{@tagName(tag)}),
+            else => {
+                switch (function_source_expression_type.resolved) {
+                    .fish => |fish| {
+                        switch (fish.machine_type) {
+                            .object_ref, .safe_ptr => {
+                                const source_class_name = a_string_table.keys()[fish.type_name];
+
+                                //Recursively go through all the parent classes, and try to find a matching function
+                                var source_script = script_table.get(source_class_name).?;
+                                var class = getScriptClassNode(source_script.ast);
+                                while (true) {
+                                    for (class.functions) |function| {
+                                        //If the function name is wrong, continue
+                                        if (!std.mem.eql(u8, function.name, name))
+                                            continue;
+
+                                        // If the parameter count is not equal to the calling parameter count, or
+                                        // if its static and the calling parameter count is does not equal parameter count - 1
+                                        // (eg. special cased static functions which act as member functions), then skip this overload
+                                        if (function.parameters.len != calling_parameters.len and
+                                            !(function.modifiers.static and
+                                            function.parameters.len > 0 and
+                                            function.parameters.len - 1 == calling_parameters.len))
+                                        {
+                                            std.debug.print("skipping... cus param mismatch\n", .{});
+                                            continue;
+                                        }
+
+                                        // Type resolve the function
+                                        try self.resolveFunctionHead(
+                                            function,
+                                            source_script,
+                                            script_table,
+                                            a_string_table,
+                                        );
+
+                                        // You usually cant call static functions as member functions, aside from the case of
+                                        if (function.modifiers.static) {
+                                            //The first parameter being the class being used as the source can be called with this syntax
+                                            //since these are special cased to be callable as member functions
+                                            if (function.parameters.len > 0) blk: {
+                                                const first_parameter = function.parameters[0];
+
+                                                const first_parameter_type = self.type_intern_pool.get(first_parameter.type);
+
+                                                //If the first parameter is not an object ref or safe ptr, then its definitely not special cased
+                                                if (first_parameter_type.resolved.fish.machine_type != .safe_ptr and
+                                                    first_parameter_type.resolved.fish.machine_type != .object_ref)
+                                                    break :blk;
+
+                                                //If its a safe_ptr or object_ref, the type name should always be known
+                                                std.debug.assert(first_parameter_type.resolved.fish.type_name != 0xFFFFFFFF);
+
+                                                const type_name = a_string_table.keys()[first_parameter_type.resolved.fish.type_name];
+
+                                                // If the calling script derives the parameter's script, then this *can* be a member function, allow through
+                                                if (scriptDerivesOtherScript(
+                                                    calling_script,
+                                                    script_table.get(type_name).?,
+                                                    script_table,
+                                                )) try candidates.append(.{
+                                                    function,
+                                                    try typeReferenceFromScript(source_script, 0, a_string_table),
+                                                });
+
+                                                continue;
+                                            }
+
+                                            std.debug.panic("you cant member call a static function {s}, sorry bub", .{function.name});
+                                        }
+
+                                        try candidates.append(.{
+                                            function,
+                                            try typeReferenceFromScript(source_script, 0, a_string_table),
+                                        });
+                                    }
+
+                                    if (class.base_class == .none)
+                                        break;
+
+                                    source_script = script_table.get(class.base_class.resolved.name).?;
+                                    class = getScriptClassNode(source_script.ast);
+                                }
+                            },
+                            else => |machine_type| std.debug.panic(
+                                "you cannot do field access on a variable with machine type {s}. must be object_ref or safe_ptr",
+                                .{@tagName(machine_type)},
+                            ),
+                        }
+                    },
+
+                    else => |tag| std.debug.panic("cant call member function on {s}", .{@tagName(tag)}),
+                }
+            },
         }
     }
 
@@ -1812,52 +1907,68 @@ fn scriptDerivesOtherScript(script: *ParsedScript, other: *ParsedScript, script_
 }
 
 fn resolveParsedType(
-    parsed_type: Parser.Type.Parsed,
+    self: *Self,
+    type_index: Parser.TypeInternPool.Index,
     script: ?*ParsedScript,
     script_table: ?*ParsedScriptTable,
     a_string_table: ?*AStringTable,
-) Error!Parser.Type.Resolved {
+) Error!void {
+    const intern_type = self.type_intern_pool.getMutable(type_index);
+
+    if (intern_type.* == .resolved)
+        return;
+
+    const parsed_type = intern_type.parsed;
+
     if (parsed_type.indirection_count > 0) {
-        return Parser.Type.Resolved{
-            .pointer = .{
-                //TODO: arrays of pointers?
-                .indirection_count = parsed_type.indirection_count,
-                .type = .{ .fish = std.meta.stringToEnum(MMTypes.FishType, parsed_type.name).? },
-                .fish = .{
-                    .array_base_machine_type = .void,
-                    .dimension_count = 0,
-                    .fish_type = .s32,
-                    .machine_type = .s32,
-                    .script = null,
-                    .type_name = @intCast((try a_string_table.?.getOrPut("ptr")).index),
+        intern_type.* = .{
+            .resolved = .{
+                .pointer = .{
+                    //TODO: arrays of pointers?
+                    .indirection_count = parsed_type.indirection_count,
+                    .type = .{ .fish = std.meta.stringToEnum(MMTypes.FishType, parsed_type.name).? },
+                    .fish = .{
+                        .array_base_machine_type = .void,
+                        .dimension_count = 0,
+                        .fish_type = .s32,
+                        .machine_type = .s32,
+                        .script = null,
+                        .type_name = @intCast((try a_string_table.?.getOrPut("ptr")).index),
+                    },
                 },
             },
         };
+
+        return;
     }
 
     if (std.meta.stringToEnum(MMTypes.FishType, parsed_type.name)) |fish_type| {
-        return .{
-            .fish = if (parsed_type.dimension_count > 0)
-                MMTypes.TypeReference{
-                    .array_base_machine_type = fish_type.toMachineType(),
-                    .dimension_count = parsed_type.dimension_count,
-                    .fish_type = .void,
-                    .machine_type = .object_ref,
-                    //null
-                    .type_name = 0xFFFFFFFF,
-                    .script = null,
-                }
-            else
-                MMTypes.TypeReference{
-                    .array_base_machine_type = .void,
-                    .dimension_count = 0,
-                    .fish_type = fish_type,
-                    .machine_type = fish_type.toMachineType(),
-                    //null
-                    .type_name = 0xFFFFFFFF,
-                    .script = null,
-                },
+        intern_type.* = .{
+            .resolved = .{
+                .fish = if (parsed_type.dimension_count > 0)
+                    MMTypes.TypeReference{
+                        .array_base_machine_type = fish_type.toMachineType(),
+                        .dimension_count = parsed_type.dimension_count,
+                        .fish_type = .void,
+                        .machine_type = .object_ref,
+                        //null
+                        .type_name = 0xFFFFFFFF,
+                        .script = null,
+                    }
+                else
+                    MMTypes.TypeReference{
+                        .array_base_machine_type = .void,
+                        .dimension_count = 0,
+                        .fish_type = fish_type,
+                        .machine_type = fish_type.toMachineType(),
+                        //null
+                        .type_name = 0xFFFFFFFF,
+                        .script = null,
+                    },
+            },
         };
+
+        return;
     } else {
         if (parsed_type.base_type) |base_type| {
             if (script.?.imported_types.get(base_type) != null) {
@@ -1867,43 +1978,63 @@ fn resolveParsedType(
 
                 for (class.enums) |enumeration| {
                     if (std.mem.eql(u8, enumeration.name, parsed_type.name)) {
-                        return try typeReferenceFromScriptEnum(
+                        intern_type.* = .{ .resolved = .{ .fish = try self.typeReferenceFromScriptEnum(
                             referenced_script,
+                            script_table.?,
                             enumeration,
                             parsed_type.dimension_count,
                             a_string_table.?,
-                        );
+                        ) } };
+
+                        return;
                     }
                 }
             }
         } else if (script.?.imported_types.get(parsed_type.name) != null) {
             const referenced_script = script_table.?.get(parsed_type.name).?;
 
-            return try typeReferenceFromScript(
+            intern_type.* = .{ .resolved = .{ .fish = try typeReferenceFromScript(
                 referenced_script,
                 parsed_type.dimension_count,
                 a_string_table.?,
-            );
+            ) } };
+
+            return;
         }
 
         std.debug.panic("no script {s} ({?s}) found in import table for script {s}", .{ parsed_type.name, parsed_type.base_type, script.?.class_name });
     }
+
+    unreachable;
 }
 
-pub fn typeReferenceFromScriptEnum(script: *const ParsedScript, enumeration: *Parser.Node.Enum, dimension_count: u8, a_string_table: *AStringTable) Error!Parser.Type.Resolved {
+pub fn typeReferenceFromScriptEnum(
+    self: *Self,
+    script: *ParsedScript,
+    script_table: *ParsedScriptTable,
+    enumeration: *Parser.Node.Enum,
+    dimension_count: u8,
+    a_string_table: *AStringTable,
+) Error!MMTypes.TypeReference {
     //Qualify the name
     const qualified_name = try std.fmt.allocPrint(script.ast.allocator, "{s}.{s}", .{ script.class_name, enumeration.name });
 
     //Get the string table index of the name of this enum
     const name_idx = try a_string_table.getOrPut(qualified_name);
 
+    const backing_type = self.type_intern_pool.get(enumeration.backing_type);
+
     // Resolve the enumeration's backing type, if needed
-    if (enumeration.backing_type == .parsed)
-        enumeration.backing_type = .{ .resolved = try resolveParsedType(enumeration.backing_type.parsed, null, null, a_string_table) };
+    try self.resolveParsedType(
+        enumeration.backing_type,
+        script,
+        script_table,
+        a_string_table,
+    );
 
-    const base_type = enumeration.backing_type.resolved.fish;
+    const base_type = backing_type.resolved.fish;
 
-    return .{ .fish = if (dimension_count > 0)
+    return if (dimension_count > 0)
         MMTypes.TypeReference{
             .array_base_machine_type = base_type.machine_type,
             .dimension_count = dimension_count,
@@ -1920,14 +2051,18 @@ pub fn typeReferenceFromScriptEnum(script: *const ParsedScript, enumeration: *Pa
             .machine_type = base_type.machine_type,
             .type_name = @intCast(name_idx.index),
             .script = null,
-        } };
+        };
 }
 
-pub fn typeReferenceFromScript(script: *ParsedScript, dimension_count: u8, a_string_table: *AStringTable) Error!Parser.Type.Resolved {
+pub fn typeReferenceFromScript(
+    script: *ParsedScript,
+    dimension_count: u8,
+    a_string_table: *AStringTable,
+) Error!MMTypes.TypeReference {
     //Get the idx of the name of this script, or put into the string table
     const name_idx = try a_string_table.getOrPut(script.class_name);
 
-    return .{ .fish = if (dimension_count > 0)
+    return if (dimension_count > 0)
         MMTypes.TypeReference{
             .array_base_machine_type = if (script.is_thing) .safe_ptr else .object_ref,
             .dimension_count = dimension_count,
@@ -1944,10 +2079,11 @@ pub fn typeReferenceFromScript(script: *ParsedScript, dimension_count: u8, a_str
             .machine_type = if (script.is_thing) .safe_ptr else .object_ref,
             .type_name = @intCast(name_idx.index),
             .script = script.resource_identifier,
-        } };
+        };
 }
 
 fn resolveField(
+    self: *Self,
     field: *Parser.Node.Field,
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
@@ -1955,25 +2091,25 @@ fn resolveField(
 ) Error!void {
     std.debug.print("type resolving field {s}\n", .{field.name});
 
+    var field_type = self.type_intern_pool.get(field.type);
+
     //early return if its already resolved
-    if (field.type == .resolved)
+    if (field_type.* == .resolved)
         return;
 
-    switch (field.type) {
-        .parsed => |parsed_type| {
-            field.type = .{
-                .resolved = try resolveParsedType(
-                    parsed_type,
-                    script,
-                    script_table,
-                    a_string_table,
-                ),
-            };
+    switch (field_type.*) {
+        .parsed => {
+            try self.resolveParsedType(
+                field.type,
+                script,
+                script_table,
+                a_string_table,
+            );
         },
         .unknown => {
             if (field.default_value) |default_value| {
                 //Resolve the type of the default value, with no specific target type in mind
-                try resolveExpression(
+                try self.resolveExpression(
                     default_value,
                     null,
                     script,
@@ -1989,20 +2125,23 @@ fn resolveField(
         else => unreachable,
     }
 
-    std.debug.print("resolved as {}\n", .{field.type});
+    field_type = self.type_intern_pool.get(field.type);
+
+    std.debug.print("resolved as {}\n", .{field_type});
 
     //Assert the type was actually resolved
-    std.debug.assert(field.type == .resolved);
+    std.debug.assert(field_type.* == .resolved);
 
     //Panic if the resolved type is not knowable at runtime
-    if (field.type.resolved != .fish)
+    if (field_type.resolved != .fish)
         std.debug.panic(
             "field {s}'s default value's is unknown at runtime, currently is {s}",
-            .{ field.name, @tagName(field.type.resolved) },
+            .{ field.name, @tagName(field_type.resolved) },
         );
 }
 
 pub fn mangleFunctionName(
+    self: *Self,
     writer: anytype,
     a_string_table: *const AStringTable,
     name: []const u8,
@@ -2012,17 +2151,19 @@ pub fn mangleFunctionName(
     try writer.writeAll("__");
 
     for (parameters) |parameter| {
-        const parameter_type = switch (parameter.type.resolved) {
+        const parameter_type = self.type_intern_pool.get(parameter.type);
+
+        const parameter_fish_type = switch (parameter_type.resolved) {
             .fish => |fish| fish,
             .pointer => |pointer| pointer.fish.?,
             else => @panic("cant parameter this type, sorry"),
         };
 
-        for (0..parameter_type.dimension_count) |_|
+        for (0..parameter_fish_type.dimension_count) |_|
             try writer.writeByte('[');
 
-        if (parameter_type.type_name != 0xFFFFFFFF) {
-            const type_name = a_string_table.keys()[parameter_type.type_name];
+        if (parameter_fish_type.type_name != 0xFFFFFFFF) {
+            const type_name = a_string_table.keys()[parameter_fish_type.type_name];
 
             try writer.writeByte('Q');
             try std.fmt.formatInt(
@@ -2035,7 +2176,7 @@ pub fn mangleFunctionName(
 
             try writer.writeAll(type_name);
         } else {
-            try writer.writeByte(parameter_type.fish_type.toMangledId());
+            try writer.writeByte(parameter_fish_type.fish_type.toMangledId());
         }
     }
 }

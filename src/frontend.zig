@@ -202,7 +202,16 @@ pub fn compile(
 
         const ast_allocator = arena.allocator();
 
-        const ast = try Parser.parse(ast_allocator, lexemes);
+        var type_intern_pool = Parser.TypeInternPool{
+            .hash_map = Parser.TypeInternPool.HashMap.init(allocator),
+        };
+        defer type_intern_pool.deinit();
+
+        const parser = try Parser.parse(
+            ast_allocator,
+            lexemes,
+            &type_intern_pool,
+        );
 
         // try Debug.dumpAst(stdout, ast);
 
@@ -213,18 +222,20 @@ pub fn compile(
         defer w_string_table.deinit();
 
         try Resolvinator.resolve(
-            ast,
+            parser.tree,
             defined_libraries,
             &a_string_table,
             script_identifier,
+            &type_intern_pool,
         );
 
         var debug = Debug{
             .indent = 0,
             .writer = stdout.any(),
             .a_string_table = &a_string_table,
+            .type_intern_pool = &type_intern_pool,
         };
-        try debug.dumpAst(ast);
+        try debug.dumpAst(parser.tree);
 
         const compilation_options: Genny.CompilationOptions = .{
             .optimization_mode = if (res.args.optimize) |optimize| std.meta.stringToEnum(std.builtin.OptimizeMode, optimize).? else .Debug,
@@ -236,10 +247,11 @@ pub fn compile(
         };
 
         var genny = Genny.init(
-            ast,
+            parser.tree,
             &a_string_table,
             &w_string_table,
             compilation_options,
+            &type_intern_pool,
         );
         defer genny.deinit();
 

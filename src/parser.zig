@@ -1,9 +1,20 @@
+//! Parses an A# source file into an abstract syntax tree
+
 const std = @import("std");
+
 const MMTypes = @import("MMTypes.zig");
+const SliceIterator = @import("slice_iterator.zig").SliceIterator;
+
+pub const Self = @This();
 
 pub const UsingType = enum {
     library,
 };
+
+tree: Tree,
+allocator: std.mem.Allocator,
+iter: SliceIterator(Lexeme),
+type_intern_pool: *TypeInternPool,
 
 pub const FromImportWanted = union(enum) {
     pub const ImportedFunction = struct {
@@ -34,99 +45,228 @@ pub const FromImportWanted = union(enum) {
     }
 };
 
-pub const Type = union(enum) {
-    pub const Parsed = struct {
-        base_type: ?[]const u8,
-        name: []const u8,
-        dimension_count: u8,
-        indirection_count: u8,
-
-        pub fn fromFishType(fish_type: MMTypes.FishType) Parsed {
-            return .{ .name = @tagName(fish_type), .dimension_count = 0, .base_type = null, .indirection_count = 0 };
-        }
-
-        pub fn eql(self: Parsed, other: Parsed) bool {
-            if (self.base_type) |base_type| {
-                if (other.base_type == null)
-                    return false;
-
-                if (!std.mem.eql(u8, base_type, other.base_type.?))
-                    return false;
-            } else if (other.base_type) |base_type| {
-                if (self.base_type == null)
-                    return false;
-
-                if (!std.mem.eql(u8, base_type, self.base_type.?))
-                    return false;
-            }
-
-            return self.dimension_count == other.dimension_count and
-                self.indirection_count == other.indirection_count and
-                std.mem.eql(u8, self.name, other.name);
-        }
+pub const TypeInternPool = struct {
+    const Key = union(enum(u8)) {
+        parsed: Type.Parsed = 0,
+        integer_literal: void = 1,
+        float_literal: void = 2,
+        null_literal: void = 3,
     };
 
-    pub const Resolved = union(enum) {
-        pub const Pointer = struct {
-            indirection_count: u8,
-            type: union(enum) {
-                fish: MMTypes.FishType,
+    pub const HashMap = std.ArrayHashMap(Key, Type, struct {
+        pub fn hash(self: @This(), s: Key) u32 {
+            _ = self;
 
-                pub fn eql(self: @This(), other: @This()) bool {
-                    if (std.meta.activeTag(self) != std.meta.activeTag(other))
+            const tag = std.hash.uint32(@intFromEnum(s));
+
+            return switch (s) {
+                .integer_literal, .float_literal, .null_literal => tag,
+                .parsed => |parsed| @truncate(
+                    std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(@as([]const u64, &.{
+                        (@as(u64, @intFromBool(parsed.base_type == null)) << 9) | (@as(u64, parsed.indirection_count) << 8) | parsed.dimension_count,
+                    }))) ^
+                        std.hash.Wyhash.hash(0, parsed.base_type orelse "") ^
+                        std.hash.Wyhash.hash(0, parsed.name) ^
+                        tag,
+                ),
+            };
+        }
+
+        pub fn eql(self: @This(), a: Key, b: Key, b_index: usize) bool {
+            _ = self; // autofix
+            _ = b_index; // autofix
+
+            return switch (a) {
+                .parsed => |parsed| b == .parsed and parsed.eql(b.parsed),
+                .integer_literal => b == .integer_literal,
+                .float_literal => b == .float_literal,
+                .null_literal => b == .null_literal,
+            };
+        }
+    }, true);
+
+    hash_map: HashMap,
+
+    pub const Index = enum(u32) {
+        unknown = std.math.maxInt(u32),
+        _,
+    };
+
+    pub fn deinit(self: *TypeInternPool) void {
+        self.hash_map.deinit();
+    }
+
+    pub fn get(self: *const TypeInternPool, index: Index) *const Type {
+        std.debug.assert(index != .unknown);
+
+        return &self.hash_map.values()[@intFromEnum(index)];
+    }
+
+    pub fn getMutable(self: *const TypeInternPool, index: Index) *Type {
+        std.debug.assert(index != .unknown);
+
+        return &self.hash_map.values()[@intFromEnum(index)];
+    }
+
+    pub fn getKey(self: *const TypeInternPool, index: Index) *const Key {
+        std.debug.assert(index != .unknown);
+
+        return &self.hash_map.keys()[@intFromEnum(index)];
+    }
+
+    pub fn getIndex(self: *const TypeInternPool, parsed: Key) ?Index {
+        const index = self.hash_map.getIndex(parsed);
+
+        if (index) |idx|
+            return @enumFromInt(idx)
+        else
+            return null;
+    }
+
+    pub fn putParsed(self: *TypeInternPool, value: Type) !Index {
+        try self.hash_map.putNoClobber(.{ .parsed = value.parsed }, value);
+
+        return self.getIndex(.{ .parsed = value.parsed }).?;
+    }
+
+    pub fn getOrPutParsed(self: *TypeInternPool, value: Type) !Index {
+        return self.getIndex(.{ .parsed = value.parsed }) orelse self.putParsed(value);
+    }
+
+    pub fn integerLiteral(self: *TypeInternPool) !Index {
+        return @enumFromInt((try self.hash_map.getOrPutValue(.integer_literal, .{ .resolved = .integer_literal })).index);
+    }
+
+    pub fn floatLiteral(self: *TypeInternPool) !Index {
+        return @enumFromInt((try self.hash_map.getOrPutValue(.float_literal, .{ .resolved = .float_literal })).index);
+    }
+
+    pub fn nullLiteral(self: *TypeInternPool) !Index {
+        return @enumFromInt((try self.hash_map.getOrPutValue(.null_literal, .{ .resolved = .null_literal })).index);
+    }
+
+    pub fn fromFishType(self: *TypeInternPool, machine_type: MMTypes.FishType) !Index {
+        const value: Type = .{
+            .parsed = .{
+                .base_type = null,
+                .name = @tagName(machine_type),
+                .dimension_count = 0,
+                .indirection_count = 0,
+            },
+        };
+
+        if (self.getIndex(.{ .parsed = value.parsed })) |index|
+            return index;
+
+        return self.putParsed(value);
+    }
+
+    pub fn wideStringType(self: *TypeInternPool) !Index {
+        return self.getOrPutParsed(.{ .parsed = .{
+            .name = "String",
+            .base_type = null,
+            .indirection_count = 0,
+            .dimension_count = 0,
+        } });
+    }
+
+    pub fn asciiStringType(self: *TypeInternPool) !Index {
+        return self.getOrPutParsed(.{ .parsed = .{
+            .name = "StringA",
+            .base_type = null,
+            .indirection_count = 0,
+            .dimension_count = 0,
+        } });
+    }
+
+    pub const Type = union(enum) {
+        pub const Parsed = struct {
+            base_type: ?[]const u8,
+            name: []const u8,
+            dimension_count: u8,
+            indirection_count: u8,
+
+            pub fn eql(self: Parsed, other: Parsed) bool {
+                if (self.base_type) |base_type| {
+                    if (other.base_type == null)
                         return false;
 
-                    return switch (self) {
-                        .fish => self.fish == other.fish,
-                    };
-                }
-            },
-            fish: ?MMTypes.TypeReference,
+                    if (!std.mem.eql(u8, base_type, other.base_type.?))
+                        return false;
+                } else if (other.base_type) |base_type| {
+                    if (self.base_type == null)
+                        return false;
 
-            pub fn eql(self: Pointer, other: Pointer) bool {
-                return self.indirection_count == other.indirection_count and self.type.eql(other.type);
+                    if (!std.mem.eql(u8, base_type, self.base_type.?))
+                        return false;
+                }
+
+                return self.dimension_count == other.dimension_count and
+                    self.indirection_count == other.indirection_count and
+                    std.mem.eql(u8, self.name, other.name);
             }
         };
 
-        fish: MMTypes.TypeReference,
-        pointer: Pointer,
-        type: []const u8,
-        integer_literal: void,
-        float_literal: void,
-        null_literal: void,
+        pub const Resolved = union(enum) {
+            pub const Pointer = struct {
+                indirection_count: u8,
+                type: union(enum) {
+                    fish: MMTypes.FishType,
 
-        pub fn eql(self: Resolved, other: Resolved) bool {
-            if (std.meta.activeTag(self) != std.meta.activeTag(other))
-                return false;
+                    pub fn eql(self: @This(), other: @This()) bool {
+                        if (std.meta.activeTag(self) != std.meta.activeTag(other))
+                            return false;
 
-            return switch (self) {
-                .fish => |fish| fish.eql(other.fish),
-                .pointer => |pointer| pointer.eql(other.pointer),
-                .type => |comptime_type| std.mem.eql(u8, comptime_type, other.type),
-                .integer_literal, .float_literal, .null_literal => true,
+                        return switch (self) {
+                            .fish => self.fish == other.fish,
+                        };
+                    }
+                },
+                fish: ?MMTypes.TypeReference,
+
+                pub fn eql(self: Pointer, other: Pointer) bool {
+                    return self.indirection_count == other.indirection_count and self.type.eql(other.type);
+                }
             };
-        }
 
-        pub fn machineType(self: Resolved) MMTypes.MachineType {
-            return switch (self) {
-                .fish => |fish| fish.machine_type,
-                .pointer => .s32,
-                else => unreachable,
-            };
-        }
+            fish: MMTypes.TypeReference,
+            pointer: Pointer,
+            integer_literal: void,
+            float_literal: void,
+            null_literal: void,
 
-        pub fn valueTypeReference(self: Resolved) MMTypes.TypeReference {
-            return switch (self) {
-                .fish => |fish| fish,
-                .pointer => |pointer| pointer.fish.?,
-                else => unreachable,
-            };
-        }
+            pub fn eql(self: Resolved, other: Resolved) bool {
+                if (std.meta.activeTag(self) != std.meta.activeTag(other))
+                    return false;
+
+                return switch (self) {
+                    .fish => |fish| fish.eql(other.fish),
+                    .pointer => |pointer| pointer.eql(other.pointer),
+                    .integer_literal, .float_literal, .null_literal => true,
+                };
+            }
+
+            pub fn machineType(self: Resolved) MMTypes.MachineType {
+                return switch (self) {
+                    .fish => |fish| fish.machine_type,
+                    .pointer => .s32,
+                    else => unreachable,
+                };
+            }
+
+            pub fn valueTypeReference(self: Resolved) MMTypes.TypeReference {
+                return switch (self) {
+                    .fish => |fish| fish,
+                    .pointer => |pointer| pointer.fish.?,
+                    else => unreachable,
+                };
+            }
+        };
+
+        parsed: Parsed,
+        unknown: void,
+        resolved: Resolved,
     };
-
-    parsed: Parsed,
-    unknown: void,
-    resolved: Resolved,
 };
 
 pub const Node = union(enum) {
@@ -165,7 +305,7 @@ pub const Node = union(enum) {
                 name: []const u8,
                 ident: MMTypes.ResourceIdentifier,
                 has_parameterless_constructor: bool,
-                type_reference: MMTypes.TypeReference,
+                type_reference: ?MMTypes.TypeReference,
             },
         },
         identifier: ?*Expression,
@@ -198,14 +338,14 @@ pub const Node = union(enum) {
 
         name: []const u8,
         modifiers: MMTypes.Modifiers,
-        backing_type: Type,
+        backing_type: TypeInternPool.Index,
         members: []const Member,
     };
 
     pub const Field = struct {
         modifiers: MMTypes.Modifiers,
         name: []const u8,
-        type: Type,
+        type: TypeInternPool.Index,
         default_value: ?*Expression,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -222,13 +362,13 @@ pub const Node = union(enum) {
 
         set_body: FunctionState,
         get_body: FunctionState,
-        type: Type,
+        type: TypeInternPool.Index,
         name: []const u8,
         modifiers: MMTypes.Modifiers,
     };
 
     pub const Function = struct {
-        return_type: Type,
+        return_type: TypeInternPool.Index,
         parameters: []Parameter,
         body: ?*Expression,
         name: []const u8,
@@ -238,20 +378,13 @@ pub const Node = union(enum) {
 
         pub const Parameter = struct {
             name: []const u8,
-            type: Type,
+            type: TypeInternPool.Index,
 
             pub fn eql(self: Parameter, other: Parameter) bool {
                 if (!std.mem.eql(u8, self.name, other.name))
                     return false;
 
-                if (std.meta.activeTag(self.type) != std.meta.activeTag(other.type))
-                    return false;
-
-                return switch (self.type) {
-                    .parsed => self.type.parsed.eql(other.type.parsed),
-                    .resolved => self.type.resolved.eql(other.type.resolved),
-                    .unknown => return true,
-                };
+                return self.type == other.type;
             }
 
             pub fn sliceEql(self: []const *const Parameter, other: []const *const Parameter) bool {
@@ -407,7 +540,7 @@ pub const Node = union(enum) {
         };
 
         contents: Contents,
-        type: Type,
+        type: TypeInternPool.Index,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
             return writer.print("expression{{.contents = {}, .type = {}}}", .{ value.contents, value.type });
@@ -416,7 +549,7 @@ pub const Node = union(enum) {
 
     pub const VariableDeclaration = struct {
         name: []const u8,
-        type: Type,
+        type: TypeInternPool.Index,
         value: ?*Expression,
 
         pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
@@ -488,65 +621,27 @@ pub const Tree = struct {
 
 const Lexeme = []const u8;
 
-pub fn SliceIterator(comptime T: type) type {
-    return struct {
-        slice: []const T,
-        pos: usize,
-
-        const Self = @This();
-
-        pub fn next(self: *Self) ?T {
-            if (self.pos >= self.slice.len)
-                return null
-            else {
-                const item = self.slice[self.pos];
-
-                self.pos += 1;
-
-                return item;
-            }
-        }
-
-        pub fn peek(self: Self) ?T {
-            if (self.pos >= self.slice.len) {
-                return null;
-            }
-
-            return self.slice[self.pos];
-        }
-
-        pub fn peekAt(self: Self, at: usize) ?T {
-            if (self.pos + at >= self.slice.len) {
-                return null;
-            }
-
-            return self.slice[self.pos + at];
-        }
-
-        pub fn prev(self: Self) ?T {
-            if (self.pos == 0) {
-                return null;
-            }
-
-            return self.slice[self.pos - 1];
-        }
-    };
-}
-
-pub fn parse(allocator: std.mem.Allocator, lexemes: []const Lexeme) Error!Tree {
-    var tree: Tree = .{
+pub fn parse(
+    allocator: std.mem.Allocator,
+    lexemes: []const Lexeme,
+    type_intern_pool: *TypeInternPool,
+) Error!Self {
+    var self = Self{
+        .tree = .{
+            .allocator = allocator,
+            .root_elements = .{},
+        },
         .allocator = allocator,
-        .root_elements = .{},
+        .iter = .{
+            .pos = 0,
+            .slice = lexemes,
+        },
+        .type_intern_pool = type_intern_pool,
     };
 
-    var lexeme_iter = SliceIterator(Lexeme){
-        .pos = 0,
-        .slice = lexemes,
-    };
+    try self.consumeTopLevel();
 
-    try consumeTopLevel(&tree, &lexeme_iter);
-
-    return tree;
+    return self;
 }
 
 const KeywordHash = u88;
@@ -565,17 +660,17 @@ fn hashKeyword(keyword: []const u8) KeywordHash {
     return val;
 }
 
-fn consumeTopLevel(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
-    while (iter.peek() != null) {
-        const modifiers = consumeModifiers(iter);
+fn consumeTopLevel(self: *Self) !void {
+    while (self.iter.peek() != null) {
+        const modifiers = self.consumeModifiers();
 
-        const lexeme = iter.next().?;
+        const lexeme = self.iter.next().?;
 
         switch (hashKeyword(lexeme)) {
-            hashKeyword("using") => try consumeUsingStatement(tree, iter),
-            hashKeyword("import") => try consumeImportStatement(tree, iter),
-            hashKeyword("from") => try consumeFromImportStatement(tree, iter),
-            hashKeyword("class") => try consumeClassStatement(tree, iter, modifiers),
+            hashKeyword("using") => try self.consumeUsingStatement(),
+            hashKeyword("import") => try self.consumeImportStatement(),
+            hashKeyword("from") => try self.consumeFromImportStatement(),
+            hashKeyword("class") => try self.consumeClassStatement(modifiers),
             else => {
                 std.debug.panic("Unexpected top level lexeme \"{s}\"", .{lexeme});
             },
@@ -583,36 +678,36 @@ fn consumeTopLevel(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     }
 }
 
-fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifiers: MMTypes.Modifiers) !void {
-    const node = try tree.allocator.create(Node.Class);
-    errdefer tree.allocator.destroy(node);
+fn consumeClassStatement(self: *Self, class_modifiers: MMTypes.Modifiers) !void {
+    const node = try self.allocator.create(Node.Class);
+    errdefer self.allocator.destroy(node);
 
-    if (consumeArbitraryLexemeIfAvailable(iter, "{")) {
+    if (self.consumeArbitraryLexemeIfAvailable("{")) {
         std.debug.panic("Unexpected {{, expecting class name", .{});
     }
 
     //Unreachable since we error out right above if theres EOF
-    const class_name = iter.next() orelse unreachable;
+    const class_name = self.iter.next() orelse unreachable;
 
-    const identifier: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "(")) blk: {
-        const expression = try consumeExpression(tree.allocator, iter);
+    const identifier: ?*Node.Expression = if (self.consumeArbitraryLexemeIfAvailable("(")) blk: {
+        const expression = try self.consumeExpression();
         if (expression.contents != .guid_literal)
             std.debug.panic("needs to be a guid, is {s}", .{@tagName(expression.contents)});
 
-        consumeArbitraryLexeme(iter, ")");
+        self.consumeArbitraryLexeme(")");
 
         break :blk expression;
     } else null;
 
     //Consume the scope start if available, if not, parse the class property
-    const base_class: ?[]const u8 = if (!consumeArbitraryLexemeIfAvailable(iter, "{")) blk: {
-        const property = iter.next() orelse std.debug.panic("unexpected EOF when parsing class properties", .{});
+    const base_class: ?[]const u8 = if (!self.consumeArbitraryLexemeIfAvailable("{")) blk: {
+        const property = self.iter.next() orelse std.debug.panic("unexpected EOF when parsing class properties", .{});
         switch (hashKeyword(property)) {
             hashKeyword("extends") => {
-                const base_class = iter.next() orelse std.debug.panic("unexpected EOF when reading base class name", .{});
+                const base_class = self.iter.next() orelse std.debug.panic("unexpected EOF when reading base class name", .{});
 
                 //Consume the scope start
-                consumeArbitraryLexeme(iter, "{");
+                self.consumeArbitraryLexeme("{");
 
                 break :blk base_class;
             },
@@ -620,39 +715,39 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifi
         }
     } else null;
 
-    var functions = std.ArrayList(*Node.Function).init(tree.allocator);
+    var functions = std.ArrayList(*Node.Function).init(self.allocator);
     defer functions.deinit();
-    var fields = std.ArrayList(*Node.Field).init(tree.allocator);
+    var fields = std.ArrayList(*Node.Field).init(self.allocator);
     defer fields.deinit();
-    var properties = std.ArrayList(*Node.Property).init(tree.allocator);
+    var properties = std.ArrayList(*Node.Property).init(self.allocator);
     defer properties.deinit();
-    var enums = std.ArrayList(*Node.Enum).init(tree.allocator);
+    var enums = std.ArrayList(*Node.Enum).init(self.allocator);
     defer enums.deinit();
 
-    var constructors = std.ArrayList(*Node.Constructor).init(tree.allocator);
+    var constructors = std.ArrayList(*Node.Constructor).init(self.allocator);
     defer constructors.deinit();
 
     while (true) {
-        const lexeme = iter.peek() orelse std.debug.panic("unexpected EOF when parsing class body", .{});
+        const lexeme = self.iter.peek() orelse std.debug.panic("unexpected EOF when parsing class body", .{});
 
         // std.debug.print("vv {s}\n", .{lexeme});
 
         //If we hit a `}`, we have reached the end of scope
         if (lexeme[0] == '}') {
-            consumeArbitraryLexeme(iter, "}");
+            self.consumeArbitraryLexeme("}");
 
             break;
         }
 
-        var attributes = std.ArrayList(*Node.Attribute).init(tree.allocator);
-        while (iter.peek().?[0] == '@') {
-            consumeArbitraryLexeme(iter, "@");
+        var attributes = std.ArrayList(*Node.Attribute).init(self.allocator);
+        while (self.iter.peek().?[0] == '@') {
+            self.consumeArbitraryLexeme("@");
 
-            const name = iter.next() orelse @panic("unexpected EOF when parsing attribute");
+            const name = self.iter.next() orelse @panic("unexpected EOF when parsing attribute");
 
-            const parameters = try consumeFunctionCallParameters(tree.allocator, iter);
+            const parameters = try self.consumeFunctionCallParameters();
 
-            const attribute = try tree.allocator.create(Node.Attribute);
+            const attribute = try self.allocator.create(Node.Attribute);
 
             if (std.mem.eql(u8, "NativeInvoke", name)) {
                 std.debug.assert(parameters.len == 2);
@@ -676,33 +771,33 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifi
             try attributes.append(attribute);
         }
 
-        const modifiers = consumeModifiers(iter);
+        const modifiers = self.consumeModifiers();
 
-        const next = iter.peek() orelse std.debug.panic("unexpected EOF when parsing declaration", .{});
+        const next = self.iter.peek() orelse std.debug.panic("unexpected EOF when parsing declaration", .{});
 
         const next_keyword = maybeHashKeyword(next);
 
         //If the next keyword is a function, then we are consuming a function
         if (next_keyword == comptime hashKeyword("fn")) {
             //Get rid of the fn
-            consumeArbitraryLexeme(iter, "fn");
+            self.consumeArbitraryLexeme("fn");
 
-            try functions.append(try consumeFunction(tree.allocator, iter, modifiers, attributes.items));
+            try functions.append(try self.consumeFunction(modifiers, attributes.items));
         } else if (next_keyword == comptime hashKeyword("enum")) {
-            try enums.append(try consumeEnum(tree.allocator, iter, modifiers));
+            try enums.append(try self.consumeEnum(modifiers));
         }
         // Else, we are consuming a field, property, or constructor
         else blk: {
-            if (iter.peekAt(1)) |ahead| {
+            if (self.iter.peekAt(1)) |ahead| {
                 if (ahead[0] == '(') {
-                    try constructors.append(try consumeConstructor(tree.allocator, iter, class_name, modifiers));
+                    try constructors.append(try self.consumeConstructor(class_name, modifiers));
 
                     //Since we parsed it as a contructor, break out as we dont want to accidentally parse a property aswell
                     break :blk;
                 }
             }
 
-            switch (try consumeFieldOrProperty(tree.allocator, iter, modifiers)) {
+            switch (try self.consumeFieldOrProperty(modifiers)) {
                 .field => |field| try fields.append(field),
                 .property => |property| try properties.append(property),
             }
@@ -725,25 +820,25 @@ fn consumeClassStatement(tree: *Tree, iter: *SliceIterator(Lexeme), class_modifi
         .modifiers = class_modifiers,
     };
 
-    try tree.root_elements.append(tree.allocator, .{ .class = node });
+    try self.tree.root_elements.append(self.allocator, .{ .class = node });
 }
 
-fn consumeEnum(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modifiers: MMTypes.Modifiers) !*Node.Enum {
-    const node = try allocator.create(Node.Enum);
-    errdefer allocator.destroy(node);
+fn consumeEnum(self: *Self, modifiers: MMTypes.Modifiers) !*Node.Enum {
+    const node = try self.allocator.create(Node.Enum);
+    errdefer self.allocator.destroy(node);
 
-    consumeArbitraryLexeme(iter, "enum");
+    self.consumeArbitraryLexeme("enum");
 
-    const name = iter.next() orelse @panic("EOF");
+    const name = self.iter.next() orelse @panic("EOF");
 
-    const backing_type = if (consumeArbitraryLexemeIfAvailable(iter, ":"))
-        consumeTypeName(iter)
+    const backing_type = if (self.consumeArbitraryLexemeIfAvailable(":"))
+        try self.consumeTypeName()
     else
-        Type{ .parsed = .{ .name = "s32", .dimension_count = 0, .base_type = null, .indirection_count = 0 } };
+        try self.type_intern_pool.fromFishType(.s32);
 
-    consumeArbitraryLexeme(iter, "{");
+    self.consumeArbitraryLexeme("{");
 
-    consumeArbitraryLexeme(iter, "}");
+    self.consumeArbitraryLexeme("}");
 
     node.* = .{
         .modifiers = modifiers,
@@ -756,20 +851,20 @@ fn consumeEnum(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modif
     return node;
 }
 
-fn consumeConstructor(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), class_name: []const u8, modifiers: MMTypes.Modifiers) !*Node.Constructor {
-    const node = try allocator.create(Node.Constructor);
-    errdefer allocator.destroy(node);
+fn consumeConstructor(self: *Self, class_name: []const u8, modifiers: MMTypes.Modifiers) !*Node.Constructor {
+    const node = try self.allocator.create(Node.Constructor);
+    errdefer self.allocator.destroy(node);
 
-    const name = iter.next() orelse @panic("eof");
+    const name = self.iter.next() orelse @panic("eof");
 
     std.debug.assert(std.mem.eql(u8, name, class_name));
 
-    const parameters = try consumeFunctionParameters(allocator, iter);
+    const parameters = try self.consumeFunctionParameters();
 
-    const body: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, ";"))
+    const body: ?*Node.Expression = if (self.consumeArbitraryLexemeIfAvailable(";"))
         null
     else
-        try consumeBlockExpression(allocator, iter);
+        try self.consumeBlockExpression();
 
     node.* = .{
         .modifiers = modifiers,
@@ -780,48 +875,44 @@ fn consumeConstructor(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)
     return node;
 }
 
-fn consumeFieldOrProperty(
-    allocator: std.mem.Allocator,
-    iter: *SliceIterator(Lexeme),
-    modifiers: MMTypes.Modifiers,
-) !union(enum) {
+fn consumeFieldOrProperty(self: *Self, modifiers: MMTypes.Modifiers) !union(enum) {
     field: *Node.Field,
     property: *Node.Property,
 } {
-    const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing field name", .{});
+    const name = self.iter.next() orelse std.debug.panic("unexpected EOF when parsing field name", .{});
 
-    const field_type: Type = if (consumeArbitraryLexemeIfAvailable(iter, ":"))
-        consumeTypeName(iter)
+    const field_type: TypeInternPool.Index = if (self.consumeArbitraryLexemeIfAvailable(":"))
+        try self.consumeTypeName()
     else
         .unknown;
 
-    if (consumeArbitraryLexemeIfAvailable(iter, "{")) {
+    if (self.consumeArbitraryLexemeIfAvailable("{")) {
         if (field_type == .unknown) {
             std.debug.panic("Properties must specify type", .{});
         }
 
-        const node = try allocator.create(Node.Property);
-        errdefer allocator.destroy(node);
+        const node = try self.allocator.create(Node.Property);
+        errdefer self.allocator.destroy(node);
 
         const get_body, const set_body = blk: {
             var get_body: Node.Property.FunctionState = .missing;
             var set_body: Node.Property.FunctionState = .missing;
 
             while (true) {
-                const next = iter.next() orelse @panic("EOF");
+                const next = self.iter.next() orelse @panic("EOF");
                 switch (hashKeyword(next)) {
                     hashKeyword("get") => {
-                        if (consumeArbitraryLexemeIfAvailable(iter, ";")) {
+                        if (self.consumeArbitraryLexemeIfAvailable(";")) {
                             get_body = .forward_declaration;
                         } else {
-                            get_body = .{ .expression = try consumeBlockExpression(allocator, iter) };
+                            get_body = .{ .expression = try self.consumeBlockExpression() };
                         }
                     },
                     hashKeyword("set") => {
-                        if (consumeArbitraryLexemeIfAvailable(iter, ";")) {
+                        if (self.consumeArbitraryLexemeIfAvailable(";")) {
                             set_body = .forward_declaration;
                         } else {
-                            set_body = .{ .expression = try consumeBlockExpression(allocator, iter) };
+                            set_body = .{ .expression = try self.consumeBlockExpression() };
                         }
                     },
                     hashKeyword("}") => break :blk .{ get_body, set_body },
@@ -840,8 +931,8 @@ fn consumeFieldOrProperty(
 
         return .{ .property = node };
     } else {
-        const default_value: ?*Node.Expression = if (consumeArbitraryLexemeIfAvailable(iter, "="))
-            try consumeExpression(allocator, iter)
+        const default_value: ?*Node.Expression = if (self.consumeArbitraryLexemeIfAvailable("="))
+            try self.consumeExpression()
         else
             null;
 
@@ -849,8 +940,8 @@ fn consumeFieldOrProperty(
             std.debug.panic("Field {s} has no type and no default value", .{name});
         }
 
-        const node = try allocator.create(Node.Field);
-        errdefer allocator.destroy(node);
+        const node = try self.allocator.create(Node.Field);
+        errdefer self.allocator.destroy(node);
 
         node.* = .{
             .modifiers = modifiers,
@@ -859,7 +950,7 @@ fn consumeFieldOrProperty(
             .default_value = default_value,
         };
 
-        consumeSemicolon(iter);
+        self.consumeSemicolon();
 
         return .{ .field = node };
     }
@@ -867,29 +958,29 @@ fn consumeFieldOrProperty(
 
 pub const Error = std.mem.Allocator.Error || std.fmt.ParseIntError || error{InvalidUtf8};
 
-fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    const body_node = try allocator.create(Node.Expression);
-    errdefer allocator.destroy(body_node);
+fn consumeBlockExpression(self: *Self) Error!*Node.Expression {
+    const body_node = try self.allocator.create(Node.Expression);
+    errdefer self.allocator.destroy(body_node);
 
-    var body = std.ArrayList(Node).init(allocator);
+    var body = std.ArrayList(Node).init(self.allocator);
     defer body.deinit();
 
     // std.debug.print("nn {s}\n", .{iter.peek() orelse unreachable});
 
-    const is_block = consumeArbitraryLexemeIfAvailable(iter, "{");
+    const is_block = self.consumeArbitraryLexemeIfAvailable("{");
 
     while (true) {
-        const next = iter.peek() orelse std.debug.panic("unexpected EOF when parsing function body", .{});
+        const next = self.iter.peek() orelse std.debug.panic("unexpected EOF when parsing function body", .{});
 
         if (is_block and next[0] == '}') {
-            consumeArbitraryLexeme(iter, "}");
+            self.consumeArbitraryLexeme("}");
             break;
         }
 
         const was_keyword: bool = if (maybeHashKeyword(next)) |maybe_keyword| blk: {
             switch (maybe_keyword) {
                 hashKeyword("let") => {
-                    const variable_declaration = try consumeVariableDeclaration(allocator, iter);
+                    const variable_declaration = try self.consumeVariableDeclaration();
 
                     // std.debug.print("cc {}\n", .{variable_declaration});
 
@@ -897,7 +988,7 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
                     break :blk true;
                 },
                 hashKeyword("return") => {
-                    const return_statement = try consumeReturnStatement(allocator, iter);
+                    const return_statement = try self.consumeReturnStatement();
 
                     // std.debug.print("ee {}\n", .{return_statement});
 
@@ -905,7 +996,7 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
                     break :blk true;
                 },
                 hashKeyword("if") => {
-                    const if_statement = try consumeIfStatement(allocator, iter);
+                    const if_statement = try self.consumeIfStatement();
 
                     // std.debug.print("ff {}\n", .{if_statement});
 
@@ -913,21 +1004,21 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
                     break :blk true;
                 },
                 hashKeyword("while") => {
-                    const while_statement = try consumeWhileStatement(allocator, iter);
+                    const while_statement = try self.consumeWhileStatement();
 
                     try body.append(while_statement);
                     break :blk true;
                 },
                 hashKeyword("inline_asm") => {
-                    const inline_asm_statement = try consumeInlineAsmStatement(allocator, iter);
+                    const inline_asm_statement = try self.consumeInlineAsmStatement();
 
                     try body.append(inline_asm_statement);
                     break :blk true;
                 },
                 hashKeyword("unreachable") => {
                     try body.append(.@"unreachable");
-                    consumeArbitraryLexeme(iter, "unreachable");
-                    consumeSemicolon(iter);
+                    self.consumeArbitraryLexeme("unreachable");
+                    self.consumeSemicolon();
 
                     break :blk true;
                 },
@@ -939,8 +1030,8 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
 
         //If it was not parsed as a special keyword, then its an expression, and we need to parse it as one
         if (!was_keyword) {
-            const node: Node = .{ .expression = try consumeExpression(allocator, iter) };
-            consumeSemicolon(iter);
+            const node: Node = .{ .expression = try self.consumeExpression() };
+            self.consumeSemicolon();
 
             // std.debug.print("dd {}\n", .{node});
 
@@ -958,25 +1049,25 @@ fn consumeBlockExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
     return body_node;
 }
 
-fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
-    const node = try allocator.create(Node.InlineAsmStatement);
+fn consumeInlineAsmStatement(self: *Self) !Node {
+    const node = try self.allocator.create(Node.InlineAsmStatement);
 
-    consumeArbitraryLexeme(iter, "inline_asm");
+    self.consumeArbitraryLexeme("inline_asm");
 
-    var bytecode = std.ArrayList(Bytecode).init(allocator);
-    var targets = std.StringHashMap(u32).init(allocator);
+    var bytecode = std.ArrayList(Bytecode).init(self.allocator);
+    var targets = std.StringHashMap(u32).init(self.allocator);
 
-    consumeArbitraryLexeme(iter, "{");
+    self.consumeArbitraryLexeme("{");
 
-    while (!consumeArbitraryLexemeIfAvailable(iter, "}")) {
-        const name = iter.next() orelse @panic("EOF parsing op");
+    while (!self.consumeArbitraryLexemeIfAvailable("}")) {
+        const name = self.iter.next() orelse @panic("EOF parsing op");
 
         const parsed_op = std.meta.stringToEnum(MMTypes.InstructionType, name);
 
         if (parsed_op == null) {
-            if (consumeArbitraryLexemeIfAvailable(iter, ":")) {
+            if (self.consumeArbitraryLexemeIfAvailable(":")) {
                 try targets.putNoClobber(name, @intCast(bytecode.items.len));
-            } else std.debug.panic("wat {s} {s} {s}", .{ iter.slice[iter.pos - 2], name, iter.peek().? });
+            } else std.debug.panic("wat {s} {s} {s}", .{ self.iter.slice[self.iter.pos - 2], name, self.iter.peek().? });
         } else switch (parsed_op.?) {
             inline else => |op| {
                 const ParamType = @TypeOf(@field(@as(MMTypes.InstructionParams, undefined), @tagName(op)));
@@ -992,8 +1083,8 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                         .op = switch (op) {
                             .LCb => .{
                                 .LCb = .{
-                                    .dst_idx = try consumeRegister(iter, true),
-                                    .value = switch (hashKeyword(iter.next().?)) {
+                                    .dst_idx = try self.consumeRegister(true),
+                                    .value = switch (hashKeyword(self.iter.next().?)) {
                                         hashKeyword("true") => true,
                                         hashKeyword("false") => false,
                                         else => @panic("thnseoa"),
@@ -1002,11 +1093,11 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                             },
                             .LCc => .{
                                 .LCc = .{
-                                    .dst_idx = try consumeRegister(iter, true),
+                                    .dst_idx = try self.consumeRegister(true),
                                     .value = blk: {
-                                        consumeArbitraryLexeme(iter, "'");
-                                        const char = iter.next().?;
-                                        consumeArbitraryLexeme(iter, "'");
+                                        self.consumeArbitraryLexeme("'");
+                                        const char = self.iter.next().?;
+                                        self.consumeArbitraryLexeme("'");
 
                                         std.debug.assert(char.len == 1);
 
@@ -1017,11 +1108,11 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                             },
                             .LCi => .{
                                 .LCi = .{
-                                    .dst_idx = try consumeRegister(iter, true),
+                                    .dst_idx = try self.consumeRegister(true),
                                     .value = blk: {
-                                        const is_negative = consumeArbitraryLexemeIfAvailable(iter, "-");
+                                        const is_negative = self.consumeArbitraryLexemeIfAvailable("-");
 
-                                        const int = try std.fmt.parseInt(i33, iter.next().?, 0);
+                                        const int = try std.fmt.parseInt(i33, self.iter.next().?, 0);
 
                                         break :blk if (is_negative) @intCast(-int) else @intCast(int);
                                     },
@@ -1029,10 +1120,10 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                             },
                             .LCf => .{
                                 .LCf = .{
-                                    .dst_idx = try consumeRegister(iter, true),
+                                    .dst_idx = try self.consumeRegister(true),
                                     .value = blk: {
-                                        const is_negative = consumeArbitraryLexemeIfAvailable(iter, "-");
-                                        const int = try std.fmt.parseFloat(f32, iter.next().?);
+                                        const is_negative = self.consumeArbitraryLexemeIfAvailable("-");
+                                        const int = try std.fmt.parseFloat(f32, self.iter.next().?);
 
                                         break :blk if (is_negative) -int else int;
                                     },
@@ -1040,41 +1131,41 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                             },
                             .LCsa => .{
                                 .LCsa = .{
-                                    .dst_idx = try consumeRegister(iter, true),
+                                    .dst_idx = try self.consumeRegister(true),
                                     .value = blk: {
-                                        break :blk try unwrapStringLiteral(allocator, iter.next().?);
+                                        break :blk try unwrapStringLiteral(self.allocator, self.iter.next().?);
                                     },
                                 },
                             },
                             .LCsw => .{
                                 .LCsw = .{
-                                    .dst_idx = try consumeRegister(iter, true),
+                                    .dst_idx = try self.consumeRegister(true),
                                     .value = blk: {
-                                        break :blk try std.unicode.utf8ToUtf16LeAlloc(allocator, try unwrapStringLiteral(allocator, iter.next().?));
+                                        break :blk try std.unicode.utf8ToUtf16LeAlloc(self.allocator, try unwrapStringLiteral(self.allocator, self.iter.next().?));
                                     },
                                 },
                             },
                             inline .LC_NULLsp, .LC_NULLo => |tag| @unionInit(Bytecode.Params, @tagName(tag), .{
-                                .dst_idx = try consumeRegister(iter, false),
+                                .dst_idx = try self.consumeRegister(false),
                             }),
                             .LCv4 => .{
                                 .LCv4 = .{
-                                    .dst_idx = try consumeRegister(iter, true),
+                                    .dst_idx = try self.consumeRegister(true),
                                     .value = blk: {
-                                        const x_neg = consumeArbitraryLexemeIfAvailable(iter, "-");
-                                        const x = try std.fmt.parseFloat(f32, iter.next().?);
-                                        consumeArbitraryLexeme(iter, ",");
+                                        const x_neg = self.consumeArbitraryLexemeIfAvailable("-");
+                                        const x = try std.fmt.parseFloat(f32, self.iter.next().?);
+                                        self.consumeArbitraryLexeme(",");
 
-                                        const y_neg = consumeArbitraryLexemeIfAvailable(iter, "-");
-                                        const y = try std.fmt.parseFloat(f32, iter.next().?);
-                                        consumeArbitraryLexeme(iter, ",");
+                                        const y_neg = self.consumeArbitraryLexemeIfAvailable("-");
+                                        const y = try std.fmt.parseFloat(f32, self.iter.next().?);
+                                        self.consumeArbitraryLexeme(",");
 
-                                        const z_neg = consumeArbitraryLexemeIfAvailable(iter, "-");
-                                        const z = try std.fmt.parseFloat(f32, iter.next().?);
-                                        consumeArbitraryLexeme(iter, ",");
+                                        const z_neg = self.consumeArbitraryLexemeIfAvailable("-");
+                                        const z = try std.fmt.parseFloat(f32, self.iter.next().?);
+                                        self.consumeArbitraryLexeme(",");
 
-                                        const w_neg = consumeArbitraryLexemeIfAvailable(iter, "-");
-                                        const w = try std.fmt.parseFloat(f32, iter.next().?);
+                                        const w_neg = self.consumeArbitraryLexemeIfAvailable("-");
+                                        const w = try std.fmt.parseFloat(f32, self.iter.next().?);
 
                                         break :blk .{
                                             if (x_neg) -x else x,
@@ -1087,10 +1178,10 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                             },
                             .LCs64 => .{
                                 .LCs64 = .{
-                                    .dst_idx = try consumeRegister(iter, true),
+                                    .dst_idx = try self.consumeRegister(true),
                                     .value = blk: {
-                                        const is_negative = consumeArbitraryLexemeIfAvailable(iter, "-");
-                                        const int = try std.fmt.parseInt(i64, iter.next().?, 0);
+                                        const is_negative = self.consumeArbitraryLexemeIfAvailable("-");
+                                        const int = try std.fmt.parseInt(i64, self.iter.next().?, 0);
 
                                         break :blk if (is_negative) -int else int;
                                     },
@@ -1107,12 +1198,12 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     unreachable;
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
-                                    .dst_idx = try consumeRegister(iter, true),
-                                    .src_idx = try consumeRegister(iter, false),
+                                    .dst_idx = try self.consumeRegister(true),
+                                    .src_idx = try self.consumeRegister(false),
                                 });
                             },
                         },
-                        .machine_type = consumeMachineType(iter) orelse .void,
+                        .machine_type = self.consumeMachineType() orelse .void,
                     }),
                     MMTypes.BinaryClass => try bytecode.append(Bytecode{
                         .op = switch (op) {
@@ -1121,13 +1212,13 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     unreachable;
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
-                                    .dst_idx = try consumeRegister(iter, true),
-                                    .src_a_idx = try consumeRegister(iter, true),
-                                    .src_b_idx = try consumeRegister(iter, false),
+                                    .dst_idx = try self.consumeRegister(true),
+                                    .src_a_idx = try self.consumeRegister(true),
+                                    .src_b_idx = try self.consumeRegister(false),
                                 });
                             },
                         },
-                        .machine_type = consumeMachineType(iter) orelse .void,
+                        .machine_type = self.consumeMachineType() orelse .void,
                     }),
                     MMTypes.GetBuiltinMemberClass => try bytecode.append(Bytecode{
                         .op = switch (op) {
@@ -1136,12 +1227,12 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     unreachable;
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
-                                    .dst_idx = try consumeRegister(iter, true),
-                                    .base_idx = try consumeRegister(iter, false),
+                                    .dst_idx = try self.consumeRegister(true),
+                                    .base_idx = try self.consumeRegister(false),
                                 });
                             },
                         },
-                        .machine_type = consumeMachineType(iter) orelse .void,
+                        .machine_type = self.consumeMachineType() orelse .void,
                     }),
                     MMTypes.SetBuiltinMemberClass => try bytecode.append(Bytecode{
                         .op = switch (op) {
@@ -1150,18 +1241,18 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     unreachable;
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
-                                    .base_idx = try consumeRegister(iter, true),
-                                    .src_idx = try consumeRegister(iter, false),
+                                    .base_idx = try self.consumeRegister(true),
+                                    .src_idx = try self.consumeRegister(false),
                                 });
                             },
                         },
-                        .machine_type = consumeMachineType(iter) orelse .void,
+                        .machine_type = self.consumeMachineType() orelse .void,
                     }),
                     MMTypes.GetMemberClass => {
-                        const dst_idx = try consumeRegister(iter, true);
-                        const base_idx = try consumeRegister(iter, true);
+                        const dst_idx = try self.consumeRegister(true);
+                        const base_idx = try self.consumeRegister(true);
 
-                        const full_name = iter.next().?;
+                        const full_name = self.iter.next().?;
 
                         var split_iter = std.mem.splitScalar(u8, full_name, '.');
 
@@ -1177,34 +1268,32 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
                                         .dst_idx = dst_idx,
                                         .base_idx = base_idx,
-                                        .type = Type{
-                                            .parsed = .{
-                                                .name = type_name,
-                                                .base_type = null,
-                                                .dimension_count = 0,
-                                                .indirection_count = 0,
-                                            },
-                                        },
+                                        .type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
+                                            .name = type_name,
+                                            .base_type = null,
+                                            .dimension_count = 0,
+                                            .indirection_count = 0,
+                                        } }),
                                         .field = field_name,
                                     });
                                 },
                             },
-                            .machine_type = consumeMachineType(iter).?,
+                            .machine_type = self.consumeMachineType().?,
                         });
                     },
                     MMTypes.SetMemberClass => {
-                        const base_idx = try consumeRegister(iter, true);
+                        const base_idx = try self.consumeRegister(true);
 
-                        const full_name = iter.next().?;
+                        const full_name = self.iter.next().?;
 
                         var split_iter = std.mem.splitScalar(u8, full_name, '.');
 
                         const type_name = split_iter.next().?;
                         const field_name = full_name[split_iter.index.?..];
 
-                        consumeArbitraryLexeme(iter, ",");
+                        self.consumeArbitraryLexeme(",");
 
-                        const src_idx = try consumeRegister(iter, false);
+                        const src_idx = try self.consumeRegister(false);
 
                         try bytecode.append(Bytecode{
                             .op = switch (op) {
@@ -1214,20 +1303,20 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
 
                                     break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
                                         .base_idx = base_idx,
-                                        .type = Type{
+                                        .type = try self.type_intern_pool.getOrPutParsed(.{
                                             .parsed = .{
                                                 .name = type_name,
                                                 .base_type = null,
                                                 .dimension_count = 0,
                                                 .indirection_count = 0,
                                             },
-                                        },
+                                        }),
                                         .field = field_name,
                                         .src_idx = src_idx,
                                     });
                                 },
                             },
-                            .machine_type = consumeMachineType(iter).?,
+                            .machine_type = self.consumeMachineType().?,
                         });
                     },
                     MMTypes.GetElementClass => try bytecode.append(Bytecode{
@@ -1237,13 +1326,13 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     unreachable;
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
-                                    .dst_idx = try consumeRegister(iter, true),
-                                    .base_idx = try consumeRegister(iter, true),
-                                    .src_or_index_idx = try consumeRegister(iter, false),
+                                    .dst_idx = try self.consumeRegister(true),
+                                    .base_idx = try self.consumeRegister(true),
+                                    .src_or_index_idx = try self.consumeRegister(false),
                                 });
                             },
                         },
-                        .machine_type = consumeMachineType(iter) orelse .void,
+                        .machine_type = self.consumeMachineType() orelse .void,
                     }),
                     MMTypes.SetElementClass => try bytecode.append(Bytecode{
                         .op = switch (op) {
@@ -1252,13 +1341,13 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     unreachable;
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
-                                    .base_idx = try consumeRegister(iter, true),
-                                    .src_idx = try consumeRegister(iter, true),
-                                    .index_idx = try consumeRegister(iter, false),
+                                    .base_idx = try self.consumeRegister(true),
+                                    .src_idx = try self.consumeRegister(true),
+                                    .index_idx = try self.consumeRegister(false),
                                 });
                             },
                         },
-                        .machine_type = consumeMachineType(iter) orelse .void,
+                        .machine_type = self.consumeMachineType() orelse .void,
                     }),
                     MMTypes.NewArrayClass => try bytecode.append(Bytecode{
                         .op = switch (op) {
@@ -1267,35 +1356,35 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     unreachable;
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
-                                    .dst_idx = try consumeRegister(iter, true),
-                                    .type = .{ .parsed = .{
+                                    .dst_idx = try self.consumeRegister(true),
+                                    .type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
                                         .base_type = null,
                                         .dimension_count = 0,
                                         .indirection_count = 0,
-                                        .name = iter.next().?,
-                                    } },
+                                        .name = self.iter.next().?,
+                                    } }),
                                     .size_idx = size_idx: {
-                                        consumeArbitraryLexeme(iter, ",");
+                                        self.consumeArbitraryLexeme(",");
 
-                                        break :size_idx try consumeRegister(iter, false);
+                                        break :size_idx try self.consumeRegister(false);
                                     },
                                 });
                             },
                         },
-                        .machine_type = consumeMachineType(iter) orelse .void,
+                        .machine_type = self.consumeMachineType() orelse .void,
                     }),
                     MMTypes.WriteClass => try bytecode.append(Bytecode.init(.{ .WRITE = .{
-                        .src_idx = try consumeRegister(iter, false),
-                    } }, consumeMachineType(iter).?)),
+                        .src_idx = try self.consumeRegister(false),
+                    } }, self.consumeMachineType().?)),
                     MMTypes.ArgClass => {
                         try bytecode.append(Bytecode{
                             .op = .{
                                 .ARG = .{
-                                    .arg_idx = try consumeRegister(iter, true),
-                                    .src_idx = try consumeRegister(iter, false),
+                                    .arg_idx = try self.consumeRegister(true),
+                                    .src_idx = try self.consumeRegister(false),
                                 },
                             },
-                            .machine_type = consumeMachineType(iter).?,
+                            .machine_type = self.consumeMachineType().?,
                         });
                     },
                     MMTypes.CallClass => {
@@ -1305,9 +1394,9 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     if (@TypeOf(@field(@as(MMTypes.TaggedInstruction, undefined), @tagName(op))) != MMTypes.CallClass)
                                         unreachable;
 
-                                    const dst_idx = try consumeRegister(iter, true);
+                                    const dst_idx = try self.consumeRegister(true);
 
-                                    const full_name = iter.next().?;
+                                    const full_name = self.iter.next().?;
 
                                     var split_iter = std.mem.splitScalar(u8, full_name, '.');
 
@@ -1316,23 +1405,23 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
 
                                     break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
                                         .dst_idx = dst_idx,
-                                        .type = .{ .parsed = .{
+                                        .type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
                                             .name = type_name,
                                             .base_type = null,
                                             .dimension_count = 0,
                                             .indirection_count = 0,
-                                        } },
+                                        } }),
                                         .function = .{ .name = function_name },
                                     });
                                 },
                             },
-                            .machine_type = consumeMachineType(iter) orelse .void,
+                            .machine_type = self.consumeMachineType() orelse .void,
                         });
                     },
                     MMTypes.ReturnClass => {
                         try bytecode.append(Bytecode{
-                            .op = .{ .RET = .{ .src_idx = try consumeRegister(iter, false) } },
-                            .machine_type = consumeMachineType(iter) orelse .void,
+                            .op = .{ .RET = .{ .src_idx = try self.consumeRegister(false) } },
+                            .machine_type = self.consumeMachineType() orelse .void,
                         });
                     },
                     MMTypes.BranchClass => {
@@ -1343,11 +1432,11 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                         unreachable;
 
                                     break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
-                                        .target = iter.next().?,
+                                        .target = self.iter.next().?,
                                         .src_idx = if (op == .B) std.math.maxInt(u16) else src_idx: {
-                                            consumeArbitraryLexeme(iter, ",");
+                                            self.consumeArbitraryLexeme(",");
 
-                                            break :src_idx try consumeRegister(iter, false);
+                                            break :src_idx try self.consumeRegister(false);
                                         },
                                     });
                                 },
@@ -1362,19 +1451,19 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     unreachable;
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
-                                    .dst_idx = try consumeRegister(iter, true),
-                                    .type = .{
+                                    .dst_idx = try self.consumeRegister(true),
+                                    .type = try self.type_intern_pool.getOrPutParsed(.{
                                         .parsed = .{
-                                            .name = iter.next().?,
+                                            .name = self.iter.next().?,
                                             .base_type = null,
                                             .indirection_count = 0,
                                             .dimension_count = 0,
                                         },
-                                    },
+                                    }),
                                     .src_idx = src_idx: {
-                                        consumeArbitraryLexeme(iter, ",");
+                                        self.consumeArbitraryLexeme(",");
 
-                                        break :src_idx try consumeRegister(iter, false);
+                                        break :src_idx try self.consumeRegister(false);
                                     },
                                 });
                             },
@@ -1388,17 +1477,17 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
                                     unreachable;
 
                                 break :blk @unionInit(Bytecode.Params, @tagName(tag), .{
-                                    .dst_idx = try consumeRegister(iter, true),
-                                    .type = .{ .parsed = .{
+                                    .dst_idx = try self.consumeRegister(true),
+                                    .type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
                                         .base_type = null,
                                         .dimension_count = 0,
                                         .indirection_count = 0,
-                                        .name = iter.next().?,
-                                    } },
+                                        .name = self.iter.next().?,
+                                    } }),
                                 });
                             },
                         },
-                        .machine_type = consumeMachineType(iter) orelse .void,
+                        .machine_type = self.consumeMachineType() orelse .void,
                     }),
                     MMTypes.ExternalInvokeClass => @panic("TODO"),
                     else => |unhandled_type| @compileError("Unhandled type " ++ @typeName(unhandled_type)),
@@ -1415,20 +1504,20 @@ fn consumeInlineAsmStatement(allocator: std.mem.Allocator, iter: *SliceIterator(
     return .{ .inline_asm_statement = node };
 }
 
-fn consumeRegister(iter: *SliceIterator(Lexeme), want_comma: bool) !u16 {
-    const register = iter.next().?;
+fn consumeRegister(self: *Self, want_comma: bool) !u16 {
+    const register = self.iter.next().?;
 
     if (want_comma)
-        consumeArbitraryLexeme(iter, ",");
+        self.consumeArbitraryLexeme(",");
 
     return try std.fmt.parseInt(u16, register[1..], 10);
 }
 
 // Consumes a machine type wrapped in parentheses
-fn consumeMachineType(iter: *SliceIterator(Lexeme)) ?MMTypes.MachineType {
-    if (consumeArbitraryLexemeIfAvailable(iter, "(")) {
-        const name = iter.next().?;
-        consumeArbitraryLexeme(iter, ")");
+fn consumeMachineType(self: *Self) ?MMTypes.MachineType {
+    if (self.consumeArbitraryLexemeIfAvailable("(")) {
+        const name = self.iter.next().?;
+        self.consumeArbitraryLexeme(")");
 
         return std.meta.stringToEnum(MMTypes.MachineType, name).?;
     } else return null;
@@ -1458,26 +1547,31 @@ fn isFloatLiteral(str: []const u8) !?f64 {
     };
 }
 
-fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
+fn consumePrimaryExpression(self: *Self) Error!*Node.Expression {
     // Try to match bool/null literals
-    if (consumeAnyMatches(iter, &.{ "true", "false", "null" })) |match| {
+    if (self.consumeAnyMatches(&.{ "true", "false", "null" })) |match| {
         switch (match) {
             .true, .false => {
-                const expression = try allocator.create(Node.Expression);
+                const expression = try self.allocator.create(Node.Expression);
 
                 expression.* = .{
                     .contents = .{ .bool_literal = match == .true },
-                    .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
+                    .type = try self.type_intern_pool.fromFishType(.bool),
                 };
 
                 return expression;
             },
             .null => {
-                const expression = try allocator.create(Node.Expression);
+                const expression = try self.allocator.create(Node.Expression);
 
                 expression.* = .{
                     .contents = .null_literal,
-                    .type = .{ .parsed = .{ .name = "null", .dimension_count = 0, .base_type = null, .indirection_count = 0 } },
+                    .type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
+                        .name = "null",
+                        .dimension_count = 0,
+                        .base_type = null,
+                        .indirection_count = 0,
+                    } }),
                 };
 
                 return expression;
@@ -1485,12 +1579,12 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
         }
     }
 
-    const first = iter.next() orelse @panic("eof");
+    const first = self.iter.next() orelse @panic("eof");
 
     if (first[0] == '(') {
-        const expression = consumeExpression(allocator, iter);
+        const expression = try self.consumeExpression();
 
-        consumeArbitraryLexeme(iter, ")");
+        self.consumeArbitraryLexeme(")");
 
         return expression;
     }
@@ -1503,7 +1597,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
             else => .decimal,
         } else .decimal;
 
-        const expression = try allocator.create(Node.Expression);
+        const expression = try self.allocator.create(Node.Expression);
 
         expression.* = .{
             .contents = .{ .integer_literal = .{
@@ -1520,7 +1614,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
     }
 
     if (try isFloatLiteral(first)) |float| {
-        const expression = try allocator.create(Node.Expression);
+        const expression = try self.allocator.create(Node.Expression);
 
         //TODO: non-base-10 float literals
         expression.* = .{
@@ -1534,13 +1628,13 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
         return expression;
     }
 
-    const next = iter.peek() orelse @panic("EOF");
+    const next = self.iter.peek() orelse @panic("EOF");
 
     //If the next expression is a ( then its a function call
     if (next[0] == '(') {
-        const expression = try allocator.create(Node.Expression);
+        const expression = try self.allocator.create(Node.Expression);
 
-        const parameters = try consumeFunctionCallParameters(allocator, iter);
+        const parameters = try self.consumeFunctionCallParameters();
 
         //Builtin functions
         if (maybeHashKeyword(first)) |keyword| {
@@ -1551,7 +1645,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
 
                     expression.* = .{
                         .contents = .{ .vec2_construction = parameters[0..2].* },
-                        .type = .{ .parsed = Type.Parsed.fromFishType(.vec2) },
+                        .type = try self.type_intern_pool.fromFishType(.vec2),
                     };
 
                     return expression;
@@ -1562,7 +1656,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
 
                     expression.* = .{
                         .contents = .{ .vec3_construction = parameters[0..3].* },
-                        .type = .{ .parsed = Type.Parsed.fromFishType(.vec3) },
+                        .type = try self.type_intern_pool.fromFishType(.vec3),
                     };
 
                     return expression;
@@ -1573,7 +1667,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
 
                     expression.* = .{
                         .contents = .{ .vec4_construction = parameters[0..4].* },
-                        .type = .{ .parsed = Type.Parsed.fromFishType(.vec4) },
+                        .type = try self.type_intern_pool.fromFishType(.vec4),
                     };
 
                     return expression;
@@ -1598,7 +1692,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
     if (first[0] == 'g') {
         // And the rest of the lexeme is a number that fits into a u32, this is a GUID literal
         if (try isInt(u32, first[1..])) |guid| {
-            const expression = try allocator.create(Node.Expression);
+            const expression = try self.allocator.create(Node.Expression);
             expression.* = .{
                 .contents = .{ .guid_literal = guid },
                 .type = .unknown,
@@ -1610,8 +1704,8 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
     //TODO: hash literals here
     if (first[0] == 'h') {}
 
-    if (try isWideStringLiteral(allocator, first)) |wide_string_literal| {
-        const expression = try allocator.create(Node.Expression);
+    if (try isWideStringLiteral(self.allocator, first)) |wide_string_literal| {
+        const expression = try self.allocator.create(Node.Expression);
         expression.* = .{
             .contents = .{ .wide_string_literal = wide_string_literal },
             .type = .unknown,
@@ -1619,8 +1713,8 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
         return expression;
     }
 
-    if (try isAsciiStringLiteral(allocator, first)) |string_literal| {
-        const expression = try allocator.create(Node.Expression);
+    if (try isAsciiStringLiteral(self.allocator, first)) |string_literal| {
+        const expression = try self.allocator.create(Node.Expression);
         expression.* = .{
             .contents = .{ .ascii_string_literal = string_literal },
             .type = .unknown,
@@ -1629,7 +1723,7 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
     }
 
     //If none of the other checks matched, this is a variable access
-    const expression = try allocator.create(Node.Expression);
+    const expression = try self.allocator.create(Node.Expression);
     expression.* = .{
         .contents = .{ .variable_or_class_access = first },
         .type = .unknown,
@@ -1637,15 +1731,15 @@ fn consumePrimaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
     return expression;
 }
 
-fn consumeDotExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    var node = try consumePrimaryExpression(allocator, iter);
+fn consumeDotExpression(self: *Self) Error!*Node.Expression {
+    var node = try self.consumePrimaryExpression();
 
-    while (consumeArbitraryLexemeIfAvailable(iter, ".")) {
-        const field_access = try allocator.create(Node.Expression);
+    while (self.consumeArbitraryLexemeIfAvailable(".")) {
+        const field_access = try self.allocator.create(Node.Expression);
 
-        const name = iter.next() orelse @panic("EOF");
+        const name = self.iter.next() orelse @panic("EOF");
 
-        const next = iter.peek() orelse @panic("EOF");
+        const next = self.iter.peek() orelse @panic("EOF");
 
         // `ptr.*` dereferencing
         field_access.* = if (name[0] == '*') .{
@@ -1657,7 +1751,7 @@ fn consumeDotExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexem
                     .function_call = .{
                         .source = node,
                         .function = .{ .name = name },
-                        .parameters = try consumeFunctionCallParameters(allocator, iter),
+                        .parameters = try self.consumeFunctionCallParameters(),
                     },
                 }
             else
@@ -1676,20 +1770,20 @@ fn consumeDotExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexem
     return node;
 }
 
-fn consumeUnaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    if (consumeAnyMatches(iter, &.{ "!", "-" })) |match| {
-        const unary = try allocator.create(Node.Expression);
+fn consumeUnaryExpression(self: *Self) Error!*Node.Expression {
+    if (self.consumeAnyMatches(&.{ "!", "-" })) |match| {
+        const unary = try self.allocator.create(Node.Expression);
 
         unary.* = switch (match) {
             .@"!" => .{
                 .contents = .{
-                    .logical_negation = try consumeUnaryExpression(allocator, iter),
+                    .logical_negation = try self.consumeUnaryExpression(),
                 },
-                .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
+                .type = try self.type_intern_pool.fromFishType(.bool),
             },
             .@"-" => .{
                 .contents = .{
-                    .numeric_negation = try consumeUnaryExpression(allocator, iter),
+                    .numeric_negation = try self.consumeUnaryExpression(),
                 },
                 .type = .unknown,
             },
@@ -1697,17 +1791,17 @@ fn consumeUnaryExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
 
         return unary;
     } else {
-        return consumeDotExpression(allocator, iter);
+        return self.consumeDotExpression();
     }
 }
 
-fn consumeFactorExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    var node = try consumeUnaryExpression(allocator, iter);
+fn consumeFactorExpression(self: *Self) Error!*Node.Expression {
+    var node = try self.consumeUnaryExpression();
 
-    while (consumeAnyMatches(iter, &.{ "/", "*" })) |match| {
+    while (self.consumeAnyMatches(&.{ "/", "*" })) |match| {
         node = switch (match) {
             inline else => |keyword| blk: {
-                const factor = try allocator.create(Node.Expression);
+                const factor = try self.allocator.create(Node.Expression);
 
                 factor.* = .{
                     .contents = @unionInit(
@@ -1718,7 +1812,7 @@ fn consumeFactorExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Le
                         },
                         .{
                             .lefthand = node,
-                            .righthand = try consumeUnaryExpression(allocator, iter),
+                            .righthand = try self.consumeUnaryExpression(),
                         },
                     ),
                     .type = .unknown,
@@ -1732,13 +1826,13 @@ fn consumeFactorExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Le
     return node;
 }
 
-fn consumeTermExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    var node = try consumeFactorExpression(allocator, iter);
+fn consumeTermExpression(self: *Self) Error!*Node.Expression {
+    var node = try self.consumeFactorExpression();
 
-    while (consumeAnyMatches(iter, &.{ "-", "+" })) |match| {
+    while (self.consumeAnyMatches(&.{ "-", "+" })) |match| {
         node = switch (match) {
             inline else => |keyword| blk: {
-                const term = try allocator.create(Node.Expression);
+                const term = try self.allocator.create(Node.Expression);
 
                 term.* = .{
                     .contents = @unionInit(
@@ -1749,7 +1843,7 @@ fn consumeTermExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexe
                         },
                         .{
                             .lefthand = node,
-                            .righthand = try consumeFactorExpression(allocator, iter),
+                            .righthand = try self.consumeFactorExpression(),
                         },
                     ),
                     .type = .unknown,
@@ -1763,13 +1857,13 @@ fn consumeTermExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexe
     return node;
 }
 
-fn consumeBitwiseExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    var node = try consumeTermExpression(allocator, iter);
+fn consumeBitwiseExpression(self: *Self) Error!*Node.Expression {
+    var node = try self.consumeTermExpression();
 
-    while (consumeAnyMatches(iter, &.{ "&", "^", "|" })) |match| {
+    while (self.consumeAnyMatches(&.{ "&", "^", "|" })) |match| {
         node = switch (match) {
             inline else => |keyword| blk: {
-                const bitwise = try allocator.create(Node.Expression);
+                const bitwise = try self.allocator.create(Node.Expression);
 
                 bitwise.* = .{
                     .contents = @unionInit(
@@ -1781,7 +1875,7 @@ fn consumeBitwiseExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
                         },
                         .{
                             .lefthand = node,
-                            .righthand = try consumeTermExpression(allocator, iter),
+                            .righthand = try self.consumeTermExpression(),
                         },
                     ),
                     .type = .unknown,
@@ -1795,15 +1889,15 @@ fn consumeBitwiseExpression(allocator: std.mem.Allocator, iter: *SliceIterator(L
     return node;
 }
 
-fn consumeCastExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    var node = try consumeBitwiseExpression(allocator, iter);
+fn consumeCastExpression(self: *Self) Error!*Node.Expression {
+    var node = try self.consumeBitwiseExpression();
 
-    while (consumeArbitraryLexemeIfAvailable(iter, "as")) {
-        const cast_expression = try allocator.create(Node.Expression);
+    while (self.consumeArbitraryLexemeIfAvailable("as")) {
+        const cast_expression = try self.allocator.create(Node.Expression);
 
         cast_expression.* = .{
             .contents = .{ .cast = node },
-            .type = consumeTypeName(iter),
+            .type = try self.consumeTypeName(),
         };
 
         node = cast_expression;
@@ -1812,13 +1906,13 @@ fn consumeCastExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexe
     return node;
 }
 
-fn consumeComparisonExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    var node = try consumeCastExpression(allocator, iter);
+fn consumeComparisonExpression(self: *Self) Error!*Node.Expression {
+    var node = try self.consumeCastExpression();
 
-    while (consumeAnyMatches(iter, &.{ ">", ">=", "<", "<=" })) |match| {
+    while (self.consumeAnyMatches(&.{ ">", ">=", "<", "<=" })) |match| {
         node = switch (match) {
             inline else => |keyword| blk: {
-                const comparison = try allocator.create(Node.Expression);
+                const comparison = try self.allocator.create(Node.Expression);
 
                 comparison.* = .{
                     .contents = @unionInit(
@@ -1831,10 +1925,10 @@ fn consumeComparisonExpression(allocator: std.mem.Allocator, iter: *SliceIterato
                         },
                         .{
                             .lefthand = node,
-                            .righthand = try consumeCastExpression(allocator, iter),
+                            .righthand = try self.consumeCastExpression(),
                         },
                     ),
-                    .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
+                    .type = try self.type_intern_pool.fromFishType(.bool),
                 };
 
                 break :blk comparison;
@@ -1845,13 +1939,13 @@ fn consumeComparisonExpression(allocator: std.mem.Allocator, iter: *SliceIterato
     return node;
 }
 
-fn consumeEqualityExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    var node = try consumeComparisonExpression(allocator, iter);
+fn consumeEqualityExpression(self: *Self) Error!*Node.Expression {
+    var node = try self.consumeComparisonExpression();
 
-    while (consumeAnyMatches(iter, &.{ "==", "!=" })) |match| {
+    while (self.consumeAnyMatches(&.{ "==", "!=" })) |match| {
         node = switch (match) {
             inline else => |keyword| blk: {
-                const equality = try allocator.create(Node.Expression);
+                const equality = try self.allocator.create(Node.Expression);
 
                 equality.* = .{
                     .contents = @unionInit(
@@ -1859,10 +1953,10 @@ fn consumeEqualityExpression(allocator: std.mem.Allocator, iter: *SliceIterator(
                         if (keyword == .@"==") @tagName(Node.Expression.Contents.equal) else @tagName(Node.Expression.Contents.not_equal),
                         .{
                             .lefthand = node,
-                            .righthand = try consumeComparisonExpression(allocator, iter),
+                            .righthand = try self.consumeComparisonExpression(),
                         },
                     ),
-                    .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
+                    .type = try self.type_intern_pool.fromFishType(.bool),
                 };
 
                 break :blk equality;
@@ -1873,20 +1967,20 @@ fn consumeEqualityExpression(allocator: std.mem.Allocator, iter: *SliceIterator(
     return node;
 }
 
-fn consumeLogicalAndExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    var node = try consumeEqualityExpression(allocator, iter);
+fn consumeLogicalAndExpression(self: *Self) Error!*Node.Expression {
+    var node = try self.consumeEqualityExpression();
 
-    while (consumeArbitraryLexemeIfAvailable(iter, "&&")) {
-        const logical_and = try allocator.create(Node.Expression);
+    while (self.consumeArbitraryLexemeIfAvailable("&&")) {
+        const logical_and = try self.allocator.create(Node.Expression);
 
         logical_and.* = .{
             .contents = .{
                 .logical_and = .{
                     .lefthand = node,
-                    .righthand = try consumeEqualityExpression(allocator, iter),
+                    .righthand = try self.consumeEqualityExpression(),
                 },
             },
-            .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
+            .type = try self.type_intern_pool.fromFishType(.bool),
         };
 
         node = logical_and;
@@ -1895,20 +1989,20 @@ fn consumeLogicalAndExpression(allocator: std.mem.Allocator, iter: *SliceIterato
     return node;
 }
 
-fn consumeLogicalOrExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    var node = try consumeLogicalAndExpression(allocator, iter);
+fn consumeLogicalOrExpression(self: *Self) Error!*Node.Expression {
+    var node = try self.consumeLogicalAndExpression();
 
-    while (consumeArbitraryLexemeIfAvailable(iter, "||")) {
-        const logical_or = try allocator.create(Node.Expression);
+    while (self.consumeArbitraryLexemeIfAvailable("||")) {
+        const logical_or = try self.allocator.create(Node.Expression);
 
         logical_or.* = .{
             .contents = .{
                 .logical_or = .{
                     .lefthand = node,
-                    .righthand = try consumeLogicalAndExpression(allocator, iter),
+                    .righthand = try self.consumeLogicalAndExpression(),
                 },
             },
-            .type = .{ .parsed = Type.Parsed.fromFishType(.bool) },
+            .type = try self.type_intern_pool.fromFishType(.bool),
         };
 
         node = logical_or;
@@ -1917,13 +2011,13 @@ fn consumeLogicalOrExpression(allocator: std.mem.Allocator, iter: *SliceIterator
     return node;
 }
 
-fn consumeAssignmentExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    const destination = try consumeLogicalOrExpression(allocator, iter);
+fn consumeAssignmentExpression(self: *Self) Error!*Node.Expression {
+    const destination = try self.consumeLogicalOrExpression();
 
-    if (consumeArbitraryLexemeIfAvailable(iter, "=")) {
-        const value = try consumeAssignmentExpression(allocator, iter);
+    if (self.consumeArbitraryLexemeIfAvailable("=")) {
+        const value = try self.consumeAssignmentExpression();
 
-        const assignment = try allocator.create(Node.Expression);
+        const assignment = try self.allocator.create(Node.Expression);
 
         assignment.* = .{
             .contents = .{ .assignment = .{
@@ -1939,8 +2033,8 @@ fn consumeAssignmentExpression(allocator: std.mem.Allocator, iter: *SliceIterato
     return destination;
 }
 
-fn consumeExpression(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) Error!*Node.Expression {
-    return consumeAssignmentExpression(allocator, iter);
+fn consumeExpression(self: *Self) Error!*Node.Expression {
+    return self.consumeAssignmentExpression();
 }
 
 fn MatchEnum(comptime matches: []const [:0]const u8) type {
@@ -1967,7 +2061,7 @@ fn MatchEnum(comptime matches: []const [:0]const u8) type {
     return Enum;
 }
 
-fn consumeAnyMatches(iter: *SliceIterator(Lexeme), comptime matches: []const [:0]const u8) ?MatchEnum(matches) {
+fn consumeAnyMatches(self: *Self, comptime matches: []const [:0]const u8) ?MatchEnum(matches) {
     const matches_keywords = comptime blk: {
         var keywords: [matches.len]KeywordHash = undefined;
 
@@ -1981,10 +2075,10 @@ fn consumeAnyMatches(iter: *SliceIterator(Lexeme), comptime matches: []const [:0
     const Enum = MatchEnum(matches);
 
     //If the next lexeme is a valid keyword
-    if (maybeHashKeyword(iter.peek() orelse @panic("EOF"))) |keyword| {
+    if (maybeHashKeyword(self.iter.peek() orelse @panic("EOF"))) |keyword| {
         inline for (matches_keywords, matches) |match, match_str| {
             if (keyword == match) {
-                _ = iter.next() orelse unreachable;
+                _ = self.iter.next() orelse unreachable;
 
                 return @field(Enum, match_str);
             }
@@ -1994,25 +2088,25 @@ fn consumeAnyMatches(iter: *SliceIterator(Lexeme), comptime matches: []const [:0
     return null;
 }
 
-fn consumeFunctionCallParameters(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) ![]const *Node.Expression {
-    var parameters = std.ArrayList(*Node.Expression).init(allocator);
+fn consumeFunctionCallParameters(self: *Self) ![]const *Node.Expression {
+    var parameters = std.ArrayList(*Node.Expression).init(self.allocator);
     defer parameters.deinit();
 
-    consumeArbitraryLexeme(iter, "(");
+    self.consumeArbitraryLexeme("(");
 
     var i: usize = 0;
     while (true) {
-        const next = iter.peek() orelse @panic("EOF");
+        const next = self.iter.peek() orelse @panic("EOF");
 
         if (next[0] == ')') {
-            _ = iter.next();
+            _ = self.iter.next();
             break;
         }
 
         if (i > 0)
-            consumeArbitraryLexeme(iter, ",");
+            self.consumeArbitraryLexeme(",");
 
-        try parameters.append(try consumeExpression(allocator, iter));
+        try parameters.append(try self.consumeExpression());
 
         i += 1;
     }
@@ -2020,12 +2114,12 @@ fn consumeFunctionCallParameters(allocator: std.mem.Allocator, iter: *SliceItera
     return parameters.toOwnedSlice();
 }
 
-fn consumeTypeName(iter: *SliceIterator(Lexeme)) Type {
+fn consumeTypeName(self: *Self) !TypeInternPool.Index {
     const name, const base_type: ?[]const u8 = blk: {
-        const name = iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{});
+        const name = self.iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{});
 
-        if (consumeArbitraryLexemeIfAvailable(iter, ".")) {
-            break :blk .{ iter.next().?, name };
+        if (self.consumeArbitraryLexemeIfAvailable(".")) {
+            break :blk .{ self.iter.next().?, name };
         }
 
         break :blk .{ name, null };
@@ -2033,11 +2127,11 @@ fn consumeTypeName(iter: *SliceIterator(Lexeme)) Type {
 
     var dimension_count: u8 = 0;
 
-    blk: while (maybeHashKeyword(iter.peek() orelse @panic("EOF"))) |keyword| {
+    blk: while (maybeHashKeyword(self.iter.peek() orelse @panic("EOF"))) |keyword| {
         switch (keyword) {
             hashKeyword("[") => {
-                consumeArbitraryLexeme(iter, "[");
-                consumeArbitraryLexeme(iter, "]");
+                self.consumeArbitraryLexeme("[");
+                self.consumeArbitraryLexeme("]");
 
                 dimension_count += 1;
             },
@@ -2046,59 +2140,59 @@ fn consumeTypeName(iter: *SliceIterator(Lexeme)) Type {
     }
 
     var indirection_count: u8 = 0;
-    while (consumeArbitraryLexemeIfAvailable(iter, "*"))
+    while (self.consumeArbitraryLexemeIfAvailable("*"))
         indirection_count += 1;
 
-    return .{ .parsed = .{
+    return try self.type_intern_pool.getOrPutParsed(.{ .parsed = .{
         .name = name,
         .dimension_count = dimension_count,
         .base_type = base_type,
         .indirection_count = indirection_count,
-    } };
+    } });
 }
 
-fn consumeFunctionParameters(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) ![]Node.Function.Parameter {
-    consumeArbitraryLexeme(iter, "(");
+fn consumeFunctionParameters(self: *Self) ![]Node.Function.Parameter {
+    self.consumeArbitraryLexeme("(");
 
     var parameters = std.ArrayListUnmanaged(Node.Function.Parameter){};
 
     while (true) {
-        const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing function definition parameters", .{});
+        const name = self.iter.next() orelse std.debug.panic("unexpected EOF when parsing function definition parameters", .{});
 
         // We have reached the end of the parameters
         if (name[0] == ')')
             break;
 
-        consumeArbitraryLexeme(iter, ":");
-        const param_type = consumeTypeName(iter);
+        self.consumeArbitraryLexeme(":");
+        const param_type = try self.consumeTypeName();
 
-        try parameters.append(allocator, .{ .name = name, .type = param_type });
+        try parameters.append(self.allocator, .{ .name = name, .type = param_type });
 
-        _ = consumeArbitraryLexemeIfAvailable(iter, ",");
+        _ = self.consumeArbitraryLexemeIfAvailable(",");
     }
 
     return parameters.items;
 }
 
-fn consumeFunction(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme), modifiers: MMTypes.Modifiers, attributes: []const *Node.Attribute) !*Node.Function {
-    const node = try allocator.create(Node.Function);
-    errdefer allocator.destroy(node);
+fn consumeFunction(self: *Self, modifiers: MMTypes.Modifiers, attributes: []const *Node.Attribute) !*Node.Function {
+    const node = try self.allocator.create(Node.Function);
+    errdefer self.allocator.destroy(node);
 
-    const name = iter.next() orelse std.debug.panic("unexpected EOF when parsing function name", .{});
+    const name = self.iter.next() orelse std.debug.panic("unexpected EOF when parsing function name", .{});
 
-    const parameters = try consumeFunctionParameters(allocator, iter);
+    const parameters = try self.consumeFunctionParameters();
 
-    const return_type: Type = blk: {
-        if (std.mem.eql(u8, iter.peek() orelse std.debug.panic("EOF", .{}), "->")) {
-            consumeArbitraryLexeme(iter, "->");
-            break :blk consumeTypeName(iter);
+    const return_type: TypeInternPool.Index = blk: {
+        if (std.mem.eql(u8, self.iter.peek() orelse std.debug.panic("EOF", .{}), "->")) {
+            self.consumeArbitraryLexeme("->");
+            break :blk try self.consumeTypeName();
         }
 
-        break :blk .{ .parsed = Type.Parsed.fromFishType(.void) };
+        break :blk try self.type_intern_pool.fromFishType(.void);
     };
 
-    const body: ?*Node.Expression = if (!consumeArbitraryLexemeIfAvailable(iter, ";"))
-        try consumeBlockExpression(allocator, iter)
+    const body: ?*Node.Expression = if (!self.consumeArbitraryLexemeIfAvailable(";"))
+        try self.consumeBlockExpression()
     else
         null;
 
@@ -2140,16 +2234,16 @@ fn isAsciiStringLiteral(allocator: std.mem.Allocator, lexeme: Lexeme) !?[]const 
     return try unwrapStringLiteral(allocator, lexeme);
 }
 
-fn consumeWhileStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
-    const node = try allocator.create(Node.WhileStatement);
+fn consumeWhileStatement(self: *Self) !Node {
+    const node = try self.allocator.create(Node.WhileStatement);
 
-    consumeArbitraryLexeme(iter, "while");
+    self.consumeArbitraryLexeme("while");
 
-    consumeArbitraryLexeme(iter, "(");
-    const condition = try consumeExpression(allocator, iter);
-    consumeArbitraryLexeme(iter, ")");
+    self.consumeArbitraryLexeme("(");
+    const condition = try self.consumeExpression();
+    self.consumeArbitraryLexeme(")");
 
-    const body = try consumeBlockExpression(allocator, iter);
+    const body = try self.consumeBlockExpression();
 
     node.* = .{
         .condition = condition,
@@ -2159,22 +2253,22 @@ fn consumeWhileStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexe
     return .{ .while_statement = node };
 }
 
-fn consumeIfStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
-    const node = try allocator.create(Node.IfStatement);
-    errdefer allocator.destroy(node);
+fn consumeIfStatement(self: *Self) !Node {
+    const node = try self.allocator.create(Node.IfStatement);
+    errdefer self.allocator.destroy(node);
 
-    consumeArbitraryLexeme(iter, "if");
+    self.consumeArbitraryLexeme("if");
 
-    consumeArbitraryLexeme(iter, "(");
-    const condition = try consumeExpression(allocator, iter);
-    consumeArbitraryLexeme(iter, ")");
+    self.consumeArbitraryLexeme("(");
+    const condition = try self.consumeExpression();
+    self.consumeArbitraryLexeme(")");
 
-    const body = try consumeBlockExpression(allocator, iter);
+    const body = try self.consumeBlockExpression();
 
-    const else_body: ?*Node.Expression = if (std.mem.eql(u8, "else", iter.peek() orelse @panic("EOF"))) blk: {
-        consumeArbitraryLexeme(iter, "else");
+    const else_body: ?*Node.Expression = if (std.mem.eql(u8, "else", self.iter.peek() orelse @panic("EOF"))) blk: {
+        self.consumeArbitraryLexeme("else");
 
-        break :blk try consumeBlockExpression(allocator, iter);
+        break :blk try self.consumeBlockExpression();
     } else null;
 
     node.* = .{
@@ -2186,17 +2280,17 @@ fn consumeIfStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)
     return .{ .if_statement = node };
 }
 
-fn consumeReturnStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
-    const node = try allocator.create(Node.ReturnStatement);
-    errdefer allocator.destroy(node);
+fn consumeReturnStatement(self: *Self) !Node {
+    const node = try self.allocator.create(Node.ReturnStatement);
+    errdefer self.allocator.destroy(node);
 
-    consumeArbitraryLexeme(iter, "return");
+    self.consumeArbitraryLexeme("return");
 
     //If the next lexeme is not a semicolon, then theres an expression after, parse it
-    const expression: ?*Node.Expression = if (!consumeArbitraryLexemeIfAvailable(iter, ";")) blk: {
-        const expression = try consumeExpression(allocator, iter);
+    const expression: ?*Node.Expression = if (!self.consumeArbitraryLexemeIfAvailable(";")) blk: {
+        const expression = try self.consumeExpression();
 
-        consumeSemicolon(iter);
+        self.consumeSemicolon();
 
         break :blk expression;
     } else null;
@@ -2206,25 +2300,25 @@ fn consumeReturnStatement(allocator: std.mem.Allocator, iter: *SliceIterator(Lex
     return .{ .return_statement = node };
 }
 
-fn consumeVariableDeclaration(allocator: std.mem.Allocator, iter: *SliceIterator(Lexeme)) !Node {
-    const node = try allocator.create(Node.VariableDeclaration);
-    errdefer allocator.destroy(node);
+fn consumeVariableDeclaration(self: *Self) !Node {
+    const node = try self.allocator.create(Node.VariableDeclaration);
+    errdefer self.allocator.destroy(node);
 
-    consumeArbitraryLexeme(iter, "let");
+    self.consumeArbitraryLexeme("let");
 
-    const name = iter.next() orelse std.debug.panic("unexpected EOF", .{});
+    const name = self.iter.next() orelse std.debug.panic("unexpected EOF", .{});
 
-    const variable_type: Type = blk: {
-        if (consumeArbitraryLexemeIfAvailable(iter, ":")) {
-            break :blk consumeTypeName(iter);
+    const variable_type: TypeInternPool.Index = blk: {
+        if (self.consumeArbitraryLexemeIfAvailable(":")) {
+            break :blk try self.consumeTypeName();
         }
 
         break :blk .unknown;
     };
 
     const value: ?*Node.Expression = blk: {
-        if (consumeArbitraryLexemeIfAvailable(iter, "=")) {
-            break :blk try consumeExpression(allocator, iter);
+        if (self.consumeArbitraryLexemeIfAvailable("=")) {
+            break :blk try self.consumeExpression();
         }
 
         break :blk null;
@@ -2234,7 +2328,7 @@ fn consumeVariableDeclaration(allocator: std.mem.Allocator, iter: *SliceIterator
         std.debug.panic("variable has no expression or type, what?", .{});
     }
 
-    consumeSemicolon(iter);
+    self.consumeSemicolon();
 
     node.* = .{
         .name = name,
@@ -2245,11 +2339,11 @@ fn consumeVariableDeclaration(allocator: std.mem.Allocator, iter: *SliceIterator
     return .{ .variable_declaration = node };
 }
 
-fn consumeModifiers(iter: *SliceIterator(Lexeme)) MMTypes.Modifiers {
+fn consumeModifiers(self: *Self) MMTypes.Modifiers {
     var current_modifiers: MMTypes.Modifiers = .{};
 
     while (true) {
-        const lexeme = iter.peek() orelse std.debug.panic("unexpected EOF when parsing modifiers", .{});
+        const lexeme = self.iter.peek() orelse std.debug.panic("unexpected EOF when parsing modifiers", .{});
 
         const modifiers_type_info: std.builtin.Type = @typeInfo(MMTypes.Modifiers);
 
@@ -2257,7 +2351,7 @@ fn consumeModifiers(iter: *SliceIterator(Lexeme)) MMTypes.Modifiers {
         if (std.mem.eql(u8, lexeme, "pub")) {
             current_modifiers.public = true;
 
-            _ = iter.next() orelse unreachable;
+            _ = self.iter.next() orelse unreachable;
         } else {
             var found = false;
 
@@ -2276,23 +2370,23 @@ fn consumeModifiers(iter: *SliceIterator(Lexeme)) MMTypes.Modifiers {
             if (!found)
                 break;
 
-            _ = iter.next() orelse unreachable;
+            _ = self.iter.next() orelse unreachable;
         }
     }
 
     return current_modifiers;
 }
 
-fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
-    const node = try tree.allocator.create(Node.FromImport);
-    errdefer tree.allocator.destroy(node);
+fn consumeFromImportStatement(self: *Self) !void {
+    const node = try self.allocator.create(Node.FromImport);
+    errdefer self.allocator.destroy(node);
 
-    const target = iter.next() orelse std.debug.panic("unexpected EOF after from statement", .{});
+    const target = self.iter.next() orelse std.debug.panic("unexpected EOF after from statement", .{});
 
     //Semantically unimportant, should always be there
-    consumeArbitraryLexeme(iter, "import");
+    self.consumeArbitraryLexeme("import");
 
-    const first_import_lexeme = iter.next() orelse std.debug.panic("unexpected EOF in from/import statement after import lexeme", .{});
+    const first_import_lexeme = self.iter.next() orelse std.debug.panic("unexpected EOF in from/import statement after import lexeme", .{});
 
     var was_multi_import = false;
 
@@ -2304,34 +2398,34 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
                 was_multi_import = true;
 
                 //If the next token is a `}`, consume it and break out
-                if (consumeArbitraryLexemeIfAvailable(iter, "}")) {
+                if (self.consumeArbitraryLexemeIfAvailable("}")) {
                     break :blk &.{};
                 }
 
                 while (true) {
-                    const curr = iter.next() orelse std.debug.panic("unexpected EOF in multi import block", .{});
+                    const curr = self.iter.next() orelse std.debug.panic("unexpected EOF in multi import block", .{});
 
                     //TODO: support renamed function imports eg. `import { Messaging_PoppetInfoMessage: ShowNotification }`
 
-                    const name = try unwrapStringLiteral(tree.allocator, curr);
+                    const name = try unwrapStringLiteral(self.allocator, curr);
 
                     //Append the new import
-                    try wanted_imports.append(tree.allocator, .{
+                    try wanted_imports.append(self.allocator, .{
                         .name = name,
                         .original_name = name,
                     });
 
-                    const next = iter.peek() orelse std.debug.panic("unexpected EOF in multi import block", .{});
+                    const next = self.iter.peek() orelse std.debug.panic("unexpected EOF in multi import block", .{});
 
                     //If the next token is a `}`, break out
                     if (next[0] == '}')
                         break;
                     //If the next token is a `,`, consume it
                     if (next[0] == ',')
-                        _ = iter.next() orelse unreachable;
+                        _ = self.iter.next() orelse unreachable;
                 }
 
-                break :blk try wanted_imports.toOwnedSlice(tree.allocator);
+                break :blk try wanted_imports.toOwnedSlice(self.allocator);
             },
         },
         hashKeyword("*") => .{ .all = {} },
@@ -2345,61 +2439,67 @@ fn consumeFromImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
     };
 
     node.* = .{
-        .target = try unwrapStringLiteral(tree.allocator, target),
+        .target = try unwrapStringLiteral(self.allocator, target),
         .wanted = wanted,
     };
 
-    try tree.root_elements.append(tree.allocator, .{ .from_import = node });
+    try self.tree.root_elements.append(self.allocator, .{ .from_import = node });
 
     //If we were importing multiple things, the semicolon is not required
     if (!was_multi_import)
-        consumeSemicolon(iter);
+        self.consumeSemicolon();
 }
 
-fn consumeImportStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
-    const node = try tree.allocator.create(Node.Import);
-    errdefer tree.allocator.destroy(node);
+fn consumeImportStatement(self: *Self) !void {
+    const node = try self.allocator.create(Node.Import);
+    errdefer self.allocator.destroy(node);
 
     node.* = .{
-        .target = try unwrapStringLiteral(tree.allocator, iter.next() orelse std.debug.panic("unexpected EOF after import statement", .{})),
+        .target = try unwrapStringLiteral(
+            self.allocator,
+            self.iter.next() orelse std.debug.panic("unexpected EOF after import statement", .{}),
+        ),
     };
 
-    try tree.root_elements.append(tree.allocator, .{ .import = node });
+    try self.tree.root_elements.append(self.allocator, .{ .import = node });
 
-    consumeSemicolon(iter);
+    self.consumeSemicolon();
 }
 
-fn consumeUsingStatement(tree: *Tree, iter: *SliceIterator(Lexeme)) !void {
-    const node = try tree.allocator.create(Node.Using);
-    errdefer tree.allocator.destroy(node);
+fn consumeUsingStatement(self: *Self) !void {
+    const node = try self.allocator.create(Node.Using);
+    errdefer self.allocator.destroy(node);
 
-    const using_type_str = iter.next() orelse std.debug.panic("unexpected EOF after using statement", .{});
+    const using_type_str = self.iter.next() orelse std.debug.panic("unexpected EOF after using statement", .{});
 
     const using_type = std.meta.stringToEnum(UsingType, using_type_str) orelse std.debug.panic("unknown using type {s}", .{using_type_str});
 
-    const library_name = try unwrapStringLiteral(tree.allocator, iter.next() orelse std.debug.panic("unexpected EOF after using statement type", .{}));
+    const library_name = try unwrapStringLiteral(
+        self.allocator,
+        self.iter.next() orelse std.debug.panic("unexpected EOF after using statement type", .{}),
+    );
 
     node.* = .{
         .type = using_type,
         .target = library_name,
     };
 
-    try tree.root_elements.append(tree.allocator, .{ .using = node });
+    try self.tree.root_elements.append(self.allocator, .{ .using = node });
 
-    consumeSemicolon(iter);
+    self.consumeSemicolon();
 }
 
-fn consumeSemicolon(iter: *SliceIterator(Lexeme)) void {
-    consumeArbitraryLexeme(iter, ";");
+fn consumeSemicolon(self: *Self) void {
+    self.consumeArbitraryLexeme(";");
 }
 
-fn consumeArbitraryLexeme(iter: *SliceIterator(Lexeme), intended: []const u8) void {
+fn consumeArbitraryLexeme(self: *Self, intended: []const u8) void {
     // std.debug.print("consuming {s}\n", .{intended});
 
-    if (iter.next()) |next| {
+    if (self.iter.next()) |next| {
         if (!std.mem.eql(u8, next, intended)) {
-            const prev_lexeme = iter.slice[iter.pos - 2];
-            const next_lexeme = iter.peek() orelse @panic("eof");
+            const prev_lexeme = self.iter.slice[self.iter.pos - 2];
+            const next_lexeme = self.iter.peek() orelse @panic("eof");
 
             std.debug.panic(
                 "unexpected lexeme {s}, expected {s}, prev {s}, next {s}",
@@ -2411,13 +2511,13 @@ fn consumeArbitraryLexeme(iter: *SliceIterator(Lexeme), intended: []const u8) vo
     }
 }
 
-fn consumeArbitraryLexemeIfAvailable(iter: *SliceIterator(Lexeme), intended: []const u8) bool {
+fn consumeArbitraryLexemeIfAvailable(self: *Self, intended: []const u8) bool {
     //Peek the next lexeme
-    if (iter.peek()) |next| {
+    if (self.iter.peek()) |next| {
         //If its the intended one
         if (std.mem.eql(u8, next, intended)) {
             //Consume it
-            _ = iter.next() orelse unreachable;
+            _ = self.iter.next() orelse unreachable;
 
             return true;
         }
@@ -2597,7 +2697,7 @@ pub const Bytecode = struct {
         pub const CastClass = struct {
             dst_idx: u16,
             src_idx: u16,
-            type: Type,
+            type: TypeInternPool.Index,
         };
         pub const UnaryClass = struct {
             dst_idx: u16,
@@ -2619,13 +2719,13 @@ pub const Bytecode = struct {
         pub const GetMemberClass = struct {
             dst_idx: u16,
             base_idx: u16,
-            type: Type,
+            type: TypeInternPool.Index,
             field: []const u8,
         };
         pub const SetMemberClass = struct {
             src_idx: u16,
             base_idx: u16,
-            type: Type,
+            type: TypeInternPool.Index,
             field: []const u8,
         };
         pub const GetElementClass = struct {
@@ -2640,11 +2740,11 @@ pub const Bytecode = struct {
         };
         pub const NewObjectClass = struct {
             dst_idx: u16,
-            type: Type,
+            type: TypeInternPool.Index,
         };
         pub const NewArrayClass = struct {
             dst_idx: u16,
-            type: Type,
+            type: TypeInternPool.Index,
             size_idx: u16,
         };
         pub const WriteClass = struct {
@@ -2662,7 +2762,7 @@ pub const Bytecode = struct {
                 initializer: void,
                 constructor: []const u8,
             },
-            type: Type,
+            type: TypeInternPool.Index,
         };
         pub const ReturnClass = struct {
             src_idx: u16,

@@ -1,4 +1,4 @@
-//! Generates a script file from a type resolved AST
+//! Generates a compiled script file from a type resolved AST
 
 const std = @import("std");
 
@@ -50,12 +50,14 @@ arguments: ArgumentList,
 line_numbers: LineNumberList,
 local_variables: LocalVariableList,
 compilation_options: CompilationOptions,
+type_intern_pool: *Parser.TypeInternPool,
 
 pub fn init(
     ast: Parser.Tree,
     a_string_table: *Resolvinator.AStringTable,
     w_string_table: *Resolvinator.WStringTable,
     compilation_options: CompilationOptions,
+    type_intern_pool: *Parser.TypeInternPool,
 ) Genny {
     return .{
         .ast = ast,
@@ -71,6 +73,7 @@ pub fn init(
         .function_references = FunctionReferenceTable.init(ast.allocator),
         .field_references = FieldReferenceTable.init(ast.allocator),
         .compilation_options = compilation_options,
+        .type_intern_pool = type_intern_pool,
     };
 }
 
@@ -700,7 +703,7 @@ fn compileExpression(
                     const source_variable = scope_local_variables.get(field_access.source.contents.variable_access).?;
                     const source_variable_type = codegen.genny.type_references.keys()[source_variable.type_reference];
 
-                    const machine_type = expression.type.resolved.fish.machine_type;
+                    const machine_type = codegen.genny.type_intern_pool.get(expression.type).resolved.fish.machine_type;
 
                     const register = (try compileExpression(
                         codegen,
@@ -910,7 +913,9 @@ fn compileExpression(
         },
         // We lower this as a simple set of `ARG` instructions followed by a CALL instruction
         .function_call => |function_call| blk: {
-            std.debug.assert(function_call.function == .function);
+            if (function_call.function != .function) {
+                std.debug.panic("function call is not resolved correctly {s}", .{function_call.function.name});
+            }
 
             const function = function_call.function.function;
 
@@ -919,7 +924,7 @@ fn compileExpression(
                 .type_reference = @intCast((try codegen.genny.type_references.getOrPut(function.owning_type)).index),
             })).index);
 
-            const return_type = expression.type.resolved.machineType();
+            const return_type = codegen.genny.type_intern_pool.get(expression.type).resolved.machineType();
 
             const parameter_registers = try codegen.register_allocator.allocator.alloc(Register, function_call.parameters.len);
 
@@ -1083,10 +1088,10 @@ fn compileExpression(
                 null,
             )) |source| {
                 const register = result_register orelse
-                    try codegen.register_allocator.allocate(expression.type.resolved.machineType());
+                    try codegen.register_allocator.allocate(codegen.genny.type_intern_pool.get(expression.type).resolved.machineType());
 
-                const source_type = cast_source.type.resolved.machineType();
-                const dst_type = expression.type.resolved.machineType();
+                const source_type = codegen.genny.type_intern_pool.get(cast_source.type).resolved.machineType();
+                const dst_type = codegen.genny.type_intern_pool.get(expression.type).resolved.machineType();
 
                 switch (tupleMachineTypes(source_type, dst_type)) {
                     tupleMachineTypes(.bool, .s32) => try codegen.emitBoolToS32(register[0], source[0]),
@@ -1109,7 +1114,7 @@ fn compileExpression(
 
             const source_variable_type = codegen.genny.type_references.keys()[source_variable.type_reference];
 
-            const machine_type = expression.type.resolved.fish.machine_type;
+            const machine_type = codegen.genny.type_intern_pool.get(expression.type).resolved.fish.machine_type;
 
             const register = result_register orelse try codegen.register_allocator.allocate(machine_type);
 
@@ -1199,17 +1204,20 @@ fn compileExpression(
             break :blk register;
         },
         inline .bitwise_and, .addition, .subtraction, .not_equal, .equal, .greater_than, .less_than_or_equal => |binary, binary_type| blk: {
-            //Assert the types are equal if its not a pointer we are dealing with, else make sure that the other operand is an s32
-            if ((binary_type == .addition or binary_type == .subtraction) and binary.lefthand.type.resolved == .pointer)
-                std.debug.assert(binary.righthand.type.resolved.fish.machine_type == .s32)
-            else
-                std.debug.assert(binary.lefthand.type.resolved.eql(binary.righthand.type.resolved));
+            const binary_lefthand_type = codegen.genny.type_intern_pool.get(binary.lefthand.type);
+            const binary_righthand_type = codegen.genny.type_intern_pool.get(binary.righthand.type);
 
-            const hand_type = binary.lefthand.type.resolved;
+            //Assert the types are equal if its not a pointer we are dealing with, else make sure that the other operand is an s32
+            if ((binary_type == .addition or binary_type == .subtraction) and binary_lefthand_type.resolved == .pointer)
+                std.debug.assert(binary_righthand_type.resolved.fish.machine_type == .s32)
+            else
+                std.debug.assert(binary_lefthand_type.resolved.eql(binary_righthand_type.resolved));
+
+            const hand_type = binary_lefthand_type.resolved;
 
             // Allocate a result register, in the case of bitwise ops, we need to use the machine type, else use a bool as the result
             const register = result_register orelse try codegen.register_allocator.allocate(switch (binary_type) {
-                .bitwise_and, .addition, .subtraction => binary.lefthand.type.resolved.machineType(),
+                .bitwise_and, .addition, .subtraction => binary_lefthand_type.resolved.machineType(),
                 .not_equal, .equal, .greater_than, .less_than_or_equal => .bool,
                 else => @compileError("Missing register type resolution"),
             });
@@ -1304,7 +1312,6 @@ fn compileExpression(
                     try codegen.register_allocator.free(lefthand);
                     try codegen.register_allocator.free(righthand);
                 },
-                .type => @panic("BUG: i dont think this should be allowed?"),
                 .integer_literal => {
                     @panic("TODO: int literal comparison");
                 },
@@ -1365,7 +1372,7 @@ fn compileExpression(
             if (discard_result)
                 break :blk null;
 
-            const register = result_register orelse try codegen.register_allocator.allocate(expression.type.resolved.machineType());
+            const register = result_register orelse try codegen.register_allocator.allocate(codegen.genny.type_intern_pool.get(expression.type).resolved.machineType());
 
             const source_register = (try compileExpression(
                 codegen,
@@ -1407,7 +1414,7 @@ fn compileBlock(
     for (block) |node| block_loop: {
         switch (node) {
             .variable_declaration => |variable_declaration| {
-                const resolved = variable_declaration.type.resolved;
+                const resolved = codegen.genny.type_intern_pool.get(variable_declaration.type).resolved;
 
                 const type_reference: MMTypes.TypeReference = switch (resolved) {
                     .pointer => |pointer| pointer.fish.?,
@@ -1899,7 +1906,7 @@ fn compileBlock(
                                                     .constructor => |constructor| constructor, //TODO: actually check this value
                                                     .name => |name| std.debug.panic("name {s} not resolved", .{name}),
                                                 })).index),
-                                                .type_reference = @intCast((try codegen.genny.type_references.getOrPut(val.type.resolved.fish)).index),
+                                                .type_reference = @intCast((try codegen.genny.type_references.getOrPut(codegen.genny.type_intern_pool.get(val.type).resolved.fish)).index),
                                             },
                                         )).index),
                                     }),
@@ -2060,7 +2067,7 @@ fn compileFunction(
     };
 
     for (parameters) |parameter| {
-        const fish_type_reference = parameter.type.resolved.valueTypeReference();
+        const fish_type_reference = self.type_intern_pool.get(parameter.type).resolved.valueTypeReference();
 
         const register = try codegen.register_allocator.allocateArgument(fish_type_reference.machine_type);
         const type_reference: u32 = @intCast((try self.type_references.getOrPut(fish_type_reference)).index);
@@ -2089,7 +2096,7 @@ fn compileFunction(
                 &scope_local_variables,
                 ast_function.body.?.contents.block,
                 true,
-                ast_function.return_type.resolved.machineType(),
+                self.type_intern_pool.get(ast_function.return_type).resolved.machineType(),
             );
         },
         .constructor => |constructor| {
@@ -2123,7 +2130,7 @@ fn compileFunction(
         .modifiers = modifiers,
         .stack_size = stack_size,
         .type_reference = @intCast((try self.type_references.getOrPut(switch (function) {
-            .function => function.function.return_type.resolved.valueTypeReference(),
+            .function => self.type_intern_pool.get(function.function.return_type).resolved.valueTypeReference(),
             .constructor => MMTypes.TypeReference{
                 .array_base_machine_type = .void,
                 .dimension_count = 0,
@@ -2230,7 +2237,7 @@ pub fn generate(self: *Genny) !MMTypes.Script {
                     std.math.maxInt(u16),
                     @intCast((try self.function_references.getOrPut(MMTypes.FunctionReference{
                         .name = @intCast((try self.a_string_table.getOrPut(".ctor__")).index),
-                        .type_reference = @intCast((try self.type_references.getOrPut(class.base_class.resolved.type_reference)).index),
+                        .type_reference = @intCast((try self.type_references.getOrPut(class.base_class.resolved.type_reference.?)).index),
                     })).index),
                     .void,
                 );
@@ -2320,7 +2327,7 @@ pub fn generate(self: *Genny) !MMTypes.Script {
                 for (class.fields) |field| {
                     try field_definitions.append(.{
                         .name = @intCast((try self.a_string_table.getOrPut(field.name)).index),
-                        .type_reference = @intCast((try self.type_references.getOrPut(field.type.resolved.fish)).index),
+                        .type_reference = @intCast((try self.type_references.getOrPut(self.type_intern_pool.get(field.type).resolved.fish)).index),
                         .modifiers = field.modifiers,
                     });
                 }
