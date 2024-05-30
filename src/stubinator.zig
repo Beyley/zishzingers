@@ -14,7 +14,7 @@ pub fn generateStubs(
     namespace: ?[]const u8,
     library: []const u8,
 ) !void {
-    std.debug.print("dumping script {s}\n", .{script.class_name});
+    // std.debug.print("dumping script {s}\n", .{script.class_name});
 
     try writer.print("using library '{s}';", .{library});
     try writer.writeByte('\n');

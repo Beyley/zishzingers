@@ -111,7 +111,7 @@ fn collectImportedTypes(
                     };
                     defer import_file.close();
 
-                    std.debug.print("reading {s}\n", .{import_path});
+                    // std.debug.print("reading {s}\n", .{import_path});
 
                     //TODO: let the user specify a "system allocator" separate from the script allocator
                     var lexeme_allocator = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -236,7 +236,7 @@ fn recursivelyResolveScript(
     // Add the script to its own import table, so it can reference itself
     try script.imported_types.putNoClobber(script.class_name, {});
 
-    std.debug.print("resolving script {s}\n", .{script.class_name});
+    // std.debug.print("resolving script {s}\n", .{script.class_name});
 
     //Collect all the libraries which are imported by the script
     try collectImportedLibraries(script, defined_libraries);
@@ -281,7 +281,7 @@ fn recursivelyResolveScript(
         };
     }
 
-    std.debug.print("script {s} is {} thing/notthing\n", .{ script.class_name, script.is_thing });
+    // std.debug.print("script {s} is {} thing/notthing\n", .{ script.class_name, script.is_thing });
 }
 
 ///Figures out if a script extends Thing, checks the full inheritance chain
@@ -349,7 +349,7 @@ pub fn resolve(
 
     const script = script_table.get(class.name) orelse unreachable;
 
-    std.debug.print("type resolving {s}\n", .{script.class_name});
+    // std.debug.print("type resolving {s}\n", .{script.class_name});
 
     for (class.fields) |field| {
         try self.resolveField(field, script, &script_table, a_string_table);
@@ -440,7 +440,7 @@ fn resolveFunctionBody(
             );
     }
 
-    std.debug.print("resolved function body {s}\n", .{function.name});
+    // std.debug.print("resolved function body {s}\n", .{function.name});
 }
 
 fn resolveFunctionHead(
@@ -450,9 +450,10 @@ fn resolveFunctionHead(
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
 ) Error!void {
-    std.debug.print("resolving function head {s}\n", .{function.name});
+    // std.debug.print("resolving function head {s}\n", .{function.name});
 
     const return_type = self.type_intern_pool.get(function.return_type);
+    _ = return_type; // autofix
 
     try self.resolveParsedType(
         function.return_type,
@@ -461,10 +462,11 @@ fn resolveFunctionHead(
         a_string_table,
     );
 
-    std.debug.print("resolved function return type as {}\n", .{return_type.resolved});
+    // std.debug.print("resolved function return type as {}\n", .{return_type.resolved});
 
     for (function.parameters) |*parameter| {
         const parameter_type = self.type_intern_pool.get(parameter.type);
+        _ = parameter_type; // autofix
 
         try self.resolveParsedType(
             parameter.type,
@@ -473,10 +475,10 @@ fn resolveFunctionHead(
             a_string_table,
         );
 
-        std.debug.print("resolved function parameter {s} as {}\n", .{ parameter.name, parameter_type.resolved });
+        // std.debug.print("resolved function parameter {s} as {}\n", .{ parameter.name, parameter_type.resolved });
     }
 
-    std.debug.print("resolved function head {s}\n", .{function.name});
+    // std.debug.print("resolved function head {s}\n", .{function.name});
 
     var mangled_name = std.ArrayList(u8).init(script_table.allocator);
     try self.mangleFunctionName(
@@ -536,7 +538,7 @@ fn resolveExpression(
         );
     }
 
-    std.debug.print("resolving {}\n", .{expression.contents});
+    // std.debug.print("resolving {}\n", .{expression.contents});
 
     switch (expression.contents) {
         .integer_literal => {
@@ -738,7 +740,7 @@ fn resolveExpression(
                     script_table,
                     a_string_table,
                 );
-                std.debug.print("found function {s}, special cased? {}\n", .{ function.found_function.name, function.special_cased });
+                // std.debug.print("found function {s}, special cased? {}\n", .{ function.found_function.name, function.special_cased });
 
                 const function_parameters_to_check = if (function.special_cased)
                     function.found_function.parameters[1..]
@@ -796,7 +798,7 @@ fn resolveExpression(
                     std.debug.panic("unable to find function {s}", .{function_call.function.name});
                 };
 
-                std.debug.print("found func {s} for call {s}\n", .{ function.name, function_call.function.name });
+                // std.debug.print("found func {s} for call {s}\n", .{ function.name, function_call.function.name });
 
                 try self.resolveFunctionHead(
                     function,
@@ -1008,7 +1010,7 @@ fn resolveExpression(
                         }
                     },
                     .if_statement => |if_statement| {
-                        std.debug.print("condition {}\n", .{if_statement.condition});
+                        // std.debug.print("condition {}\n", .{if_statement.condition});
 
                         //Resolve the condition
                         try self.resolveExpression(
@@ -1770,7 +1772,7 @@ fn findFunction(
                                             function.parameters.len > 0 and
                                             function.parameters.len - 1 == calling_parameters.len))
                                         {
-                                            std.debug.print("skipping... cus param mismatch\n", .{});
+                                            // std.debug.print("skipping... cus param mismatch\n", .{});
                                             continue;
                                         }
 
@@ -1878,12 +1880,12 @@ fn findFunction(
             }
         }
 
-        std.debug.print("{any}\n", .{checked_parameters});
+        // std.debug.print("{any}\n", .{checked_parameters});
 
         std.debug.panic("this is a massive TODO rn", .{});
     }
 
-    std.debug.print("calling params: {any}\n", .{calling_parameters});
+    // std.debug.print("calling params: {any}\n", .{calling_parameters});
 
     std.debug.panic("no function found with name {s} and param count {d}", .{ name, calling_parameters.len });
 }
@@ -2089,7 +2091,7 @@ fn resolveField(
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
 ) Error!void {
-    std.debug.print("type resolving field {s}\n", .{field.name});
+    // std.debug.print("type resolving field {s}\n", .{field.name});
 
     var field_type = self.type_intern_pool.get(field.type);
 
@@ -2127,7 +2129,7 @@ fn resolveField(
 
     field_type = self.type_intern_pool.get(field.type);
 
-    std.debug.print("resolved as {}\n", .{field_type});
+    // std.debug.print("resolved as {}\n", .{field_type});
 
     //Assert the type was actually resolved
     std.debug.assert(field_type.* == .resolved);

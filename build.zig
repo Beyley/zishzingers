@@ -16,10 +16,10 @@ pub fn build(b: *std.Build) void {
     if (optimize != .Debug)
         exe.linkLibC();
 
-    if (b.option(bool, "use_llvm", "Uses LLVM/LLD for compilation") orelse false) {
-        exe.use_llvm = false;
-        exe.use_lld = false;
-    }
+    if (b.option(bool, "use_llvm", "Uses LLVM for compilation")) |use_llvm|
+        exe.use_llvm = use_llvm;
+    if (b.option(bool, "use_lld", "Uses LLD for compilation")) |use_lld|
+        exe.use_lld = use_lld;
 
     exe.root_module.addImport("clap", b.dependency("clap", .{}).module("clap"));
 

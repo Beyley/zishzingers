@@ -156,7 +156,7 @@ pub fn readResource(read_buf: []const u8, allocator: std.mem.Allocator) !Resourc
     _ = try raw_reader.readAll(&magic);
 
     const resource_type: MMTypes.ResourceType = MMTypes.headerToResourceType(magic) orelse {
-        std.debug.print("got unknown resource type {s}\n", .{magic});
+        // std.debug.print("got unknown resource type {s}\n", .{magic});
         return error.UnknownResourceType;
     };
 

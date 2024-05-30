@@ -106,8 +106,8 @@ pub fn disasm(
                 }
             }
 
-            std.debug.print("compression {}\n", .{resource.stream.compression_flags});
-            std.debug.print("revision {}\n", .{resource.stream.revision});
+            // std.debug.print("compression {}\n", .{resource.stream.compression_flags});
+            // std.debug.print("revision {}\n", .{resource.stream.revision});
 
             const script = try resource.stream.readScript(allocator);
             defer script.deinit(allocator);
@@ -123,6 +123,7 @@ pub fn compile(
     stderr: anytype,
     stdout: anytype,
 ) !void {
+    _ = stdout; // autofix
     const params = comptime clap.parseParamsComptime(
         \\-h, --help                       Display this help and exit.
         \\-o, --out-file <str>             The output path for the compilation, defaults to "inputname.ff"
@@ -178,7 +179,7 @@ pub fn compile(
     }
 
     for (res.positionals) |source_file| {
-        std.debug.print("{s}\n", .{source_file});
+        // std.debug.print("{s}\n", .{source_file});
         const source_code: []const u8 = try std.fs.cwd().readFileAlloc(allocator, source_file, std.math.maxInt(usize));
         defer allocator.free(source_code);
 
@@ -229,13 +230,13 @@ pub fn compile(
             &type_intern_pool,
         );
 
-        var debug = Debug{
-            .indent = 0,
-            .writer = stdout.any(),
-            .a_string_table = &a_string_table,
-            .type_intern_pool = &type_intern_pool,
-        };
-        try debug.dumpAst(parser.tree);
+        // var debug = Debug{
+        //     .indent = 0,
+        //     .writer = stdout.any(),
+        //     .a_string_table = &a_string_table,
+        //     .type_intern_pool = &type_intern_pool,
+        // };
+        // try debug.dumpAst(parser.tree);
 
         const compilation_options: Genny.CompilationOptions = .{
             .optimization_mode = if (res.args.optimize) |optimize| std.meta.stringToEnum(std.builtin.OptimizeMode, optimize).? else .Debug,
@@ -300,11 +301,7 @@ pub fn compile(
             allocator,
         );
 
-        for (dependencies.keys()) |dependency| {
-            try stdout.print("Script has dependency {}\n", .{dependency.ident});
-        }
-
-        try Disasm.disassembleScript(stdout, allocator, script);
+        // try Disasm.disassembleScript(stdout, allocator, script);
     }
 }
 
