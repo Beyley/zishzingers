@@ -11,8 +11,16 @@ const Genny = @This();
 pub const Error = std.mem.Allocator.Error || error{InvalidUtf8};
 
 pub const CompilationOptions = struct {
+    pub const Platform = enum {
+        ps3,
+        vita,
+        ps4,
+    };
+
     revision: MMTypes.Revision,
     optimization_mode: std.builtin.OptimizeMode,
+    extended_runtime: bool,
+    platform: Platform,
 };
 
 pub const S64ConstantTable = std.AutoArrayHashMap(i64, void);
@@ -320,6 +328,9 @@ const Codegen = struct {
     }
 
     pub fn emitNativeInvoke(self: *Codegen, dst_idx: u16, call_address: u24, toc_index: u8, machine_type: MMTypes.MachineType) !void {
+        if (!self.compilation_options.extended_runtime)
+            @panic("Unable to emit EXT_INVOKE without extended runtime");
+
         ensureAlignment(dst_idx, machine_type);
 
         // The current version of the extended runtime only allows s32 sized return types
@@ -658,6 +669,9 @@ const Codegen = struct {
     }
 
     pub fn emitExtLoad(self: *Codegen, dst_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
+        if (!self.compilation_options.extended_runtime)
+            @panic("Unable to emit EXT_LOAD without extended runtime");
+
         ensureAlignment(src_idx, .s32);
         ensureAlignment(dst_idx, machine_type);
 
@@ -670,17 +684,67 @@ const Codegen = struct {
         } }, machine_type));
     }
 
+    pub fn emitSetRawPtrMember(self: *Codegen, base_idx: u16, src_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .SET_RP_MEMBER = .{
+            .base_idx = base_idx,
+            .field_ref = field_ref,
+            .src_idx = src_idx,
+        } }, machine_type));
+    }
+
     pub fn emitExtStore(self: *Codegen, dst_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
         ensureAlignment(src_idx, machine_type);
         ensureAlignment(dst_idx, .s32);
 
-        // Only size s32 types work in the current version of the extended runtime
-        std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+        if (!self.compilation_options.extended_runtime) {
+            // TODO: non-s32 sized types in the EXT_STORE emulation
+            std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_STORE = .{
-            .src_idx = src_idx,
-            .dst_idx = dst_idx,
-        } }, machine_type));
+            const raw_ptr_type: MMTypes.ResolvableTypeReference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
+                .machine_type = .raw_ptr,
+                .fish_type = .void,
+                .dimension_count = 0,
+                .array_base_machine_type = .void,
+                .script = null,
+                .type_name = @intCast((try self.genny.a_string_table.getOrPut("PThing")).index),
+            })).index);
+            const field_name: MMTypes.ResolvableString = @intCast((try self.genny.a_string_table.getOrPut("ThingUIDCounter")).index);
+            const field_offset: i32 = switch (self.compilation_options.platform) {
+                .ps3 => 0xc,
+                .ps4 => 0x10,
+                .vita => @panic("TODO: vita EXT_STORE emulation"),
+            };
+            const field_reference: u16 = @intCast((try self.genny.field_references.getOrPut(MMTypes.FieldReference{
+                .name = field_name,
+                .type_reference = raw_ptr_type,
+            })).index);
+
+            // Allocate the register which stores the raw ptr
+            const raw_ptr = try self.register_allocator.allocate(.raw_ptr);
+            // Allocate the register which stores the offset
+            const offset_reg = try self.register_allocator.allocate(.s32);
+
+            // Move the ptr into the temporary register
+            try self.emitMoveS32(raw_ptr[0], dst_idx);
+            // Load the offset into a temporary register
+            try self.emitLoadConstInt(offset_reg[0], field_offset);
+            // Subtract the destination address by the offset (so that when the game reads the field, it adds back the offset)
+            try self.emitSubtractInt(raw_ptr[0], raw_ptr[0], offset_reg[0]);
+
+            // Store the value into the offset address
+            try self.emitSetRawPtrMember(raw_ptr[0], src_idx, field_reference, machine_type);
+
+            try self.register_allocator.free(raw_ptr);
+            try self.register_allocator.free(offset_reg);
+        } else {
+            // Only size s32 types work in the current version of the extended runtime
+            std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+
+            try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_STORE = .{
+                .src_idx = src_idx,
+                .dst_idx = dst_idx,
+            } }, machine_type));
+        }
     }
 };
 
@@ -1231,11 +1295,19 @@ fn compileExpression(
             const hand_type = binary_lefthand_type.resolved;
 
             // Allocate a result register, in the case of bitwise ops, we need to use the machine type, else use a bool as the result
-            const register = result_register orelse try codegen.register_allocator.allocate(switch (binary_type) {
-                .bitwise_and, .addition, .subtraction => binary_lefthand_type.resolved.machineType(),
-                .not_equal, .equal, .greater_than, .less_than_or_equal => .bool,
-                else => @compileError("Missing register type resolution"),
-            });
+            const register, const forced_intermediary = add_reg: {
+                const needs_intermediary = hand_type == .pointer;
+
+                break :add_reg if (result_register == null or needs_intermediary)
+                    .{ try codegen.register_allocator.allocate(switch (binary_type) {
+                        .bitwise_and, .addition, .subtraction => binary_lefthand_type.resolved.machineType(),
+                        .not_equal, .equal, .greater_than, .less_than_or_equal => .bool,
+                        else => @compileError("Missing register type resolution"),
+                    }), needs_intermediary }
+                else
+                    .{ result_register.?, false };
+            };
+            std.debug.print("allocated register {d}\n", .{register[0]});
 
             switch (hand_type) {
                 .fish => |fish| {
@@ -1338,9 +1410,19 @@ fn compileExpression(
                 },
             }
 
-            if (discard_result and result_register != null) {
+            if (discard_result and result_register == null) {
                 try codegen.register_allocator.free(register);
                 break :blk null;
+            }
+
+            if (forced_intermediary and result_register != null) {
+                // this might not hold false all the time, but this should only ever trigger for ptr work, so it should always hold true
+                std.debug.assert(register[1] == .s32);
+
+                // Move the result into the result register
+                try codegen.emitMoveS32(result_register.?[0], register[0]);
+
+                break :blk result_register;
             }
 
             break :blk register;

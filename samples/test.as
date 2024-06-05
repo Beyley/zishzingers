@@ -54,6 +54,14 @@ class Test(g1234568)
         }
     }
 
+    pub fn PointerArithmatic() {
+        let x: s32* = 69;
+
+        x = x + 2;
+
+        let y = x + 10;
+    }
+
     @NativeInvoke(0x123456, 0)
     static fn NativeFunction(param1: void*, param2: Thing, param3: f32, param4: vec4, param5: bool) -> void*;
 }

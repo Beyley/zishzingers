@@ -1652,16 +1652,18 @@ fn coerceExpression(
                 };
             }
 
-            // bool -> s32 conversion
-            if (target_fish_type.machine_type == .s32 and expression_type.fish.machine_type == .bool) {
-                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
-                const cast_target_expression = try allocator.create(Parser.Node.Expression);
-                cast_target_expression.* = expression.*;
+            if (expression_type == .fish) {
+                // bool -> s32 conversion
+                if (target_fish_type.machine_type == .s32 and expression_type.fish.machine_type == .bool) {
+                    //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                    const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                    cast_target_expression.* = expression.*;
 
-                return .{
-                    .contents = .{ .cast = cast_target_expression },
-                    .type = intern_target_type,
-                };
+                    return .{
+                        .contents = .{ .cast = cast_target_expression },
+                        .type = intern_target_type,
+                    };
+                }
             }
 
             // Null -> safe_ptr conversion

@@ -1109,13 +1109,13 @@ pub const WStringTable = struct {
     }
 };
 
-const ResolvableTypeReference = u32;
+pub const ResolvableTypeReference = u32;
 
-const ResolvableString = u32;
+pub const ResolvableString = u32;
 
-const ResolvableFunction = u32;
+pub const ResolvableFunction = u32;
 
-const ArgumentSlice = struct {
+pub const ArgumentSlice = struct {
     begin: u32,
     end: u32,
 
@@ -1128,7 +1128,7 @@ const ArgumentSlice = struct {
     }
 };
 
-const ResolvableBytecodeSlice = struct {
+pub const ResolvableBytecodeSlice = struct {
     begin: u32,
     end: u32,
 
@@ -1141,7 +1141,7 @@ const ResolvableBytecodeSlice = struct {
     }
 };
 
-const ResolvableLineNumberSlice = struct {
+pub const ResolvableLineNumberSlice = struct {
     begin: u32,
     end: u32,
 
@@ -1154,7 +1154,7 @@ const ResolvableLineNumberSlice = struct {
     }
 };
 
-const ResolvableLocalVariableSlice = struct {
+pub const ResolvableLocalVariableSlice = struct {
     begin: u32,
     end: u32,
 

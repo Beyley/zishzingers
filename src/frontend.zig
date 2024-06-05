@@ -134,6 +134,8 @@ pub fn compile(
         \\-y, --branch-revision <u16>      The branch revision of the asset to be serialized
         \\--optimize <str>                 Specify the compilation mode used, defaults to Debug (Debug, ReleaseSafe, ReleaseFast, ReleaseSmall)
         \\                                 this overrides the GUID specified in the file.
+        \\--extended-runtime               Whether to enable use of Aidan's extended script runtime
+        \\--platform <str>                 The platform being compiled for (`ps3`, `vita`, `ps4`)
         \\<str>                            The source file
         \\
     );
@@ -245,6 +247,8 @@ pub fn compile(
                 .branch_revision = res.args.@"branch-revision" orelse 0,
                 .branch_id = res.args.@"branch-id" orelse 0,
             },
+            .extended_runtime = res.args.@"extended-runtime" != 0,
+            .platform = std.meta.stringToEnum(Genny.CompilationOptions.Platform, res.args.platform orelse "ps3") orelse @panic("invalid platform (ps3, vita, ps4)"),
         };
 
         var genny = Genny.init(
@@ -408,7 +412,7 @@ pub fn generateLibrary(
         if (!std.mem.endsWith(u8, entry.value_ptr.path, ".ff"))
             continue;
 
-        // std.debug.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
+        std.debug.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
         // try stdout.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
 
         const file_data = try game_data_dir.readFileAlloc(allocator, entry.value_ptr.path, std.math.maxInt(usize));
