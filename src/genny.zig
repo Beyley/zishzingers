@@ -560,6 +560,17 @@ const Codegen = struct {
         } }, .void));
     }
 
+    pub fn emitSafePtrEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
+        ensureAlignment(left_idx, .safe_ptr);
+        ensureAlignment(right_idx, .safe_ptr);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .EQsp = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = left_idx,
+            .src_b_idx = right_idx,
+        } }, .void));
+    }
+
     pub fn emitObjectPtrNotEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
         ensureAlignment(left_idx, .object_ref);
         ensureAlignment(right_idx, .object_ref);
@@ -603,6 +614,50 @@ const Codegen = struct {
         ensureAlignment(righthand, .f32);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .GTf = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
+
+    pub fn emitIntGreaterThan(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(lefthand, .s32);
+        ensureAlignment(righthand, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .GTi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
+
+    pub fn emitIntGreaterThanOrEqual(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(lefthand, .s32);
+        ensureAlignment(righthand, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .GTEi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
+
+    pub fn emitIntLessThan(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(lefthand, .s32);
+        ensureAlignment(righthand, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LTi = .{
+            .dst_idx = dst_idx,
+            .src_a_idx = lefthand,
+            .src_b_idx = righthand,
+        } }, .void));
+    }
+
+    pub fn emitIntLessThanOrEqual(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+        ensureAlignment(lefthand, .s32);
+        ensureAlignment(righthand, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LTEi = .{
             .dst_idx = dst_idx,
             .src_a_idx = lefthand,
             .src_b_idx = righthand,
@@ -668,28 +723,82 @@ const Codegen = struct {
         } }, .void));
     }
 
-    pub fn emitExtLoad(self: *Codegen, dst_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
-        if (!self.compilation_options.extended_runtime)
-            @panic("Unable to emit EXT_LOAD without extended runtime");
-
-        ensureAlignment(src_idx, .s32);
-        ensureAlignment(dst_idx, machine_type);
-
-        // Only size s32 types work in the current version of the extended runtime
-        std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
-
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_LOAD = .{
-            .src_idx = src_idx,
-            .dst_idx = dst_idx,
-        } }, machine_type));
-    }
-
     pub fn emitSetRawPtrMember(self: *Codegen, base_idx: u16, src_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(src_idx, machine_type);
+        ensureAlignment(base_idx, .raw_ptr);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .SET_RP_MEMBER = .{
             .base_idx = base_idx,
             .field_ref = field_ref,
             .src_idx = src_idx,
         } }, machine_type));
+    }
+
+    pub fn emitGetRawPtrMember(self: *Codegen, dst_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(dst_idx, machine_type);
+        ensureAlignment(base_idx, .raw_ptr);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .GET_RP_MEMBER = .{
+            .base_idx = base_idx,
+            .dst_idx = dst_idx,
+            .field_ref = field_ref,
+        } }, machine_type));
+    }
+
+    pub fn emitExtLoad(self: *Codegen, dst_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
+        ensureAlignment(src_idx, .s32);
+        ensureAlignment(dst_idx, machine_type);
+
+        if (!self.compilation_options.extended_runtime) {
+            // TODO: non-s32 sized types in the EXT_STORE emulation
+            std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+
+            const raw_ptr_type: MMTypes.ResolvableTypeReference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
+                .machine_type = .raw_ptr,
+                .fish_type = .void,
+                .dimension_count = 0,
+                .array_base_machine_type = .void,
+                .script = null,
+                .type_name = @intCast((try self.genny.a_string_table.getOrPut("PWorld")).index),
+            })).index);
+            const field_name: MMTypes.ResolvableString = @intCast((try self.genny.a_string_table.getOrPut("ThingUIDCounter")).index);
+            const field_offset: i32 = switch (self.compilation_options.platform) {
+                .ps3 => 0xc,
+                .ps4 => 0x10,
+                .vita => @panic("TODO: vita EXT_STORE emulation"),
+            };
+            const field_reference: u16 = @intCast((try self.genny.field_references.getOrPut(MMTypes.FieldReference{
+                .name = field_name,
+                .type_reference = raw_ptr_type,
+            })).index);
+
+            // Allocate the register which stores the raw ptr
+            const raw_ptr = try self.register_allocator.allocate(.raw_ptr);
+            // Allocate the register which stores the offset
+            const offset_reg = try self.register_allocator.allocate(.s32);
+
+            // Move the ptr into the raw_ptr address
+            try self.emitMoveS32(raw_ptr[0], src_idx);
+            // Load the offset into the temporary register
+            try self.emitLoadConstInt(offset_reg[0], field_offset);
+            // Subtract the raw ptr by the field offset, so that when the game reads it, it adds the offset back, and reads the correct address
+            try self.emitSubtractInt(raw_ptr[0], raw_ptr[0], offset_reg[0]);
+
+            // Reads the data at the offset raw_ptr
+            // TODO: this shouldnt always be hardcoded to s32
+            try self.emitGetRawPtrMember(dst_idx, raw_ptr[0], field_reference, .s32);
+
+            try self.register_allocator.free(raw_ptr);
+            try self.register_allocator.free(offset_reg);
+        } else {
+            // Only size s32 types work in the current version of the extended runtime
+            std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+
+            try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_LOAD = .{
+                .src_idx = src_idx,
+                .dst_idx = dst_idx,
+            } }, machine_type));
+        }
     }
 
     pub fn emitExtStore(self: *Codegen, dst_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
@@ -706,7 +815,7 @@ const Codegen = struct {
                 .dimension_count = 0,
                 .array_base_machine_type = .void,
                 .script = null,
-                .type_name = @intCast((try self.genny.a_string_table.getOrPut("PThing")).index),
+                .type_name = @intCast((try self.genny.a_string_table.getOrPut("PWorld")).index),
             })).index);
             const field_name: MMTypes.ResolvableString = @intCast((try self.genny.a_string_table.getOrPut("ThingUIDCounter")).index);
             const field_offset: i32 = switch (self.compilation_options.platform) {
@@ -732,7 +841,8 @@ const Codegen = struct {
             try self.emitSubtractInt(raw_ptr[0], raw_ptr[0], offset_reg[0]);
 
             // Store the value into the offset address
-            try self.emitSetRawPtrMember(raw_ptr[0], src_idx, field_reference, machine_type);
+            // TODO: this shouldnt always be hardcoded to s32
+            try self.emitSetRawPtrMember(raw_ptr[0], src_idx, field_reference, .s32);
 
             try self.register_allocator.free(raw_ptr);
             try self.register_allocator.free(offset_reg);
@@ -981,11 +1091,12 @@ fn compileExpression(
             const variable_machine_type = codegen.genny.type_references.keys()[variable.type_reference].machine_type;
 
             if (result_register) |result_idx| {
-                _ = result_idx; // autofix
-
                 switch (variable_machine_type) {
+                    .s32 => try codegen.emitMoveS32(result_idx[0], @intCast(variable.offset)),
                     else => |tag| std.debug.panic("TODO: lower variable access move of {s}", .{@tagName(tag)}),
                 }
+
+                break :blk result_register.?;
             } else {
                 break :blk .{ @intCast(variable.offset), variable_machine_type };
             }
@@ -1282,7 +1393,16 @@ fn compileExpression(
 
             break :blk register;
         },
-        inline .bitwise_and, .addition, .subtraction, .not_equal, .equal, .greater_than, .less_than_or_equal => |binary, binary_type| blk: {
+        inline .bitwise_and,
+        .addition,
+        .subtraction,
+        .not_equal,
+        .equal,
+        .greater_than,
+        .less_than,
+        .greater_than_or_equal,
+        .less_than_or_equal,
+        => |binary, binary_type| blk: {
             const binary_lefthand_type = codegen.genny.type_intern_pool.get(binary.lefthand.type);
             const binary_righthand_type = codegen.genny.type_intern_pool.get(binary.righthand.type);
 
@@ -1301,13 +1421,12 @@ fn compileExpression(
                 break :add_reg if (result_register == null or needs_intermediary)
                     .{ try codegen.register_allocator.allocate(switch (binary_type) {
                         .bitwise_and, .addition, .subtraction => binary_lefthand_type.resolved.machineType(),
-                        .not_equal, .equal, .greater_than, .less_than_or_equal => .bool,
+                        .not_equal, .equal, .greater_than, .less_than, .greater_than_or_equal, .less_than_or_equal => .bool,
                         else => @compileError("Missing register type resolution"),
                     }), needs_intermediary }
                 else
                     .{ result_register.?, false };
             };
-            std.debug.print("allocated register {d}\n", .{register[0]});
 
             switch (hand_type) {
                 .fish => |fish| {
@@ -1338,6 +1457,10 @@ fn compileExpression(
                             .bitwise_and => try codegen.emitIntBitwiseAnd(register[0], lefthand[0], righthand[0]),
                             .addition => try codegen.emitAddInt(register[0], lefthand[0], righthand[0]),
                             .subtraction => try codegen.emitSubtractInt(register[0], lefthand[0], righthand[0]),
+                            .greater_than => try codegen.emitIntGreaterThan(register[0], lefthand[0], righthand[0]),
+                            .less_than => try codegen.emitIntLessThan(register[0], lefthand[0], righthand[0]),
+                            .greater_than_or_equal => try codegen.emitIntGreaterThanOrEqual(register[0], lefthand[0], righthand[0]),
+                            .less_than_or_equal => try codegen.emitIntLessThanOrEqual(register[0], lefthand[0], righthand[0]),
                             else => std.debug.panic("TODO: {s} binary op type for s32", .{@tagName(binary_type)}),
                         },
                         .f32 => switch (binary_type) {
@@ -1348,6 +1471,7 @@ fn compileExpression(
                         },
                         .safe_ptr => switch (binary_type) {
                             .not_equal => try codegen.emitSafePtrNotEqual(register[0], lefthand[0], righthand[0]),
+                            .equal => try codegen.emitSafePtrEqual(register[0], lefthand[0], righthand[0]),
                             else => std.debug.panic("TODO: {s} binary op type for safe_ptr", .{@tagName(binary_type)}),
                         },
                         .object_ref => switch (binary_type) {
@@ -1675,7 +1799,7 @@ fn compileBlock(
 
                 // Generate a branch which branches directly back to the condition check
                 codegen.bytecode.items[try codegen.emitBranch()].params.B.branch_offset =
-                    @as(i32, @intCast(condition_start)) - @as(i32, @intCast(codegen.nextEmitBytecodeIndex()));
+                    @as(i32, @intCast(condition_start)) - @as(i32, @intCast(codegen.nextEmitBytecodeIndex())) + 1;
 
                 // Update the "skip to end" jump to go to the next instruction emit
                 codegen.bytecode.items[skip_to_end_instruction].params.BEZ.branch_offset =
@@ -1717,8 +1841,6 @@ fn compileBlock(
                                         op == .GET_ELEMENT) and
                                         bytecode.machine_type != .object_ref)
                                     {
-                                        std.debug.print("skipping\n", .{});
-
                                         break :blk;
                                     }
 
@@ -1767,7 +1889,6 @@ fn compileBlock(
                                         op == .GET_ELEMENT) and
                                         bytecode.machine_type != .object_ref)
                                     {
-                                        std.debug.print("skipping\n", .{});
                                         break :blk;
                                     }
 

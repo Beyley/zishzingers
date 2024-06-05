@@ -62,6 +62,13 @@ class Test(g1234568)
         let y = x + 10;
     }
 
+    pub fn WhileLoop() {
+        let count: s32 = 0;
+        while(count < 10) {
+            count = count + 1;
+        }
+    }
+
     @NativeInvoke(0x123456, 0)
     static fn NativeFunction(param1: void*, param2: Thing, param3: f32, param4: vec4, param5: bool) -> void*;
 }
