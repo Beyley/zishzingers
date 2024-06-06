@@ -1,4 +1,4 @@
-# Script provided by Aidan
+// Script provided by Aidan
 
 using library 'lbpdeploy';
 
@@ -18,24 +18,24 @@ class TweakEgg(g27432) extends TriggerCollectItem
     {
         let cache_id = CreateInventoryCollection(player, 5, true);
 
-        # User Created Objects
+        // User Created Objects
 
         AddView(player, cache_id, 128, 1610612736, L'POPIT_MY_PLANS');
         AddView(player, cache_id, 1024, 1610612736, L'POPIT_MY_PHOTOS');
         AddView(player, cache_id, 17825808, 0xE0000000, L'TG_My_Costumes');
 
-        # Costumes Section
+        // Costumes Section
 
         AddView(player, cache_id, 16777248, 0, L'TG_Materials');
         AddView(player, cache_id, 16777232, GetCostumePartsHead(), L'TG_Head');
         AddView(player, cache_id, 16777232, GetCostumePartsBody(), L'TG_Body');
 
-        # Stickers / Decorations
+        // Stickers / Decorations
 
         AddView(player, cache_id, 8, 0, L'TG_Stickers');
         AddView(player, cache_id, 4, 0, L'TG_Decorations');
 
-        # Tools
+        // Tools
 
         AddView(player, cache_id, 65536, 0, L'POPIT_MATERIAL_TOOLS');
         AddView(player, cache_id, 32768, 0, L'POPIT_PAGE_GADGETS');
@@ -43,7 +43,7 @@ class TweakEgg(g27432) extends TriggerCollectItem
         AddView(player, cache_id, 4194304, 0, L'POPIT_PAGE_SOUND');
         AddView(player, cache_id, 256, 0, L'TG_Backgrounds');
 
-        # Goodies
+        // Goodies
 
         AddView(player, cache_id, 1, 0, L'TG_Materials');
         AddView(player, cache_id, 2, 0, L'TG_Objects');

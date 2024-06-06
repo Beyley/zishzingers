@@ -2587,7 +2587,7 @@ pub const Lexemeizer = struct {
             const char = iter[i];
 
             // If we hit a comment,
-            if (char == '#') {
+            if (char == '/' and iter[i + 1] == '/') {
                 // Skip characters until we hit a newline
                 while (iter[i] != '\n') {
                     i += 1;
