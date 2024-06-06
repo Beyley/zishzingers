@@ -401,7 +401,7 @@ fn resolveConstructorBody(
 
     try self.resolveExpression(
         constructor.body.?,
-        try self.type_intern_pool.fromFishType(.void),
+        null,
         script,
         script_table,
         a_string_table,
