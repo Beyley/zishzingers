@@ -51,6 +51,7 @@ pub const TypeInternPool = struct {
         integer_literal: void = 1,
         float_literal: void = 2,
         null_literal: void = 3,
+        int_string_literal: void = 4,
     };
 
     pub const HashMap = std.ArrayHashMap(Key, Type, struct {
@@ -61,7 +62,7 @@ pub const TypeInternPool = struct {
 
             h.update(std.mem.asBytes(&@intFromEnum(s)));
             switch (s) {
-                .integer_literal, .float_literal, .null_literal => {},
+                .integer_literal, .float_literal, .null_literal, .int_string_literal => {},
                 .parsed => |parsed| {
                     h.update(&.{ @intFromBool(parsed.base_type == null), parsed.indirection_count, parsed.dimension_count });
                     h.update(parsed.base_type orelse "");
@@ -81,6 +82,7 @@ pub const TypeInternPool = struct {
                 .integer_literal => b == .integer_literal,
                 .float_literal => b == .float_literal,
                 .null_literal => b == .null_literal,
+                .int_string_literal => b == .int_string_literal,
             };
         }
     }, true);
@@ -137,6 +139,10 @@ pub const TypeInternPool = struct {
         return @enumFromInt((try self.hash_map.getOrPutValue(.integer_literal, .{ .resolved = .integer_literal })).index);
     }
 
+    pub fn intStringLiteral(self: *TypeInternPool) !Index {
+        return @enumFromInt((try self.hash_map.getOrPutValue(.int_string_literal, .{ .resolved = .int_string_literal })).index);
+    }
+
     pub fn floatLiteral(self: *TypeInternPool) !Index {
         return @enumFromInt((try self.hash_map.getOrPutValue(.float_literal, .{ .resolved = .float_literal })).index);
     }
@@ -145,11 +151,11 @@ pub const TypeInternPool = struct {
         return @enumFromInt((try self.hash_map.getOrPutValue(.null_literal, .{ .resolved = .null_literal })).index);
     }
 
-    pub fn fromFishType(self: *TypeInternPool, machine_type: MMTypes.FishType) !Index {
+    pub fn fromFishType(self: *TypeInternPool, fish_type: MMTypes.FishType) !Index {
         const value: Type = .{
             .parsed = .{
                 .base_type = null,
-                .name = @tagName(machine_type),
+                .name = @tagName(fish_type),
                 .dimension_count = 0,
                 .indirection_count = 0,
             },
@@ -234,6 +240,7 @@ pub const TypeInternPool = struct {
             integer_literal: void,
             float_literal: void,
             null_literal: void,
+            int_string_literal: void,
 
             pub fn eql(self: Resolved, other: Resolved) bool {
                 if (std.meta.activeTag(self) != std.meta.activeTag(other))
@@ -242,7 +249,7 @@ pub const TypeInternPool = struct {
                 return switch (self) {
                     .fish => |fish| fish.eql(other.fish),
                     .pointer => |pointer| pointer.eql(other.pointer),
-                    .integer_literal, .float_literal, .null_literal => true,
+                    .integer_literal, .float_literal, .null_literal, .int_string_literal => true,
                 };
             }
 
@@ -422,6 +429,7 @@ pub const Node = union(enum) {
 
             integer_literal: struct { base: LiteralBase, value: i64 },
             integer_literal_to_s32: UnaryExpression,
+            int_string_literal_to_s32: UnaryExpression,
             integer_literal_to_safe_ptr: UnaryExpression,
             integer_literal_to_ptr: UnaryExpression,
             integer_literal_to_f32: UnaryExpression,
@@ -439,6 +447,7 @@ pub const Node = union(enum) {
             null_literal: void,
             ascii_string_literal: []const u8,
             wide_string_literal: []const u8,
+            int_string_literal: []const u8,
             field_access: struct {
                 source: *Expression,
                 field: []const u8,
@@ -489,6 +498,7 @@ pub const Node = union(enum) {
                 return switch (value) {
                     .integer_literal => |literal| writer.print("expression_contents{{ .integer_literal = {} }}", .{literal}),
                     .integer_literal_to_s32 => |literal| writer.print("expression_contents {{ .integer_literal_to_s32 = {d} }}", .{literal}),
+                    .int_string_literal_to_s32 => |literal| writer.print("expression_contents {{ .integer_literal_to_s32 = {d} }}", .{literal}),
                     .integer_literal_to_safe_ptr => |literal| writer.print("expression_contents {{ .integer_literal_to_safe_ptr = {d} }}", .{literal}),
                     .integer_literal_to_ptr => |literal| writer.print("expression_contents {{ .integer_literal_to_ptr = {d} }}", .{literal}),
                     .cast => |literal| writer.print("expression_contents {{ .cast = {} }}", .{literal}),
@@ -506,6 +516,7 @@ pub const Node = union(enum) {
                     .bool_literal => |literal| writer.print("expression_contents{{ .bool_literal = {} }}", .{literal}),
                     .ascii_string_literal => |literal| writer.print("expression_contents{{ .ascii_string_literal = {s} }}", .{literal}),
                     .wide_string_literal => |literal| writer.print("expression_contents{{ .wide_string_literal = {s} }}", .{literal}),
+                    .int_string_literal => |literal| writer.print("expression_contents{{ .int_string_literal = {s} }}", .{literal}),
                     .class_name => |literal| writer.print("expression_contents{{ .class_name = {s} }}", .{literal}),
                     .field_access => |literal| writer.print("expression_contents{{ .field_access = .{{ .source = {}, .field = {s} }} }}", .{ literal.source, literal.field }),
                     .dereference => |literal| writer.print("expression_contents{{ .dereference = .{{ .source = {} }} }}", .{literal}),
@@ -1704,6 +1715,15 @@ fn consumePrimaryExpression(self: *Self) Error!*Node.Expression {
     //TODO: hash literals here
     if (first[0] == 'h') {}
 
+    if (try isIntStringLiteral(self.allocator, first)) |int_string_literal| {
+        const expression = try self.allocator.create(Node.Expression);
+        expression.* = .{
+            .contents = .{ .int_string_literal = int_string_literal },
+            .type = .unknown,
+        };
+        return expression;
+    }
+
     if (try isWideStringLiteral(self.allocator, first)) |wide_string_literal| {
         const expression = try self.allocator.create(Node.Expression);
         expression.* = .{
@@ -2223,6 +2243,20 @@ fn isWideStringLiteral(allocator: std.mem.Allocator, lexeme: Lexeme) !?[]const u
     return try unwrapStringLiteral(allocator, lexeme[1..]);
 }
 
+fn isIntStringLiteral(allocator: std.mem.Allocator, lexeme: Lexeme) !?[]const u8 {
+    if (lexeme.len < 3)
+        return null;
+
+    if (lexeme[0] != 'u')
+        return null;
+
+    if (lexeme[1] != '\'' or lexeme[lexeme.len - 1] != '\'')
+        return null;
+
+    //Strip to just the contents
+    return try unwrapStringLiteral(allocator, lexeme[1..]);
+}
+
 fn isAsciiStringLiteral(allocator: std.mem.Allocator, lexeme: Lexeme) !?[]const u8 {
     if (lexeme.len < 2)
         return null;
@@ -2543,6 +2577,7 @@ fn unwrapStringLiteral(allocator: std.mem.Allocator, literal: []const u8) ![]con
                 'n' => try unescaped_literal.append('\n'),
                 'r' => try unescaped_literal.append('\r'),
                 '\'' => try unescaped_literal.append('\''),
+                '0' => try unescaped_literal.append('\x00'),
                 else => |escape_char| std.debug.panic("unknown escape character {c}", .{escape_char}),
             }
             i += 1;
@@ -2616,13 +2651,14 @@ pub const Lexemeizer = struct {
                 is_number = false;
 
             const is_long_string = just_started_lexeme and char == 'L' and iter[i + 1] == '\'';
+            const is_int_string = just_started_lexeme and char == 'u' and iter[i + 1] == '\'';
 
             //If this is the start of a lexeme and we hit a ' (the start of a string)
-            if ((just_started_lexeme and char == '\'') or is_long_string) {
+            if ((just_started_lexeme and char == '\'') or is_long_string or is_int_string) {
                 //Increment to the next char
                 i += 1;
 
-                if (is_long_string)
+                if (is_long_string or is_int_string)
                     i += 1;
 
                 //Skip over all non ' characters which do not start with \ (eg. an escaped apostrophe)

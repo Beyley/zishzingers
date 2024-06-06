@@ -976,17 +976,21 @@ fn compileExpression(
             }
         },
         // We can just lower this into a LCi
-        .integer_literal_to_s32, .integer_literal_to_ptr, .integer_literal_to_safe_ptr => |integer_literal| blk: {
+        .integer_literal_to_s32, .int_string_literal_to_s32, .integer_literal_to_ptr, .integer_literal_to_safe_ptr => |integer_literal| blk: {
             if (discard_result)
                 break :blk null;
 
-            const value: i32 = if (integer_literal.contents.integer_literal.base != .decimal) int: {
-                const unsigned: u64 = @bitCast(integer_literal.contents.integer_literal.value);
+            const value: i32 = switch (integer_literal.contents) {
+                .integer_literal => if (integer_literal.contents.integer_literal.base != .decimal) int: {
+                    const unsigned: u64 = @bitCast(integer_literal.contents.integer_literal.value);
 
-                const unsigned_u32: u32 = @intCast(unsigned);
+                    const unsigned_u32: u32 = @intCast(unsigned);
 
-                break :int @bitCast(unsigned_u32);
-            } else @intCast(integer_literal.contents.integer_literal.value);
+                    break :int @bitCast(unsigned_u32);
+                } else @intCast(integer_literal.contents.integer_literal.value),
+                .int_string_literal => @bitCast(std.mem.readInt(u32, integer_literal.contents.int_string_literal[0..4], .big)),
+                else => |tag| std.debug.panic("unhandled case {s}", .{@tagName(tag)}),
+            };
 
             const register = result_register orelse try codegen.register_allocator.allocate(.s32);
 
@@ -1525,6 +1529,9 @@ fn compileExpression(
                 },
                 .integer_literal => {
                     @panic("TODO: int literal comparison");
+                },
+                .int_string_literal => {
+                    @panic("TODO: int string literal comparison");
                 },
                 .float_literal => {
                     @panic("TODO: float literal comparison");

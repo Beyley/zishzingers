@@ -710,6 +710,15 @@ fn resolveExpression(
                 a_string_table,
             );
         },
+        .int_string_literal => {
+            expression.type = try self.type_intern_pool.intStringLiteral();
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+            );
+        },
         .ascii_string_literal => {
             expression.type = try self.type_intern_pool.asciiStringType();
             try self.resolveParsedType(
@@ -1422,7 +1431,7 @@ fn resolveExpression(
 fn isNumberLike(resolved_type: *const Parser.TypeInternPool.Type) bool {
     return switch (resolved_type.resolved) {
         .null_literal => false,
-        .float_literal, .integer_literal => true,
+        .float_literal, .integer_literal, .int_string_literal => true,
         .fish => |fish| switch (fish.machine_type) {
             .s32, .s64, .f32, .f64 => true,
             else => false,
@@ -1578,6 +1587,18 @@ fn coerceExpression(
 
                 return .{
                     .contents = .{ .integer_literal_to_s32 = cast_target_expression },
+                    .type = intern_target_type,
+                };
+            }
+
+            // Int string literal -> s32 coercion
+            if (target_fish_type.machine_type == .s32 and expression_type == .int_string_literal) {
+                //Dupe the source expression since this pointer will get overwritten later on with the value that we return
+                const cast_target_expression = try allocator.create(Parser.Node.Expression);
+                cast_target_expression.* = expression.*;
+
+                return .{
+                    .contents = .{ .int_string_literal_to_s32 = cast_target_expression },
                     .type = intern_target_type,
                 };
             }
