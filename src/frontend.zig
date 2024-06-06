@@ -415,7 +415,14 @@ pub fn generateLibrary(
         std.debug.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
         // try stdout.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
 
-        const file_data = try game_data_dir.readFileAlloc(allocator, entry.value_ptr.path, std.math.maxInt(usize));
+        const file_data = game_data_dir.readFileAlloc(allocator, entry.value_ptr.path, std.math.maxInt(usize)) catch |err| {
+            if (err == std.fs.File.OpenError.FileNotFound) {
+                std.debug.print("skipping {s}\n", .{entry.value_ptr.path});
+                continue;
+            }
+
+            return err;
+        };
         defer allocator.free(file_data);
 
         var resource = try Resource.readResource(file_data, allocator);
