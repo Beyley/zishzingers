@@ -21,6 +21,7 @@ pub const CompilationOptions = struct {
     optimization_mode: std.builtin.OptimizeMode,
     extended_runtime: bool,
     platform: Platform,
+    identifier: ?MMTypes.ResourceIdentifier,
 };
 
 pub const S64ConstantTable = std.AutoArrayHashMap(i64, void);
@@ -2633,12 +2634,24 @@ pub fn generate(self: *Genny) !MMTypes.Script {
             .depending_guids = blk: {
                 var depending_guids = std.ArrayList(u32).init(self.ast.allocator);
 
-                for (self.type_references.keys()) |type_reference|
-                    if (type_reference.script) |script|
+                const class_guid = if (self.compilation_options.identifier == null)
+                    class.identifier.?.contents.guid_literal
+                else
+                    self.compilation_options.identifier.?.guid;
+
+                for (self.type_references.keys()) |type_reference| {
+                    if (type_reference.script) |script| {
                         switch (script) {
-                            .guid => |guid| try depending_guids.append(guid),
+                            .guid => |guid| {
+                                if (guid == class_guid)
+                                    continue;
+
+                                try depending_guids.append(guid);
+                            },
                             .hash => {},
-                        };
+                        }
+                    }
+                }
 
                 break :blk depending_guids.items;
             },

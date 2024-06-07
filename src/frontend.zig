@@ -249,6 +249,7 @@ pub fn compile(
             },
             .extended_runtime = res.args.@"extended-runtime" != 0,
             .platform = std.meta.stringToEnum(Genny.CompilationOptions.Platform, res.args.platform orelse "ps3") orelse @panic("invalid platform (ps3, vita, ps4)"),
+            .identifier = script_identifier,
         };
 
         var genny = Genny.init(
@@ -286,19 +287,13 @@ pub fn compile(
 
         try resource_stream.writeScript(script, allocator);
 
-        var dependencies = std.AutoArrayHashMap(Resource.Dependency, void).init(allocator);
-        defer dependencies.deinit();
-
-        for (script.type_references) |type_reference| {
-            if (type_reference.script) |script_depentency| {
-                try dependencies.put(.{ .ident = script_depentency, .type = .script }, {});
-            }
-        }
         var file_stream: std.io.StreamSource = .{ .file = out };
         try Resource.writeResource(
             .script,
             compression_flags,
-            dependencies.keys(), //TODO: write out dependencies by pulling referenced files
+            // Scripts dont actually need to have their dependency table filled out
+            // https://github.com/ennuo/toolkit/blob/15342e1afca2d5ac1de49e207922099e7aacef86/lib/cwlib/src/main/java/cwlib/util/Resources.java#L152
+            &.{},
             compilation_options.revision,
             &file_stream,
             resource_stream.stream.array_list.items,
