@@ -1615,7 +1615,7 @@ pub const FileDB = struct {
     pub const HashLookupMap = std.AutoHashMap([std.crypto.hash.Sha1.digest_length]u8, FileDB.Entry);
     pub const GuidLookupMap = std.AutoHashMap(u32, FileDB.Entry);
 
-    allocator: std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
     hash_lookup: HashLookupMap,
     guid_lookup: GuidLookupMap,
 
@@ -1630,9 +1630,34 @@ pub const FileDB = struct {
         path: []const u8,
         timestamp: i32,
         size: u32,
+
+        pub fn dupe(self: Entry, allocator: std.mem.Allocator) !Entry {
+            return .{
+                .timestamp = self.timestamp,
+                .size = self.size,
+                .path = try allocator.dupe(u8, self.path),
+            };
+        }
     };
 
     pub fn deinit(self: FileDB) void {
-        self.allocator.deinit();
+        // entries are duplicated between the two tables
+        var hash_iter = self.hash_lookup.valueIterator();
+        while (hash_iter.next()) |hash| {
+            self.allocator.free(hash.path);
+        }
+    }
+
+    pub fn combine(self: *FileDB, other: FileDB) !void {
+        var hash_iter = other.hash_lookup.iterator();
+        var guid_iter = other.guid_lookup.iterator();
+
+        while (hash_iter.next()) |hash| {
+            try self.hash_lookup.put(hash.key_ptr.*, try hash.value_ptr.dupe(self.allocator));
+        }
+
+        while (guid_iter.next()) |guid| {
+            try self.guid_lookup.put(guid.key_ptr.*, try guid.value_ptr.dupe(self.allocator));
+        }
     }
 };

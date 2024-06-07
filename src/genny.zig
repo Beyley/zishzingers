@@ -22,6 +22,7 @@ pub const CompilationOptions = struct {
     extended_runtime: bool,
     platform: Platform,
     identifier: ?MMTypes.ResourceIdentifier,
+    hashed: bool,
 };
 
 pub const S64ConstantTable = std.AutoArrayHashMap(i64, void);
@@ -765,8 +766,7 @@ const Codegen = struct {
             const field_name: MMTypes.ResolvableString = @intCast((try self.genny.a_string_table.getOrPut("ThingUIDCounter")).index);
             const field_offset: i32 = switch (self.compilation_options.platform) {
                 .ps3 => 0xc,
-                .ps4 => 0x10,
-                .vita => @panic("TODO: vita EXT_STORE emulation"),
+                .ps4, .vita => 0x10,
             };
             const field_reference: u16 = @intCast((try self.genny.field_references.getOrPut(MMTypes.FieldReference{
                 .name = field_name,
@@ -2628,7 +2628,12 @@ pub fn generate(self: *Genny) !MMTypes.Script {
         return .{
             .up_to_date_script = null,
             .class_name = class.name,
-            .super_class_script = if (class.base_class == .resolved) class.base_class.resolved.ident else null,
+            .super_class_script = if (class.base_class == .resolved)
+                class.base_class.resolved.ident
+            else if (self.compilation_options.hashed)
+                @panic("hashed script must subclass some type")
+            else
+                null,
             .modifiers = class.modifiers,
             // Convert all the GUID type references into the list of depening GUIDs
             .depending_guids = blk: {
@@ -2691,7 +2696,40 @@ pub fn generate(self: *Genny) !MMTypes.Script {
 
                 break :blk try property_definitions.toOwnedSlice();
             },
-            .type_references = self.type_references.keys(),
+            .type_references = blk: {
+                const type_references = self.type_references.keys();
+
+                const class_guid = if (self.compilation_options.identifier == null)
+                    class.identifier.?.contents.guid_literal
+                else
+                    self.compilation_options.identifier.?.guid;
+
+                // If this is a hashed script we need to iterate all of the type references and "fixup" any references to self to instead go to the baseclass
+                if (self.compilation_options.hashed)
+                    for (type_references) |*type_reference| {
+                        if (type_reference.script) |script_ident| {
+                            switch (script_ident) {
+                                .guid => |reference_guid| {
+                                    // If the reference GUID matches the compiled class' GUID, then we need to "fixup" that into the base class
+                                    if (reference_guid == class_guid) {
+                                        type_reference.script = class.base_class.resolved.ident;
+                                        type_reference.type_name = @intCast((try self.a_string_table.getOrPut(try std.fmt.allocPrint(
+                                            self.ast.allocator,
+                                            "{s} (actually {s})",
+                                            .{
+                                                class.base_class.resolved.name,
+                                                self.a_string_table.keys()[type_reference.type_name],
+                                            },
+                                        ))).index);
+                                    }
+                                },
+                                .hash => {},
+                            }
+                        }
+                    };
+
+                break :blk type_references;
+            },
             .a_string_table = blk: {
                 var buf = std.ArrayList(u8).init(self.ast.allocator);
                 var strings = std.ArrayList([:0]const u8).init(self.ast.allocator);

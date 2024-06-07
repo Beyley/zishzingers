@@ -136,6 +136,9 @@ pub fn compile(
         \\                                 this overrides the GUID specified in the file.
         \\--extended-runtime               Whether to enable use of Aidan's extended script runtime
         \\--platform <str>                 The platform being compiled for (`ps3`, `vita`, `ps4`)
+        \\--hashed                         Tells the compiler the script is to be used in a hashed context.
+        \\                                 This does various things, like changing all type references to the hashed script to be the base class, 
+        \\                                 and using CALLVsp on all method calls to self, to make function calls to self work correctly
         \\<str>                            The source file
         \\
     );
@@ -250,6 +253,7 @@ pub fn compile(
             .extended_runtime = res.args.@"extended-runtime" != 0,
             .platform = std.meta.stringToEnum(Genny.CompilationOptions.Platform, res.args.platform orelse "ps3") orelse @panic("invalid platform (ps3, vita, ps4)"),
             .identifier = script_identifier,
+            .hashed = res.args.hashed > 0,
         };
 
         var genny = Genny.init(
@@ -314,7 +318,7 @@ pub fn generateLibrary(
 
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
-        \\-m, --map       <str>  The MAP file to use. Required
+        \\-m, --map       <str>...  The MAP files to use. Required
         \\-f, --folder    <str>  The game data folder to use. Required
         \\-o, --output    <str>  The output folder of the library. Required
         \\-s, --namespace <str>  The namespace to put the generated files in.
@@ -335,7 +339,7 @@ pub fn generateLibrary(
 
     //If no arguments are passed or the user requested the help menu, display the help menu
     if (res.args.help != 0 or
-        res.args.map == null or
+        res.args.map.len == 0 or
         res.args.folder == null or
         res.args.name == null or
         res.args.output == null)
@@ -368,29 +372,40 @@ pub fn generateLibrary(
     var game_data_dir = try std.fs.cwd().openDir(res.args.folder.?, .{});
     defer game_data_dir.close();
 
-    const map_file = try std.fs.cwd().openFile(res.args.map.?, .{});
-    defer map_file.close();
+    var full_db: ?MMTypes.FileDB = null;
+    defer full_db.?.deinit();
 
-    const MMStream = Stream.MMStream(std.io.StreamSource);
+    for (res.args.map, 0..) |map_path, i| {
+        const map_file = try std.fs.cwd().openFile(map_path, .{});
+        defer map_file.close();
 
-    var stream = MMStream{
-        .stream = std.io.StreamSource{ .file = map_file },
-        // nonsense compression files, since its not important for MAP files
-        .compression_flags = .{
-            .compressed_integers = false,
-            .compressed_matrices = false,
-            .compressed_vectors = false,
-        },
-        // nonsense revision, since its not important for MAP files
-        .revision = .{
-            .branch_id = 0,
-            .branch_revision = 0,
-            .head = 0,
-        },
-    };
+        const MMStream = Stream.MMStream(std.io.StreamSource);
 
-    const file_db = try stream.readFileDB(allocator);
-    defer file_db.deinit();
+        var stream = MMStream{
+            .stream = std.io.StreamSource{ .file = map_file },
+            // nonsense compression files, since its not important for MAP files
+            .compression_flags = .{
+                .compressed_integers = false,
+                .compressed_matrices = false,
+                .compressed_vectors = false,
+            },
+            // nonsense revision, since its not important for MAP files
+            .revision = .{
+                .branch_id = 0,
+                .branch_revision = 0,
+                .head = 0,
+            },
+        };
+
+        const file_db = try stream.readFileDB(allocator);
+
+        if (i == 0) {
+            full_db = file_db;
+        } else {
+            try full_db.?.combine(file_db);
+            file_db.deinit();
+        }
+    }
 
     var scripts = std.AutoHashMap(u32, MMTypes.Script).init(allocator);
     defer {
@@ -402,7 +417,7 @@ pub fn generateLibrary(
         scripts.deinit();
     }
 
-    var iter = file_db.guid_lookup.iterator();
+    var iter = full_db.?.guid_lookup.iterator();
     while (iter.next()) |entry| {
         if (!std.mem.endsWith(u8, entry.value_ptr.path, ".ff"))
             continue;

@@ -728,12 +728,7 @@ pub fn MMStream(comptime Stream: type) type {
             }
         }
 
-        pub fn readFileDB(self: *Self, child_allocator: std.mem.Allocator) !MMTypes.FileDB {
-            var arena = std.heap.ArenaAllocator.init(child_allocator);
-            errdefer arena.deinit();
-
-            const allocator = arena.allocator();
-
+        pub fn readFileDB(self: *Self, allocator: std.mem.Allocator) !MMTypes.FileDB {
             const header = try self.readInt(i32);
 
             const db_type: MMTypes.FileDB.Type = switch (header) {
@@ -770,7 +765,7 @@ pub fn MMStream(comptime Stream: type) type {
                 const guid = try self.readInt(u32);
 
                 // On LBPVita filenames are not preserved in some archives, so lets prepend the hash name
-                if (path[0] == '.' and db_type == .vita) {
+                if (db_type == .vita and path[0] == '.') {
                     const new_path = try allocator.alloc(u8, (hash.len * 2) + path.len);
 
                     var stream = std.io.fixedBufferStream(new_path);
@@ -805,7 +800,7 @@ pub fn MMStream(comptime Stream: type) type {
             return .{
                 .hash_lookup = hash_lookup,
                 .guid_lookup = guid_lookup,
-                .allocator = arena,
+                .allocator = allocator,
             };
         }
     };
