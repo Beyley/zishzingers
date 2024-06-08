@@ -72,8 +72,8 @@ class TweakEgg(g27432) extends TriggerCollectItem
             let input = gooey.DoImageButtonDottedBorder(
                 10000,
                 this.GetEggContentsIcon(),
-                float2(192.0f, 192.0f),
-                float2(128.0f, 128.0f),
+                @float2(192.0f, 192.0f),
+                @float2(128.0f, 128.0f),
                 256
             );
 

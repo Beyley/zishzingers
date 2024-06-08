@@ -38,7 +38,7 @@ class Test(g1234568)
         let z: f32 = 10;
         let w: bool = true;
 
-        NativeFunction(x, y, z, float4(0, 1, 2, 3), w);
+        NativeFunction(x, y, z, @float4(0, 1, 2, 3), w);
     }
 
     pub fn InlineAsm() {

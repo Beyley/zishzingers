@@ -752,9 +752,7 @@ fn consumeClassStatement(self: *Self, class_modifiers: MMTypes.Modifiers) !void 
 
         var attributes = std.ArrayList(*Node.Attribute).init(self.allocator);
         while (self.iter.peek().?[0] == '@') {
-            self.consumeArbitraryLexeme("@");
-
-            const name = self.iter.next() orelse @panic("unexpected EOF when parsing attribute");
+            const name = (self.iter.next() orelse @panic("unexpected EOF when parsing attribute"))[1..];
 
             const parameters = try self.consumeFunctionCallParameters();
 
@@ -1650,7 +1648,7 @@ fn consumePrimaryExpression(self: *Self) Error!*Node.Expression {
         //Builtin functions
         if (maybeHashKeyword(first)) |keyword| {
             switch (keyword) {
-                hashKeyword("float2") => {
+                hashKeyword("@float2") => {
                     if (parameters.len != 2)
                         @panic("wrong parameter length for vec2 construction");
 
@@ -1661,7 +1659,7 @@ fn consumePrimaryExpression(self: *Self) Error!*Node.Expression {
 
                     return expression;
                 },
-                hashKeyword("float3") => {
+                hashKeyword("@float3") => {
                     if (parameters.len != 3)
                         @panic("wrong parameter length for vec3 construction");
 
@@ -1672,7 +1670,7 @@ fn consumePrimaryExpression(self: *Self) Error!*Node.Expression {
 
                     return expression;
                 },
-                hashKeyword("float4") => {
+                hashKeyword("@float4") => {
                     if (parameters.len != 4)
                         @panic("wrong parameter length for vec4 construction");
 
@@ -2595,8 +2593,8 @@ pub const Lexemeizer = struct {
     pos: usize = 0,
     is_asm: bool = false,
 
-    const normal_single_char_lexemes: []const u8 = "()[]{}!*,:;+.'<>+-@";
-    const asm_single_char_lexemes: []const u8 = "(){}!*,:;+'<>+-@";
+    const normal_single_char_lexemes: []const u8 = "()[]{}!*,:;+.'<>+-";
+    const asm_single_char_lexemes: []const u8 = "(){}!*,:;+'<>+-";
     const special_double_lexemes: []const u16 = &.{
         @intCast(hashKeyword("->")),
         @intCast(hashKeyword(">>")),
