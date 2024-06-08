@@ -241,7 +241,7 @@ const Codegen = struct {
                     );
                 }
 
-                return .{ start, machine_type };
+                return .{ .single_item = .{ .addr = start, .type = machine_type } };
             }
 
             @panic("Ran out of register space... this is probably a bug, you shouldnt be using 16kb of stack space.");
@@ -261,13 +261,41 @@ const Codegen = struct {
     genny: *Genny,
     compilation_options: CompilationOptions,
 
-    fn ensureAlignment(address: u16, machine_type: MMTypes.MachineType) void {
-        // 4 % 0 is UB
-        if (machine_type.size() == 0)
-            return;
+    fn ensureAlignment(register: Register, register_type: Register.Enum) void {
+        if (register != register_type)
+            std.debug.panic("BUG: Bad register type! Wanted {s}, got {s}", .{ @tagName(register_type), @tagName(register) });
 
-        if (address % machine_type.size() > 0) {
-            std.debug.panic("BUG: Bad alignment! Memory address {d} fails alignment check {d}!", .{ address, machine_type.size() });
+        switch (register) {
+            .single_item => |single_item| {
+                // 4 % 0 is UB
+                if (single_item.type.size() == 0)
+                    return;
+
+                if (single_item.addr % single_item.type.size() > 0) {
+                    std.debug.panic(
+                        "BUG: Bad alignment! Memory address {d} fails alignment check {d}!",
+                        .{ single_item.addr, single_item.type.size() },
+                    );
+                }
+            },
+            .stack_alloc => |stack_alloc| {
+                // 4 % 0 is UB
+                if (stack_alloc.type.size() == 0)
+                    return;
+
+                if (stack_alloc.addr % stack_alloc.type.size() > 0) {
+                    std.debug.panic(
+                        "BUG: Bad alignment! Memory address {d} fails alignment check {d}!",
+                        .{ stack_alloc.addr, stack_alloc.type.size() },
+                    );
+                }
+            },
+        }
+    }
+
+    fn ensureType(register: Register, machine_type: MMTypes.MachineType) void {
+        if (register.machine_type() != machine_type) {
+            std.debug.panic("BUG: Bad register type! Wanted {s}, got {s}", .{ @tagName(machine_type), @tagName(register.machine_type()) });
         }
     }
 
@@ -286,179 +314,249 @@ const Codegen = struct {
         return self.bytecode.items.len;
     }
 
-    pub fn emitLoadConstStringWide(self: *Codegen, dst_idx: u16, str: []const u16) !void {
-        ensureAlignment(dst_idx, .object_ref);
+    pub fn emitLoadConstStringWide(self: *Codegen, dst: Register, str: []const u16) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .object_ref);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCsw = .{
             .constant_idx = @intCast((try self.genny.w_string_table.getOrPut(str)).index),
-            .dst_idx = dst_idx,
+            .dst_idx = dst.addr(),
         } }, .void));
     }
 
-    pub fn emitLoadConstStringAscii(self: *Codegen, dst_idx: u16, str: []const u8) !void {
-        ensureAlignment(dst_idx, .object_ref);
+    pub fn emitLoadConstStringAscii(self: *Codegen, dst: Register, str: []const u8) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .object_ref);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCsa = .{
             .constant_idx = @intCast((try self.genny.a_string_table.getOrPut(str)).index),
-            .dst_idx = dst_idx,
+            .dst_idx = dst.addr(),
         } }, .void));
     }
 
-    pub fn emitAssert(self: *Codegen, src_idx: u16) !void {
-        ensureAlignment(src_idx, .object_ref);
+    pub fn emitAssert(self: *Codegen, src: Register) !void {
+        ensureAlignment(src, .single_item);
+        ensureType(src, .object_ref);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .ASSERT = .{ .src_idx = src_idx } }, .void));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .ASSERT = .{
+            .src_idx = src.addr(),
+        } }, .void));
     }
 
-    pub fn emitCallVo(self: *Codegen, dst_idx: u16, call_idx: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(dst_idx, machine_type);
+    pub fn emitCallVo(self: *Codegen, dst: Register, call_idx: u16) !void {
+        ensureAlignment(dst, .single_item);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALLVo = .{ .dst_idx = dst_idx, .call_idx = call_idx } }, machine_type));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALLVo = .{
+            .dst_idx = dst.addr(),
+            .call_idx = call_idx,
+        } }, dst.machine_type()));
     }
 
-    pub fn emitArg(self: *Codegen, arg_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(arg_idx, machine_type);
-        ensureAlignment(src_idx, machine_type);
+    pub fn emitArg(self: *Codegen, arg: Register, src: Register) !void {
+        ensureAlignment(arg, .single_item);
+        ensureAlignment(src, .single_item);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .ARG = .{ .src_idx = src_idx, .arg_idx = arg_idx } }, machine_type));
+        if (src.machine_type() != arg.machine_type())
+            std.debug.print(
+                "BUG: ARG src and dst register machine types do not match! src: {s} arg: {s}",
+                .{ @tagName(src.machine_type()), @tagName(arg.machine_type()) },
+            );
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .ARG = .{
+            .src_idx = src.addr(),
+            .arg_idx = arg.addr(),
+        } }, arg.machine_type()));
     }
 
-    pub fn emitCall(self: *Codegen, dst_idx: u16, call_idx: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(dst_idx, machine_type);
+    pub fn emitCall(self: *Codegen, dst: Register, call_idx: u16) !void {
+        ensureAlignment(dst, .single_item);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALL = .{ .dst_idx = dst_idx, .call_idx = call_idx } }, machine_type));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALL = .{
+            .dst_idx = dst.addr(),
+            .call_idx = call_idx,
+        } }, dst.machine_type()));
     }
 
-    pub fn emitNativeInvoke(self: *Codegen, dst_idx: u16, call_address: u24, toc_index: u8, machine_type: MMTypes.MachineType) !void {
+    pub fn emitNativeInvoke(self: *Codegen, dst: Register, call_address: u24, toc_index: u8) !void {
         if (!self.compilation_options.extended_runtime)
             @panic("Unable to emit EXT_INVOKE without extended runtime");
 
-        ensureAlignment(dst_idx, machine_type);
+        ensureAlignment(dst, .single_item);
 
         // The current version of the extended runtime only allows s32 sized return types
-        std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+        std.debug.assert(dst.machine_type().size() == MMTypes.MachineType.s32.size());
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_INVOKE = .{
-            .dst_idx = dst_idx,
+            .dst_idx = dst.addr(),
             .call_address = call_address,
             .toc_index = toc_index,
-        } }, machine_type));
+        } }, dst.machine_type()));
     }
 
-    pub fn emitLoadConstInt(self: *Codegen, dst_idx: u16, s32: i32) !void {
-        ensureAlignment(dst_idx, .s32);
+    pub fn emitLoadConstInt(self: *Codegen, dst: Register, s32: i32) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .s32);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCi = .{ .dst_idx = dst_idx, .constant_idx = @bitCast(s32) } }, .s32));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCi = .{
+            .dst_idx = dst.addr(),
+            .constant_idx = @bitCast(s32),
+        } }, .void));
     }
 
-    pub fn emitLoadConstBool(self: *Codegen, dst_idx: u16, boolean: bool) !void {
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCb = .{ .dst_idx = dst_idx, .constant_idx = if (boolean) 0x80000000 else 0 } }, .bool));
+    pub fn emitLoadConstBool(self: *Codegen, dst: Register, boolean: bool) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LCb = .{
+            .dst_idx = dst.addr(),
+            .constant_idx = if (boolean) 0x80000000 else 0,
+        } }, .void));
     }
 
-    pub fn emitLoadConstNullSafePtr(self: *Codegen, dst_idx: u16) !void {
-        ensureAlignment(dst_idx, .safe_ptr);
+    pub fn emitLoadConstNullSafePtr(self: *Codegen, dst: Register) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .safe_ptr);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LC_NULLsp = .{ .constant_idx = 0, .dst_idx = dst_idx } }, .void));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LC_NULLsp = .{
+            .constant_idx = 0,
+            .dst_idx = dst.addr(),
+        } }, .void));
     }
 
-    pub fn emitLoadConstNullObjectPtr(self: *Codegen, dst_idx: u16) !void {
-        ensureAlignment(dst_idx, .object_ref);
+    pub fn emitLoadConstNullObjectRef(self: *Codegen, dst: Register) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .object_ref);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LC_NULLo = .{ .constant_idx = 0, .dst_idx = dst_idx } }, .void));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .LC_NULLo = .{
+            .constant_idx = 0,
+            .dst_idx = dst.addr(),
+        } }, .void));
     }
 
-    pub fn emitSetObjectMember(self: *Codegen, src_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(src_idx, machine_type);
-        ensureAlignment(base_idx, .object_ref);
+    pub fn emitSetObjectMember(self: *Codegen, src: Register, base: Register, field_ref: u16) !void {
+        ensureAlignment(src, .single_item);
+        ensureAlignment(base, .single_item);
+        ensureType(base, .object_ref);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .SET_OBJ_MEMBER = .{
-            .src_idx = src_idx,
-            .base_idx = base_idx,
+            .src_idx = src.addr(),
+            .base_idx = base.addr(),
             .field_ref = field_ref,
-        } }, machine_type));
+        } }, src.machine_type()));
     }
 
-    pub fn emitSetSafePtrMember(self: *Codegen, src_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(src_idx, machine_type);
-        ensureAlignment(base_idx, .safe_ptr);
+    pub fn emitSetSafePtrMember(self: *Codegen, src: Register, base: Register, field_ref: u16) !void {
+        ensureAlignment(src, .single_item);
+        ensureAlignment(base, .single_item);
+        ensureType(base, .safe_ptr);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .SET_SP_MEMBER = .{
-            .src_idx = src_idx,
-            .base_idx = base_idx,
+            .src_idx = src.addr(),
+            .base_idx = base.addr(),
             .field_ref = field_ref,
-        } }, machine_type));
+        } }, src.machine_type()));
     }
 
-    pub fn emitGetObjectMember(self: *Codegen, dst_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(dst_idx, machine_type);
-        ensureAlignment(base_idx, .object_ref);
+    pub fn emitGetObjectMember(self: *Codegen, dst: Register, base: Register, field_ref: u16) !void {
+        ensureAlignment(dst, .single_item);
+        ensureAlignment(base, .single_item);
+        ensureType(base, .object_ref);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .GET_OBJ_MEMBER = .{
-            .dst_idx = dst_idx,
-            .base_idx = base_idx,
+            .dst_idx = dst.addr(),
+            .base_idx = base.addr(),
             .field_ref = field_ref,
-        } }, machine_type));
+        } }, dst.machine_type()));
     }
 
-    pub fn emitGetSafePtrMember(self: *Codegen, dst_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(dst_idx, machine_type);
-        ensureAlignment(base_idx, .safe_ptr);
+    pub fn emitGetSafePtrMember(self: *Codegen, dst: Register, base: Register, field_ref: u16) !void {
+        ensureAlignment(dst, .single_item);
+        ensureAlignment(base, .single_item);
+        ensureType(base, .safe_ptr);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .GET_SP_MEMBER = .{
-            .dst_idx = dst_idx,
-            .base_idx = base_idx,
+            .dst_idx = dst.addr(),
+            .base_idx = base.addr(),
             .field_ref = field_ref,
-        } }, machine_type));
+        } }, dst.machine_type()));
     }
 
-    pub fn emitBoolToS32(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
-        ensureAlignment(dst_idx, .s32);
-        ensureAlignment(src_idx, .bool);
+    pub fn emitBoolToS32(self: *Codegen, dst: Register, src: Register) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .s32);
+        ensureAlignment(src, .single_item);
+        ensureType(src, .bool);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .INTb = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .INTb = .{
+            .src_idx = src.addr(),
+            .dst_idx = dst.addr(),
+        } }, .void));
     }
 
-    pub fn emitS32ToF32(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
-        ensureAlignment(dst_idx, .s32);
-        ensureAlignment(src_idx, .f32);
+    pub fn emitS32ToF32(self: *Codegen, dst: Register, src: Register) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .f32);
+        ensureAlignment(src, .single_item);
+        ensureType(src, .s32);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .FLOATi = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .FLOATi = .{
+            .src_idx = src.addr(),
+            .dst_idx = dst.addr(),
+        } }, .void));
     }
 
-    pub fn emitMoveObjectRef(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
-        ensureAlignment(dst_idx, .object_ref);
-        ensureAlignment(src_idx, .object_ref);
+    pub fn emitMoveObjectRef(self: *Codegen, dst: Register, src: Register) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .object_ref);
+        ensureAlignment(src, .single_item);
+        ensureType(src, .object_ref);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .MOVo = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .MOVo = .{
+            .src_idx = src.addr(),
+            .dst_idx = dst.addr(),
+        } }, .void));
     }
 
-    pub fn emitMoveS32(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
-        ensureAlignment(dst_idx, .s32);
-        ensureAlignment(src_idx, .s32);
+    pub fn emitMoveS32(self: *Codegen, dst: Register, src: Register) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .s32);
+        ensureAlignment(src, .single_item);
+        ensureType(src, .s32);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .MOVi = .{ .src_idx = src_idx, .dst_idx = dst_idx } }, .void));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .MOVi = .{
+            .src_idx = src.addr(),
+            .dst_idx = dst.addr(),
+        } }, .void));
     }
 
-    pub fn emitRet(self: *Codegen, src_idx: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(src_idx, machine_type);
+    pub fn emitRet(self: *Codegen, src: Register) !void {
+        ensureAlignment(src, .single_item);
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .RET = .{ .src_idx = src_idx } }, machine_type));
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .RET = .{
+            .src_idx = src.addr(),
+        } }, src.machine_type()));
     }
 
-    pub fn emitBranchNotEqualZero(self: *Codegen, src_idx: u16) !usize {
+    pub fn emitBranchNotEqualZero(self: *Codegen, src: Register) !usize {
+        ensureAlignment(src, .single_item);
+        ensureType(src, .bool);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .BNEZ = .{
             .branch_offset = undefined,
-            .src_idx = src_idx,
+            .src_idx = src.addr(),
         } }, .void));
 
         //Return the index of the last item inserted, which is our branch instruction, so that the branch offset can be filled in later
         return self.bytecode.items.len - 1;
     }
 
-    pub fn emitBranchEqualZero(self: *Codegen, src_idx: u16) !usize {
+    pub fn emitBranchEqualZero(self: *Codegen, src: Register) !usize {
+        ensureAlignment(src, .single_item);
+        ensureType(src, .bool);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .BEZ = .{
             .branch_offset = undefined,
-            .src_idx = src_idx,
+            .src_idx = src.addr(),
         } }, .void));
 
         //Return the index of the last item inserted, which is our branch instruction, so that the branch offset can be filled in later
@@ -475,39 +573,54 @@ const Codegen = struct {
         return self.bytecode.items.len - 1;
     }
 
-    pub fn emitLogicalNegationBoolean(self: *Codegen, dst_idx: u16, src_idx: u16) !void {
+    pub fn emitLogicalNegationBoolean(self: *Codegen, dst: Register, src: Register) !void {
+        ensureAlignment(src, .single_item);
+        ensureType(src, .bool);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
+
         try self.appendBytecode(MMTypes.Bytecode.init(
-            .{ .LOG_NEGb = .{ .dst_idx = dst_idx, .src_idx = src_idx } },
+            .{ .LOG_NEGb = .{
+                .dst_idx = dst.addr(),
+                .src_idx = src.addr(),
+            } },
             .void,
         ));
     }
 
-    pub fn emitLoadConstFloat(self: *Codegen, dst_idx: u16, value: f32) !void {
-        ensureAlignment(dst_idx, .f32);
+    pub fn emitLoadConstFloat(self: *Codegen, dst: Register, value: f32) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .f32);
 
         try self.appendBytecode(MMTypes.Bytecode.init(
-            .{ .LCf = .{ .constant_idx = @bitCast(value), .dst_idx = dst_idx } },
+            .{ .LCf = .{
+                .constant_idx = @bitCast(value),
+                .dst_idx = dst.addr(),
+            } },
             .void,
         ));
     }
 
-    pub fn emitLoadConstVector4(self: *Codegen, dst_idx: u16, value: [4]f32) !void {
-        ensureAlignment(dst_idx, .v4);
+    pub fn emitLoadConstVector4(self: *Codegen, dst: Register, value: [4]f32) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .v4);
 
         const constant_idx: u32 = @intCast((try self.genny.f32_constants.getOrPut(value)).index);
 
         try self.appendBytecode(MMTypes.Bytecode.init(
             .{ .LCv4 = .{
                 .constant_idx = constant_idx,
-                .dst_idx = dst_idx,
+                .dst_idx = dst.addr(),
             } },
             .void,
         ));
     }
 
-    pub fn emitSetVectorElement(self: *Codegen, dst_idx: u16, element: u2, src_idx: u16) !void {
-        ensureAlignment(dst_idx, .v4);
-        ensureAlignment(src_idx, .f32);
+    pub fn emitSetVectorElement(self: *Codegen, dst: Register, element: u2, src: Register) !void {
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .v4);
+        ensureAlignment(src, .single_item);
+        ensureType(src, .f32);
 
         switch (element) {
             inline else => |element_val| {
@@ -520,8 +633,8 @@ const Codegen = struct {
 
                 try self.appendBytecode(MMTypes.Bytecode.init(
                     @unionInit(MMTypes.TaggedInstruction, tag_name, .{
-                        .src_idx = src_idx,
-                        .base_idx = dst_idx,
+                        .src_idx = src.addr(),
+                        .base_idx = dst.addr(),
                     }),
                     .void,
                 ));
@@ -529,231 +642,308 @@ const Codegen = struct {
         }
     }
 
-    pub fn emitIntNotEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
-        ensureAlignment(left_idx, .s32);
-        ensureAlignment(right_idx, .s32);
+    pub fn emitIntNotEqual(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .s32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .s32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .NEi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = left_idx,
-            .src_b_idx = right_idx,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitIntEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
-        ensureAlignment(left_idx, .s32);
-        ensureAlignment(right_idx, .s32);
+    pub fn emitIntEqual(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .s32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .s32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .EQi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = left_idx,
-            .src_b_idx = right_idx,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitSafePtrNotEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
-        ensureAlignment(left_idx, .safe_ptr);
-        ensureAlignment(right_idx, .safe_ptr);
+    pub fn emitSafePtrNotEqual(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .safe_ptr);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .safe_ptr);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .NEsp = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = left_idx,
-            .src_b_idx = right_idx,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitSafePtrEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
-        ensureAlignment(left_idx, .safe_ptr);
-        ensureAlignment(right_idx, .safe_ptr);
+    pub fn emitSafePtrEqual(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .safe_ptr);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .safe_ptr);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .EQsp = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = left_idx,
-            .src_b_idx = right_idx,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitObjectPtrNotEqual(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
-        ensureAlignment(left_idx, .object_ref);
-        ensureAlignment(right_idx, .object_ref);
+    pub fn emitObjectRefNotEqual(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .object_ref);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .object_ref);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .NEo = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = left_idx,
-            .src_b_idx = right_idx,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitIntBitwiseAnd(self: *Codegen, dst_idx: u16, left_idx: u16, right_idx: u16) !void {
-        ensureAlignment(left_idx, .s32);
-        ensureAlignment(right_idx, .s32);
+    pub fn emitIntBitwiseAnd(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .s32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .s32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .s32);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .BIT_ANDi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = left_idx,
-            .src_b_idx = right_idx,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitBoolBitwiseAnd(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
+    pub fn emitBoolBitwiseAnd(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .bool);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .bool);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
+
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .BIT_ANDb = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitBoolBitwiseOr(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .BIT_ORi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+    pub fn emitBoolBitwiseOr(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .bool);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .bool);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .BIT_ORb = .{
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitFloatGreaterThan(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        ensureAlignment(lefthand, .f32);
-        ensureAlignment(righthand, .f32);
+    pub fn emitFloatGreaterThan(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .f32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .f32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .GTf = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitIntGreaterThan(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        ensureAlignment(lefthand, .s32);
-        ensureAlignment(righthand, .s32);
+    pub fn emitIntGreaterThan(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .s32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .s32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .GTi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitIntGreaterThanOrEqual(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        ensureAlignment(lefthand, .s32);
-        ensureAlignment(righthand, .s32);
+    pub fn emitIntGreaterThanOrEqual(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .s32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .s32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .GTEi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitIntLessThan(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        ensureAlignment(lefthand, .s32);
-        ensureAlignment(righthand, .s32);
+    pub fn emitIntLessThan(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .s32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .s32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LTi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitIntLessThanOrEqual(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        ensureAlignment(lefthand, .s32);
-        ensureAlignment(righthand, .s32);
+    pub fn emitIntLessThanOrEqual(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .s32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .s32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LTEi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitFloatLessThanOrEqual(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        ensureAlignment(lefthand, .f32);
-        ensureAlignment(righthand, .f32);
+    pub fn emitFloatLessThanOrEqual(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .f32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .f32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .bool);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .LTEf = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitAddFloat(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        ensureAlignment(dst_idx, .f32);
-        ensureAlignment(lefthand, .f32);
-        ensureAlignment(righthand, .f32);
+    pub fn emitAddFloat(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .f32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .f32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .f32);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .ADDf = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitAddInt(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        ensureAlignment(dst_idx, .s32);
-        ensureAlignment(lefthand, .s32);
-        ensureAlignment(righthand, .s32);
+    pub fn emitAddInt(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .s32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .s32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .s32);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .ADDi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitMultiplyInt(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        ensureAlignment(dst_idx, .s32);
-        ensureAlignment(lefthand, .s32);
-        ensureAlignment(righthand, .s32);
+    pub fn emitMultiplyInt(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .s32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .s32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .s32);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .MULi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitSubtractInt(self: *Codegen, dst_idx: u16, lefthand: u16, righthand: u16) !void {
-        ensureAlignment(dst_idx, .s32);
-        ensureAlignment(lefthand, .s32);
-        ensureAlignment(righthand, .s32);
+    pub fn emitSubtractInt(self: *Codegen, dst: Register, left: Register, right: Register) !void {
+        ensureAlignment(left, .single_item);
+        ensureType(left, .s32);
+        ensureAlignment(right, .single_item);
+        ensureType(right, .s32);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .s32);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .SUBi = .{
-            .dst_idx = dst_idx,
-            .src_a_idx = lefthand,
-            .src_b_idx = righthand,
+            .dst_idx = dst.addr(),
+            .src_a_idx = left.addr(),
+            .src_b_idx = right.addr(),
         } }, .void));
     }
 
-    pub fn emitSetRawPtrMember(self: *Codegen, base_idx: u16, src_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(src_idx, machine_type);
-        ensureAlignment(base_idx, .raw_ptr);
+    pub fn emitSetRawPtrMember(self: *Codegen, base: Register, src: Register, field_ref: u16) !void {
+        ensureAlignment(src, .single_item);
+        ensureAlignment(base, .single_item);
+        ensureType(base, .raw_ptr);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .SET_RP_MEMBER = .{
-            .base_idx = base_idx,
+            .base_idx = base.addr(),
             .field_ref = field_ref,
-            .src_idx = src_idx,
-        } }, machine_type));
+            .src_idx = src.addr(),
+        } }, src.machine_type()));
     }
 
-    pub fn emitGetRawPtrMember(self: *Codegen, dst_idx: u16, base_idx: u16, field_ref: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(dst_idx, machine_type);
-        ensureAlignment(base_idx, .raw_ptr);
+    pub fn emitGetRawPtrMember(self: *Codegen, dst: Register, base: Register, field_ref: u16) !void {
+        ensureAlignment(dst, .single_item);
+        ensureAlignment(base, .single_item);
+        ensureType(base, .raw_ptr);
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .GET_RP_MEMBER = .{
-            .base_idx = base_idx,
-            .dst_idx = dst_idx,
+            .base_idx = base.addr(),
+            .dst_idx = dst.addr(),
             .field_ref = field_ref,
-        } }, machine_type));
+        } }, dst.machine_type()));
     }
 
-    pub fn emitExtLoad(self: *Codegen, dst_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(src_idx, .s32);
-        ensureAlignment(dst_idx, machine_type);
+    pub fn emitExtLoad(self: *Codegen, dst: Register, src: Register) !void {
+        ensureAlignment(src, .single_item);
+        ensureType(src, .s32);
+        ensureAlignment(dst, .single_item);
 
         if (!self.compilation_options.extended_runtime) {
             // TODO: non-s32 sized types in the EXT_STORE emulation
-            std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+            std.debug.assert(dst.machine_type().size() == MMTypes.MachineType.s32.size());
 
             const raw_ptr_type: MMTypes.ResolvableTypeReference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
                 .machine_type = .raw_ptr,
@@ -774,41 +964,42 @@ const Codegen = struct {
             })).index);
 
             // Allocate the register which stores the raw ptr
-            const raw_ptr = try self.register_allocator.allocate(.raw_ptr);
+            const raw_ptr = try self.register_allocator.allocate(.s32);
             // Allocate the register which stores the offset
             const offset_reg = try self.register_allocator.allocate(.s32);
 
             // Move the ptr into the raw_ptr address
-            try self.emitMoveS32(raw_ptr[0], src_idx);
+            try self.emitMoveS32(raw_ptr, src);
             // Load the offset into the temporary register
-            try self.emitLoadConstInt(offset_reg[0], field_offset);
+            try self.emitLoadConstInt(offset_reg, field_offset);
             // Subtract the raw ptr by the field offset, so that when the game reads it, it adds the offset back, and reads the correct address
-            try self.emitSubtractInt(raw_ptr[0], raw_ptr[0], offset_reg[0]);
+            try self.emitSubtractInt(raw_ptr, raw_ptr, offset_reg);
 
             // Reads the data at the offset raw_ptr
             // TODO: this shouldnt always be hardcoded to s32
-            try self.emitGetRawPtrMember(dst_idx, raw_ptr[0], field_reference, .s32);
+            try self.emitGetRawPtrMember(dst, raw_ptr.single_item.cast_to(.raw_ptr), field_reference);
 
             try self.register_allocator.free(raw_ptr);
             try self.register_allocator.free(offset_reg);
         } else {
             // Only size s32 types work in the current version of the extended runtime
-            std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+            std.debug.assert(dst.machine_type().size() == MMTypes.MachineType.s32.size());
 
             try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_LOAD = .{
-                .src_idx = src_idx,
-                .dst_idx = dst_idx,
-            } }, machine_type));
+                .src_idx = src.addr(),
+                .dst_idx = dst.addr(),
+            } }, dst.machine_type()));
         }
     }
 
-    pub fn emitExtStore(self: *Codegen, dst_idx: u16, src_idx: u16, machine_type: MMTypes.MachineType) !void {
-        ensureAlignment(src_idx, machine_type);
-        ensureAlignment(dst_idx, .s32);
+    pub fn emitExtStore(self: *Codegen, dst: Register, src: Register) !void {
+        ensureAlignment(src, .single_item);
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .s32);
 
         if (!self.compilation_options.extended_runtime) {
             // TODO: non-s32 sized types in the EXT_STORE emulation
-            std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+            std.debug.assert(src.machine_type().size() == MMTypes.MachineType.s32.size());
 
             const raw_ptr_type: MMTypes.ResolvableTypeReference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
                 .machine_type = .raw_ptr,
@@ -830,36 +1021,77 @@ const Codegen = struct {
             })).index);
 
             // Allocate the register which stores the raw ptr
-            const raw_ptr = try self.register_allocator.allocate(.raw_ptr);
+            const raw_ptr = try self.register_allocator.allocate(.s32);
             // Allocate the register which stores the offset
             const offset_reg = try self.register_allocator.allocate(.s32);
 
             // Move the ptr into the temporary register
-            try self.emitMoveS32(raw_ptr[0], dst_idx);
+            try self.emitMoveS32(raw_ptr, dst);
             // Load the offset into a temporary register
-            try self.emitLoadConstInt(offset_reg[0], field_offset);
+            try self.emitLoadConstInt(offset_reg, field_offset);
             // Subtract the destination address by the offset (so that when the game reads the field, it adds back the offset)
-            try self.emitSubtractInt(raw_ptr[0], raw_ptr[0], offset_reg[0]);
+            try self.emitSubtractInt(raw_ptr, raw_ptr, offset_reg);
 
             // Store the value into the offset address
             // TODO: this shouldnt always be hardcoded to s32
-            try self.emitSetRawPtrMember(raw_ptr[0], src_idx, field_reference, .s32);
+            try self.emitSetRawPtrMember(raw_ptr.single_item.cast_to(.raw_ptr), src, field_reference);
 
             try self.register_allocator.free(raw_ptr);
             try self.register_allocator.free(offset_reg);
         } else {
             // Only size s32 types work in the current version of the extended runtime
-            std.debug.assert(machine_type.size() == MMTypes.MachineType.s32.size());
+            std.debug.assert(src.machine_type().size() == MMTypes.MachineType.s32.size());
 
             try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_STORE = .{
-                .src_idx = src_idx,
-                .dst_idx = dst_idx,
-            } }, machine_type));
+                .src_idx = src.addr(),
+                .dst_idx = dst.addr(),
+            } }, src.machine_type()));
         }
     }
 };
 
-const Register = struct { u16, MMTypes.MachineType };
+const Register = union(enum) {
+    pub const Enum = @typeInfo(Register).Union.tag_type.?;
+
+    pub const SingleItem = struct {
+        addr: u16,
+        type: MMTypes.MachineType,
+
+        pub fn cast_to(self: SingleItem, new_machine_type: MMTypes.MachineType) Register {
+            if (self.type.size() != new_machine_type.size())
+                std.debug.panic("invalid cast from {s} to {s}", .{ @tagName(self.type), @tagName(new_machine_type) });
+
+            return .{ .single_item = .{ .addr = self.addr, .type = new_machine_type } };
+        }
+    };
+
+    pub const StackAlloc = struct {
+        addr: u16,
+        len: u16,
+        type: MMTypes.MachineType,
+    };
+
+    /// A single item register of { start_reg, type }
+    single_item: SingleItem,
+    /// A stack allocation of { start_reg, size, type }
+    stack_alloc: StackAlloc,
+
+    pub fn addr(self: Register) u16 {
+        return switch (self) {
+            inline else => |register| register.addr,
+        };
+    }
+
+    pub fn machine_type(self: Register) MMTypes.MachineType {
+        return switch (self) {
+            inline else => |register| register.type,
+        };
+    }
+
+    pub fn single_item(idx: u16, idx_type: MMTypes.MachineType) Register {
+        return .{ .single_item = .{ .addr = idx, .type = idx_type } };
+    }
+};
 
 /// Compiles an expression, returning the register and the resulting machine type
 fn compileExpression(
@@ -876,7 +1108,7 @@ fn compileExpression(
                 .variable_access => |variable_access| {
                     const variable = scope_local_variables.get(variable_access) orelse std.debug.panic("missing variable {s}", .{variable_access});
 
-                    const register: Register = .{ @intCast(variable.offset), codegen.genny.type_references.keys()[variable.type_reference].machine_type };
+                    const register = Register.single_item(@intCast(variable.offset), codegen.genny.type_references.keys()[variable.type_reference].machine_type);
 
                     _ = try compileExpression(
                         codegen,
@@ -893,6 +1125,8 @@ fn compileExpression(
                     const source_variable = scope_local_variables.get(field_access.source.contents.variable_access).?;
                     const source_variable_type = codegen.genny.type_references.keys()[source_variable.type_reference];
 
+                    const source_variable_register = Register.single_item(@intCast(source_variable.offset), source_variable_type.machine_type);
+
                     const machine_type = codegen.genny.type_intern_pool.get(expression.type).resolved.fish.machine_type;
 
                     const register = (try compileExpression(
@@ -904,10 +1138,10 @@ fn compileExpression(
                         result_register,
                     )).?;
 
-                    if (register[1] != machine_type)
+                    if (register.machine_type() != machine_type)
                         std.debug.panic(
                             "BUG: register type is {s} when it should be {s}",
-                            .{ @tagName(register[1]), @tagName(machine_type) },
+                            .{ @tagName(register.machine_type()), @tagName(machine_type) },
                         );
 
                     const field_reference: u16 = @intCast((try codegen.genny.field_references.getOrPut(.{
@@ -918,18 +1152,16 @@ fn compileExpression(
                     switch (source_variable_type.machine_type) {
                         .object_ref => {
                             try codegen.emitSetObjectMember(
-                                register[0],
-                                @intCast(source_variable.offset),
+                                register,
+                                source_variable_register,
                                 field_reference,
-                                machine_type,
                             );
                         },
                         .safe_ptr => {
                             try codegen.emitSetSafePtrMember(
-                                register[0],
-                                @intCast(source_variable.offset),
+                                register,
+                                source_variable_register,
                                 field_reference,
-                                machine_type,
                             );
                         },
                         else => |tag| std.debug.panic("unable to do field access on machine type {s}", .{@tagName(tag)}),
@@ -963,7 +1195,7 @@ fn compileExpression(
                         null,
                     )).?;
 
-                    try codegen.emitExtStore(address_register[0], intermediate_register[0], intermediate_register[1]);
+                    try codegen.emitExtStore(address_register, intermediate_register);
 
                     if (discard_result) {
                         try codegen.register_allocator.free(intermediate_register);
@@ -995,7 +1227,7 @@ fn compileExpression(
 
             const register = result_register orelse try codegen.register_allocator.allocate(.s32);
 
-            try codegen.emitLoadConstInt(register[0], value);
+            try codegen.emitLoadConstInt(register.single_item.cast_to(.s32), value);
 
             break :blk register;
         },
@@ -1007,7 +1239,7 @@ fn compileExpression(
 
             const register = result_register orelse try codegen.register_allocator.allocate(.f32);
 
-            try codegen.emitLoadConstFloat(register[0], value);
+            try codegen.emitLoadConstFloat(register, value);
 
             break :blk register;
         },
@@ -1019,7 +1251,7 @@ fn compileExpression(
 
             const register = result_register orelse try codegen.register_allocator.allocate(.f32);
 
-            try codegen.emitLoadConstFloat(register[0], @floatCast(value));
+            try codegen.emitLoadConstFloat(register, @floatCast(value));
 
             break :blk register;
         },
@@ -1029,20 +1261,25 @@ fn compileExpression(
 
             const register = result_register orelse try codegen.register_allocator.allocate(.bool);
 
-            try codegen.emitLoadConstBool(register[0], bool_literal);
+            try codegen.emitLoadConstBool(register, bool_literal);
 
             break :blk register;
         },
-        inline .null_literal_to_safe_ptr, .null_literal_to_object_ptr, .null_literal_to_ptr => |_, tag| blk: {
+        inline .null_literal_to_safe_ptr, .null_literal_to_object_ref, .null_literal_to_ptr => |_, tag| blk: {
             if (discard_result)
                 break :blk null;
 
-            const register = result_register orelse try codegen.register_allocator.allocate(.safe_ptr);
+            const register = result_register orelse try codegen.register_allocator.allocate(switch (tag) {
+                .null_literal_to_safe_ptr => .safe_ptr,
+                .null_literal_to_object_ref => .object_ref,
+                .null_literal_to_ptr => .s32,
+                else => @compileError("Unhandled null literal type " ++ @tagName(tag)),
+            });
 
             switch (tag) {
-                .null_literal_to_object_ptr => try codegen.emitLoadConstNullObjectPtr(register[0]),
-                .null_literal_to_safe_ptr => try codegen.emitLoadConstNullSafePtr(register[0]),
-                .null_literal_to_ptr => try codegen.emitLoadConstInt(register[0], 0),
+                .null_literal_to_object_ref => try codegen.emitLoadConstNullObjectRef(register),
+                .null_literal_to_safe_ptr => try codegen.emitLoadConstNullSafePtr(register),
+                .null_literal_to_ptr => try codegen.emitLoadConstInt(register, 0),
                 else => @compileError("unhandled null literal load"),
             }
 
@@ -1056,7 +1293,7 @@ fn compileExpression(
 
             //If the result register is known, just load directly into that
             if (result_register) |result_idx| {
-                try codegen.emitLoadConstStringWide(result_idx[0], wide_string);
+                try codegen.emitLoadConstStringWide(result_idx, wide_string);
 
                 break :blk result_idx;
             }
@@ -1064,7 +1301,7 @@ fn compileExpression(
             else {
                 const result_idx = try codegen.register_allocator.allocate(.object_ref);
 
-                try codegen.emitLoadConstStringWide(result_idx[0], wide_string);
+                try codegen.emitLoadConstStringWide(result_idx, wide_string);
 
                 break :blk result_idx;
             }
@@ -1075,7 +1312,7 @@ fn compileExpression(
 
             //If the result register is known, just load directly into that
             if (result_register) |result_idx| {
-                try codegen.emitLoadConstStringAscii(result_idx[0], ascii_string_literal);
+                try codegen.emitLoadConstStringAscii(result_idx, ascii_string_literal);
 
                 break :blk result_idx;
             }
@@ -1083,7 +1320,7 @@ fn compileExpression(
             else {
                 const result_idx = try codegen.register_allocator.allocate(.object_ref);
 
-                try codegen.emitLoadConstStringAscii(result_idx[0], ascii_string_literal);
+                try codegen.emitLoadConstStringAscii(result_idx, ascii_string_literal);
 
                 break :blk result_idx;
             }
@@ -1095,15 +1332,17 @@ fn compileExpression(
 
             const variable_machine_type = codegen.genny.type_references.keys()[variable.type_reference].machine_type;
 
+            const variable_register = Register.single_item(@intCast(variable.offset), variable_machine_type);
+
             if (result_register) |result_idx| {
                 switch (variable_machine_type) {
-                    .s32 => try codegen.emitMoveS32(result_idx[0], @intCast(variable.offset)),
+                    .s32 => try codegen.emitMoveS32(result_idx, variable_register),
                     else => |tag| std.debug.panic("TODO: lower variable access move of {s}", .{@tagName(tag)}),
                 }
 
                 break :blk result_register.?;
             } else {
-                break :blk .{ @intCast(variable.offset), variable_machine_type };
+                break :blk variable_register;
             }
         },
         // We lower this as a simple set of `ARG` instructions followed by a CALL instruction
@@ -1153,9 +1392,9 @@ fn compileExpression(
                 var curr_vector_register: u16 = 0;
 
                 for (parameter_registers) |parameter_register| {
-                    switch (parameter_register[1]) {
-                        .bool, .char, .s32, .safe_ptr, .object_ref => {
-                            const parameter_size = MMTypes.MachineType.s32.size();
+                    switch (parameter_register.machine_type()) {
+                        .bool, .char, .s32, .safe_ptr, .object_ref => |machine_type| {
+                            const parameter_size = machine_type.size();
 
                             if (curr_float_register >= 32) {
                                 std.debug.panic("you cant have more than 8 native call int parameters", .{});
@@ -1164,16 +1403,22 @@ fn compileExpression(
                             // Align to machine type
                             curr_integer_register += (parameter_size - (curr_integer_register % parameter_size)) % parameter_size;
 
-                            if (parameter_register[1].size() < 4) {
+                            if (parameter_register.machine_type().size() < 4) {
                                 const temporary_register = try codegen.register_allocator.allocate(.s32);
-                                try codegen.emitLoadConstInt(temporary_register[0], 0);
-                                try codegen.emitArg(curr_integer_register, temporary_register[0], .s32);
+                                try codegen.emitLoadConstInt(temporary_register, 0);
+                                try codegen.emitArg(
+                                    Register.single_item(curr_integer_register, .s32),
+                                    temporary_register,
+                                );
                                 try codegen.register_allocator.free(temporary_register);
 
-                                curr_integer_register += parameter_size - parameter_register[1].size();
+                                curr_integer_register += parameter_size - parameter_register.machine_type().size();
                             }
 
-                            try codegen.emitArg(curr_integer_register, parameter_register[0], parameter_register[1]);
+                            try codegen.emitArg(
+                                Register.single_item(curr_integer_register, machine_type),
+                                parameter_register,
+                            );
 
                             curr_integer_register += parameter_size;
                         },
@@ -1187,7 +1432,10 @@ fn compileExpression(
                             // Align to machine type
                             curr_float_register += (parameter_size - (curr_float_register % parameter_size)) % parameter_size;
 
-                            try codegen.emitArg(curr_float_register + 32, parameter_register[0], parameter_register[1]);
+                            try codegen.emitArg(
+                                Register.single_item(curr_float_register + 32, .f32),
+                                parameter_register,
+                            );
 
                             curr_float_register += parameter_size;
                         },
@@ -1201,7 +1449,10 @@ fn compileExpression(
                             // Align to machine type
                             curr_vector_register += (parameter_size - (curr_vector_register % parameter_size)) % parameter_size;
 
-                            try codegen.emitArg(curr_vector_register + 48, parameter_register[0], parameter_register[1]);
+                            try codegen.emitArg(
+                                Register.single_item(curr_vector_register + 48, .v4),
+                                parameter_register,
+                            );
 
                             curr_vector_register += parameter_size;
                         },
@@ -1219,19 +1470,25 @@ fn compileExpression(
 
                         const source_machine_type = codegen.genny.type_references.keys()[source_variable.type_reference].machine_type;
 
-                        try codegen.emitArg(0, @intCast(source_variable.offset), source_machine_type);
+                        try codegen.emitArg(
+                            Register.single_item(0, source_machine_type),
+                            Register.single_item(@intCast(source_variable.offset), source_machine_type),
+                        );
 
                         curr_arg_register += source_machine_type.size();
                     }
                 }
 
                 for (parameter_registers) |parameter_register| {
-                    const parameter_size = parameter_register[1].size();
+                    const parameter_size = parameter_register.machine_type().size();
 
                     // Align to machine type
                     curr_arg_register += (parameter_size - (curr_arg_register % parameter_size)) % parameter_size;
 
-                    try codegen.emitArg(curr_arg_register, parameter_register[0], parameter_register[1]);
+                    try codegen.emitArg(
+                        Register.single_item(curr_arg_register, parameter_register.machine_type()),
+                        parameter_register,
+                    );
 
                     curr_arg_register += parameter_size;
                 }
@@ -1241,7 +1498,7 @@ fn compileExpression(
                 result_register_idx
                 // We actually need to have a valid return register for native invokes
             else if (discard_result and native_invoke == null)
-                .{ std.math.maxInt(u16), .void }
+                Register.single_item(std.math.maxInt(u16), .void)
                 // We need to have a valid s32 return register for native calls
             else if (native_invoke != null and return_type == .void)
                 try codegen.register_allocator.allocate(.s32)
@@ -1250,17 +1507,15 @@ fn compileExpression(
 
             if (native_invoke) |native_invoke_attribute| {
                 try codegen.emitNativeInvoke(
-                    call_result_register[0],
+                    call_result_register,
                     native_invoke_attribute.address,
                     native_invoke_attribute.toc_index,
-                    call_result_register[1],
                 );
             } else {
-                //TODO: use CALLVo and CALLVsp for virtual functions
+                //TODO: use CALLVo and CALLVsp for virtual functions, and when we are calling methods on `this` in a hashed context
                 try codegen.emitCall(
-                    call_result_register[0],
+                    call_result_register,
                     called_function_idx,
-                    call_result_register[1],
                 );
             }
 
@@ -1289,10 +1544,10 @@ fn compileExpression(
                 const dst_type = codegen.genny.type_intern_pool.get(expression.type).resolved.machineType();
 
                 switch (tupleMachineTypes(source_type, dst_type)) {
-                    tupleMachineTypes(.bool, .s32) => try codegen.emitBoolToS32(register[0], source[0]),
-                    tupleMachineTypes(.s32, .f32) => try codegen.emitS32ToF32(register[0], source[0]),
-                    tupleMachineTypes(.object_ref, .object_ref) => try codegen.emitMoveObjectRef(register[0], source[0]),
-                    tupleMachineTypes(.s32, .s32) => try codegen.emitMoveS32(register[0], source[0]),
+                    tupleMachineTypes(.bool, .s32) => try codegen.emitBoolToS32(register, source),
+                    tupleMachineTypes(.s32, .f32) => try codegen.emitS32ToF32(register, source),
+                    tupleMachineTypes(.object_ref, .object_ref) => try codegen.emitMoveObjectRef(register, source),
+                    tupleMachineTypes(.s32, .s32) => try codegen.emitMoveS32(register, source),
                     else => std.debug.panic("TODO: cast from expression {s} to {s}", .{ @tagName(source_type), @tagName(dst_type) }),
                 }
 
@@ -1321,18 +1576,16 @@ fn compileExpression(
             switch (source_variable_type.machine_type) {
                 .object_ref => {
                     try codegen.emitGetObjectMember(
-                        register[0],
-                        @intCast(source_variable.offset),
+                        register,
+                        Register.single_item(@intCast(source_variable.offset), .object_ref),
                         field_reference,
-                        machine_type,
                     );
                 },
                 .safe_ptr => {
                     try codegen.emitGetSafePtrMember(
-                        register[0],
-                        @intCast(source_variable.offset),
+                        register,
+                        Register.single_item(@intCast(source_variable.offset), .safe_ptr),
                         field_reference,
-                        machine_type,
                     );
                 },
                 else => |tag| std.debug.panic("unable to do field access on machine type {s}", .{@tagName(tag)}),
@@ -1351,7 +1604,7 @@ fn compileExpression(
             )) |source_register| {
                 const register = result_register orelse try codegen.register_allocator.allocate(.bool);
 
-                try codegen.emitLogicalNegationBoolean(register[0], source_register[0]);
+                try codegen.emitLogicalNegationBoolean(register, source_register);
 
                 if (discard_result and result_register == null) {
                     try codegen.register_allocator.free(register);
@@ -1391,7 +1644,7 @@ fn compileExpression(
                     null,
                 )).?;
 
-                try codegen.emitSetVectorElement(register[0], @intCast(i), element_register[0]);
+                try codegen.emitSetVectorElement(register, @intCast(i), element_register);
 
                 try codegen.register_allocator.free(element_register);
             }
@@ -1420,7 +1673,7 @@ fn compileExpression(
             const hand_type = binary_lefthand_type.resolved;
 
             // Allocate a result register, in the case of bitwise ops, we need to use the machine type, else use a bool as the result
-            const register, const forced_intermediary = add_reg: {
+            const register: Register, const forced_intermediary = add_reg: {
                 const needs_intermediary = hand_type == .pointer;
 
                 break :add_reg if (result_register == null or needs_intermediary)
@@ -1452,36 +1705,36 @@ fn compileExpression(
                         null,
                     )).?;
 
-                    std.debug.assert(lefthand[1] == righthand[1]);
-                    std.debug.assert(lefthand[1] == fish.machine_type);
+                    std.debug.assert(lefthand.machine_type() == righthand.machine_type());
+                    std.debug.assert(lefthand.machine_type() == fish.machine_type);
 
                     switch (fish.machine_type) {
                         .s32 => switch (binary_type) {
-                            .equal => try codegen.emitIntEqual(register[0], lefthand[0], righthand[0]),
-                            .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
-                            .bitwise_and => try codegen.emitIntBitwiseAnd(register[0], lefthand[0], righthand[0]),
-                            .addition => try codegen.emitAddInt(register[0], lefthand[0], righthand[0]),
-                            .subtraction => try codegen.emitSubtractInt(register[0], lefthand[0], righthand[0]),
-                            .greater_than => try codegen.emitIntGreaterThan(register[0], lefthand[0], righthand[0]),
-                            .less_than => try codegen.emitIntLessThan(register[0], lefthand[0], righthand[0]),
-                            .greater_than_or_equal => try codegen.emitIntGreaterThanOrEqual(register[0], lefthand[0], righthand[0]),
-                            .less_than_or_equal => try codegen.emitIntLessThanOrEqual(register[0], lefthand[0], righthand[0]),
+                            .equal => try codegen.emitIntEqual(register, lefthand, righthand),
+                            .not_equal => try codegen.emitIntNotEqual(register, lefthand, righthand),
+                            .bitwise_and => try codegen.emitIntBitwiseAnd(register, lefthand, righthand),
+                            .addition => try codegen.emitAddInt(register, lefthand, righthand),
+                            .subtraction => try codegen.emitSubtractInt(register, lefthand, righthand),
+                            .greater_than => try codegen.emitIntGreaterThan(register, lefthand, righthand),
+                            .less_than => try codegen.emitIntLessThan(register, lefthand, righthand),
+                            .greater_than_or_equal => try codegen.emitIntGreaterThanOrEqual(register, lefthand, righthand),
+                            .less_than_or_equal => try codegen.emitIntLessThanOrEqual(register, lefthand, righthand),
                             else => std.debug.panic("TODO: {s} binary op type for s32", .{@tagName(binary_type)}),
                         },
                         .f32 => switch (binary_type) {
-                            .greater_than => try codegen.emitFloatGreaterThan(register[0], lefthand[0], righthand[0]),
-                            .less_than_or_equal => try codegen.emitFloatLessThanOrEqual(register[0], lefthand[0], righthand[0]),
-                            .addition => try codegen.emitAddFloat(register[0], lefthand[0], righthand[0]),
+                            .greater_than => try codegen.emitFloatGreaterThan(register, lefthand, righthand),
+                            .less_than_or_equal => try codegen.emitFloatLessThanOrEqual(register, lefthand, righthand),
+                            .addition => try codegen.emitAddFloat(register, lefthand, righthand),
                             else => std.debug.panic("TODO: {s} binary op type for f32", .{@tagName(binary_type)}),
                         },
                         .safe_ptr => switch (binary_type) {
-                            .not_equal => try codegen.emitSafePtrNotEqual(register[0], lefthand[0], righthand[0]),
-                            .equal => try codegen.emitSafePtrEqual(register[0], lefthand[0], righthand[0]),
+                            .not_equal => try codegen.emitSafePtrNotEqual(register, lefthand, righthand),
+                            .equal => try codegen.emitSafePtrEqual(register, lefthand, righthand),
                             else => std.debug.panic("TODO: {s} binary op type for safe_ptr", .{@tagName(binary_type)}),
                         },
                         .object_ref => switch (binary_type) {
-                            .not_equal => try codegen.emitObjectPtrNotEqual(register[0], lefthand[0], righthand[0]),
-                            else => std.debug.panic("TODO: {s} binary op type for object_ptr", .{@tagName(binary_type)}),
+                            .not_equal => try codegen.emitObjectRefNotEqual(register, lefthand, righthand),
+                            else => std.debug.panic("TODO: {s} binary op type for object_ref", .{@tagName(binary_type)}),
                         },
                         else => |tag| std.debug.panic("TODO: comparisons for machine type {s}", .{@tagName(tag)}),
                     }
@@ -1507,20 +1760,20 @@ fn compileExpression(
                         null,
                     )).?;
 
-                    std.debug.assert(lefthand[1] == .s32);
+                    std.debug.assert(lefthand.machine_type() == .s32);
 
                     switch (binary_type) {
-                        .not_equal => try codegen.emitIntNotEqual(register[0], lefthand[0], righthand[0]),
-                        .equal => try codegen.emitIntEqual(register[0], lefthand[0], righthand[0]),
+                        .not_equal => try codegen.emitIntNotEqual(register, lefthand, righthand),
+                        .equal => try codegen.emitIntEqual(register, lefthand, righthand),
                         .addition => {
                             const target_type_size = pointer.type.fish.toMachineType().size();
 
                             // Load the size of the data type into the destination register
-                            try codegen.emitLoadConstInt(register[0], target_type_size);
+                            try codegen.emitLoadConstInt(register, target_type_size);
                             // Multiply the amount by the amount of elements weare moving
-                            try codegen.emitMultiplyInt(register[0], register[0], righthand[0]);
+                            try codegen.emitMultiplyInt(register, register, righthand);
                             // Add the resulting offset with the pointer, and store it in the result register
-                            try codegen.emitAddInt(register[0], register[0], lefthand[0]);
+                            try codegen.emitAddInt(register, register, lefthand);
                         },
                         else => |tag| std.debug.panic("TODO: comparisons for op {s}", .{@tagName(tag)}),
                     }
@@ -1549,10 +1802,10 @@ fn compileExpression(
 
             if (forced_intermediary and result_register != null) {
                 // this might not hold false all the time, but this should only ever trigger for ptr work, so it should always hold true
-                std.debug.assert(register[1] == .s32);
+                std.debug.assert(register.machine_type() == .s32);
 
                 // Move the result into the result register
-                try codegen.emitMoveS32(result_register.?[0], register[0]);
+                try codegen.emitMoveS32(result_register.?, register);
 
                 break :blk result_register;
             }
@@ -1568,7 +1821,7 @@ fn compileExpression(
                 false,
                 null,
             )).?;
-            std.debug.assert(lefthand[1] == .bool);
+            std.debug.assert(lefthand.machine_type() == .bool);
 
             const righthand = (try compileExpression(
                 codegen,
@@ -1578,14 +1831,14 @@ fn compileExpression(
                 false,
                 null,
             )).?;
-            std.debug.assert(righthand[1] == .bool);
+            std.debug.assert(righthand.machine_type() == .bool);
 
             if (!discard_result) {
                 const register = result_register orelse try codegen.register_allocator.allocate(.bool);
 
                 switch (tag) {
-                    .logical_and => try codegen.emitBoolBitwiseAnd(register[0], lefthand[0], righthand[0]),
-                    .logical_or => try codegen.emitBoolBitwiseOr(register[0], lefthand[0], righthand[0]),
+                    .logical_and => try codegen.emitBoolBitwiseAnd(register, lefthand, righthand),
+                    .logical_or => try codegen.emitBoolBitwiseOr(register, lefthand, righthand),
                     else => @compileError("what"),
                 }
 
@@ -1612,9 +1865,7 @@ fn compileExpression(
                 null,
             )).?;
 
-            std.debug.assert(source_register[1] == .s32);
-
-            try codegen.emitExtLoad(register[0], source_register[0], register[1]);
+            try codegen.emitExtLoad(register, source_register);
 
             try codegen.register_allocator.free(source_register);
 
@@ -1660,7 +1911,7 @@ fn compileBlock(
                     .type_reference = @intCast((try codegen.genny.type_references.getOrPut(type_reference)).index),
                     .name = @intCast((try codegen.genny.a_string_table.getOrPut(variable_declaration.name)).index),
                     .modifiers = .{},
-                    .offset = register[0],
+                    .offset = register.addr(),
                 };
 
                 if (variable_declaration.value) |variable_value| {
@@ -1672,7 +1923,7 @@ fn compileBlock(
                         false,
                         register,
                     )) |result_register| {
-                        if (result_register[0] != register[0])
+                        if (result_register.addr() != register.addr())
                             @panic("BUG: result register of variable assignment was bad");
                     } else {
                         @panic("BUG: expression for variable value didnt return anything?");
@@ -1705,11 +1956,11 @@ fn compileBlock(
                         null,
                     )).?;
 
-                    try codegen.emitRet(return_register[0], return_register[1]);
+                    try codegen.emitRet(return_register);
 
                     try codegen.register_allocator.free(return_register);
                 } else {
-                    try codegen.emitRet(0, .void);
+                    try codegen.emitRet(.{ .single_item = .{ .addr = 0, .type = .void } });
                 }
 
                 return_or_unreachable_emit = true;
@@ -1730,7 +1981,7 @@ fn compileBlock(
                 // If the condition is false (0), we need to skip over the main body,
                 // this will either skip ahead to after the main body and continue execution as normal,
                 // or it will skip to the else body, which is emit after the main body
-                const skip_body_instruction = try codegen.emitBranchEqualZero(condition_register[0]);
+                const skip_body_instruction = try codegen.emitBranchEqualZero(condition_register);
 
                 // Now that we are done with the condition, we can get rid of that register
                 try codegen.register_allocator.free(condition_register);
@@ -1790,10 +2041,9 @@ fn compileBlock(
                     false,
                     null,
                 )).?;
-                std.debug.assert(condition_register[1] == .bool);
 
                 // Emit the branch which will conditionally skip to after the loop if the condition is zero
-                const skip_to_end_instruction = try codegen.emitBranchEqualZero(condition_register[0]);
+                const skip_to_end_instruction = try codegen.emitBranchEqualZero(condition_register);
 
                 // Emit the body of the while loop
                 std.debug.assert(try compileExpression(
@@ -2282,17 +2532,17 @@ fn compileBlock(
     for (local_variables_from_this_scope.items) |local_variable_to_free| {
         const local_variable = function_local_variables.get(local_variable_to_free).?;
 
-        try codegen.register_allocator.free(.{
+        try codegen.register_allocator.free(Register.single_item(
             @intCast(local_variable.offset),
             codegen.genny.type_references.keys()[local_variable.type_reference].machine_type,
-        });
+        ));
         _ = scope_local_variables.swapRemove(local_variable_to_free);
     }
 
     if (top_level and !return_or_unreachable_emit) {
         if (return_type == .void) {
             //On void return functions, we can emit an implicit RET
-            try codegen.emitRet(0, .void);
+            try codegen.emitRet(Register.single_item(0, .void));
         } else {
             //On non void return functions, we need to error
             std.debug.panic("non void return function does not return at end of function!", .{});
@@ -2312,18 +2562,18 @@ fn emitUnreachable(codegen: *Codegen) !void {
     //      if that fails, THEN fall back to the CALLVo crash
 
     // Allocate a register which will just have 0
-    const base_idx = try codegen.register_allocator.allocate(.object_ref);
+    const nullptr = try codegen.register_allocator.allocate(.object_ref);
 
-    // Load 0 into that instruction
-    try codegen.emitLoadConstInt(base_idx[0], 0);
+    // Load a nullptr into that object ref
+    try codegen.emitLoadConstNullObjectRef(nullptr);
 
     // Copy into a0 so that CALLVo is calling off an invalid object
-    try codegen.emitArg(0, base_idx[0], .object_ref);
+    try codegen.emitArg(Register.single_item(0, .object_ref), nullptr);
 
     // Emit a call instruction which uses a nonsense target and 0 source, causing a script exception
-    try codegen.emitCallVo(0, 0, .void);
+    try codegen.emitCallVo(Register.single_item(0, .void), 0);
 
-    try codegen.register_allocator.free(base_idx);
+    try codegen.register_allocator.free(nullptr);
 }
 
 fn compileFunction(
@@ -2375,14 +2625,14 @@ fn compileFunction(
     if (!modifiers.static) {
         const self_reg = try codegen.register_allocator.allocateArgument(.object_ref);
 
-        std.debug.assert(self_reg[0] == 0);
+        std.debug.assert(self_reg.addr() == 0);
 
         const type_reference: u32 = @intCast((try self.type_references.getOrPut(class.type_reference.?)).index);
 
         const self_variable: MMTypes.LocalVariable = .{
             .modifiers = .{},
             .name = @intCast((try self.a_string_table.getOrPut("this")).index),
-            .offset = self_reg[0],
+            .offset = self_reg.addr(),
             .type_reference = type_reference,
         };
 
@@ -2405,14 +2655,14 @@ fn compileFunction(
             .name = @intCast((try self.a_string_table.getOrPut(parameter.name)).index),
             .modifiers = .{},
             .type_reference = type_reference,
-            .offset = register[0],
+            .offset = register.addr(),
         };
 
         try local_variables.put(parameter.name, parameter_variable);
         try scope_local_variables.put(parameter.name, parameter_variable);
         try arguments.append(.{
             .type_reference = type_reference,
-            .offset = register[0],
+            .offset = register.addr(),
         });
     }
 
@@ -2563,18 +2813,20 @@ pub fn generate(self: *Genny) !MMTypes.Script {
 
             // If the base class has a parameterless constructor, then we need to emit a "call super class"
             if (class.base_class == .resolved and class.base_class.resolved.has_parameterless_constructor) {
-                try codegen.emitArg(0, 0, class.type_reference.?.machine_type);
+                try codegen.emitArg(
+                    Register.single_item(0, class.type_reference.?.machine_type),
+                    Register.single_item(0, class.type_reference.?.machine_type),
+                );
                 try codegen.emitCall(
-                    std.math.maxInt(u16),
+                    Register.single_item(std.math.maxInt(u16), .void),
                     @intCast((try self.function_references.getOrPut(MMTypes.FunctionReference{
                         .name = @intCast((try self.a_string_table.getOrPut(".ctor__")).index),
                         .type_reference = @intCast((try self.type_references.getOrPut(class.base_class.resolved.type_reference.?)).index),
                     })).index),
-                    .void,
                 );
             }
 
-            try codegen.emitRet(0, .void);
+            try codegen.emitRet(Register.single_item(0, .void));
 
             try functions.append(MMTypes.FunctionDefinition{
                 .name = @intCast((try self.a_string_table.getOrPut(".ctor__")).index),
