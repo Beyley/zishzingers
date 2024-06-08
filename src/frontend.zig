@@ -135,7 +135,9 @@ pub fn compile(
         \\--optimize <str>                 Specify the compilation mode used, defaults to Debug (Debug, ReleaseSafe, ReleaseFast, ReleaseSmall)
         \\                                 this overrides the GUID specified in the file.
         \\--extended-runtime               Whether to enable use of Aidan's extended script runtime
-        \\--platform <str>                 The platform being compiled for (`ps3`, `vita`, `ps4`)
+        \\--game <str>                     The game being compiled for (`lbp1`, `lbp2`, `lbp3ps3`, `lbp3ps4`, `vita`).
+        \\                                 This determines what raw_ptr offsets and names are used for EXT_LOAD/STORE emulation. 
+        \\                                 You may experience crashes/unexpected behaviour if this mismatches the game it runs on.
         \\--hashed                         Tells the compiler the script is to be used in a hashed context.
         \\                                 This does various things, like changing all type references to the hashed script to be the base class, 
         \\                                 and using CALLVsp on all method calls to self, to make function calls to self work correctly
@@ -155,7 +157,7 @@ pub fn compile(
     defer res.deinit();
 
     //If no arguments are passed or the user requested the help menu, display the help menu
-    if (res.args.help != 0 or res.positionals.len == 0 or res.args.revision == null) {
+    if (res.args.help != 0 or res.positionals.len == 0 or res.args.revision == null or res.args.game == null or res.args.game.?.len == 0) {
         try clap.help(stderr, clap.Help, &params, .{});
 
         return;
@@ -251,7 +253,7 @@ pub fn compile(
                 .branch_id = res.args.@"branch-id" orelse 0,
             },
             .extended_runtime = res.args.@"extended-runtime" != 0,
-            .platform = std.meta.stringToEnum(Genny.CompilationOptions.Platform, res.args.platform orelse "ps3") orelse @panic("invalid platform (ps3, vita, ps4)"),
+            .game = std.meta.stringToEnum(Genny.CompilationOptions.Game, res.args.game.?) orelse @panic("invalid game, valid are (`lbp1`, `lbp2`, `lbp3ps3`, `lbp3ps4`, `vita`)"),
             .identifier = script_identifier,
             .hashed = res.args.hashed > 0,
         };

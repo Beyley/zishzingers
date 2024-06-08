@@ -11,16 +11,18 @@ const Genny = @This();
 pub const Error = std.mem.Allocator.Error || error{InvalidUtf8};
 
 pub const CompilationOptions = struct {
-    pub const Platform = enum {
-        ps3,
+    pub const Game = enum {
+        lbp1,
+        lbp2,
+        lbp3ps3,
+        lbp3ps4,
         vita,
-        ps4,
     };
 
     revision: MMTypes.Revision,
     optimization_mode: std.builtin.OptimizeMode,
     extended_runtime: bool,
-    platform: Platform,
+    game: Game,
     identifier: ?MMTypes.ResourceIdentifier,
     hashed: bool,
 };
@@ -954,9 +956,9 @@ const Codegen = struct {
                 .type_name = @intCast((try self.genny.a_string_table.getOrPut("PWorld")).index),
             })).index);
             const field_name: MMTypes.ResolvableString = @intCast((try self.genny.a_string_table.getOrPut("ThingUIDCounter")).index);
-            const field_offset: i32 = switch (self.compilation_options.platform) {
-                .ps3 => 0xc,
-                .ps4, .vita => 0x10,
+            const field_offset: i32 = switch (self.compilation_options.game) {
+                .lbp1, .lbp2, .lbp3ps3 => 0xc,
+                .lbp3ps4, .vita => 0x10,
             };
             const field_reference: u16 = @intCast((try self.genny.field_references.getOrPut(MMTypes.FieldReference{
                 .name = field_name,
@@ -1010,10 +1012,9 @@ const Codegen = struct {
                 .type_name = @intCast((try self.genny.a_string_table.getOrPut("PWorld")).index),
             })).index);
             const field_name: MMTypes.ResolvableString = @intCast((try self.genny.a_string_table.getOrPut("ThingUIDCounter")).index);
-            const field_offset: i32 = switch (self.compilation_options.platform) {
-                .ps3 => 0xc,
-                .ps4 => 0x10,
-                .vita => @panic("TODO: vita EXT_STORE emulation"),
+            const field_offset: i32 = switch (self.compilation_options.game) {
+                .lbp1, .lbp2, .lbp3ps3 => 0xc,
+                .lbp3ps4, .vita => 0x10,
             };
             const field_reference: u16 = @intCast((try self.genny.field_references.getOrPut(MMTypes.FieldReference{
                 .name = field_name,
