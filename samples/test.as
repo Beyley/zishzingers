@@ -60,6 +60,10 @@ class Test(g1234568)
         x = x + 2;
 
         let y = x + 10;
+
+        let z: bool* = 0x1234;
+
+        z.* = false;
     }
 
     pub fn WhileLoop() {

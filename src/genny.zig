@@ -938,14 +938,39 @@ const Codegen = struct {
         } }, dst.machine_type()));
     }
 
+    fn offsetForType(game: CompilationOptions.Game, machine_type: MMTypes.MachineType) struct {
+        class_name: []const u8,
+        field_name: []const u8,
+        offset: i32,
+    } {
+        return switch (machine_type.size()) {
+            1 => .{
+                .class_name = "PTrigger",
+                .field_name = "AllZLayers",
+                .offset = switch (game) {
+                    .lbp2 => 0xe,
+                    else => std.debug.panic("TODO: AllZLayers offset for game {s}", .{@tagName(game)}),
+                },
+            },
+            4 => .{
+                .class_name = "PWorld",
+                .field_name = "ThingUIDCounter",
+                .offset = switch (game) {
+                    .lbp1, .lbp2, .lbp3ps3 => 0xc,
+                    .lbp3ps4, .vita => 0x10,
+                },
+            },
+            else => std.debug.panic("unhandled native move machine type {s}", .{@tagName(machine_type)}),
+        };
+    }
+
     pub fn emitExtLoad(self: *Codegen, dst: Register, src: Register) !void {
         ensureAlignment(src, .single_item);
         ensureType(src, .s32);
         ensureAlignment(dst, .single_item);
 
         if (!self.compilation_options.extended_runtime) {
-            // TODO: non-s32 sized types in the EXT_STORE emulation
-            std.debug.assert(dst.machine_type().size() == MMTypes.MachineType.s32.size());
+            const machine_type_offsets = offsetForType(self.compilation_options.game, dst.machine_type());
 
             const raw_ptr_type: MMTypes.ResolvableTypeReference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
                 .machine_type = .raw_ptr,
@@ -953,13 +978,9 @@ const Codegen = struct {
                 .dimension_count = 0,
                 .array_base_machine_type = .void,
                 .script = null,
-                .type_name = @intCast((try self.genny.a_string_table.getOrPut("PWorld")).index),
+                .type_name = @intCast((try self.genny.a_string_table.getOrPut(machine_type_offsets.class_name)).index),
             })).index);
-            const field_name: MMTypes.ResolvableString = @intCast((try self.genny.a_string_table.getOrPut("ThingUIDCounter")).index);
-            const field_offset: i32 = switch (self.compilation_options.game) {
-                .lbp1, .lbp2, .lbp3ps3 => 0xc,
-                .lbp3ps4, .vita => 0x10,
-            };
+            const field_name: MMTypes.ResolvableString = @intCast((try self.genny.a_string_table.getOrPut(machine_type_offsets.field_name)).index);
             const field_reference: u16 = @intCast((try self.genny.field_references.getOrPut(MMTypes.FieldReference{
                 .name = field_name,
                 .type_reference = raw_ptr_type,
@@ -973,7 +994,7 @@ const Codegen = struct {
             // Move the ptr into the raw_ptr address
             try self.emitMoveS32(raw_ptr, src);
             // Load the offset into the temporary register
-            try self.emitLoadConstInt(offset_reg, field_offset);
+            try self.emitLoadConstInt(offset_reg, machine_type_offsets.offset);
             // Subtract the raw ptr by the field offset, so that when the game reads it, it adds the offset back, and reads the correct address
             try self.emitSubtractInt(raw_ptr, raw_ptr, offset_reg);
 
@@ -1000,8 +1021,7 @@ const Codegen = struct {
         ensureType(dst, .s32);
 
         if (!self.compilation_options.extended_runtime) {
-            // TODO: non-s32 sized types in the EXT_STORE emulation
-            std.debug.assert(src.machine_type().size() == MMTypes.MachineType.s32.size());
+            const machine_type_offsets = offsetForType(self.compilation_options.game, src.machine_type());
 
             const raw_ptr_type: MMTypes.ResolvableTypeReference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
                 .machine_type = .raw_ptr,
@@ -1009,13 +1029,9 @@ const Codegen = struct {
                 .dimension_count = 0,
                 .array_base_machine_type = .void,
                 .script = null,
-                .type_name = @intCast((try self.genny.a_string_table.getOrPut("PWorld")).index),
+                .type_name = @intCast((try self.genny.a_string_table.getOrPut(machine_type_offsets.class_name)).index),
             })).index);
-            const field_name: MMTypes.ResolvableString = @intCast((try self.genny.a_string_table.getOrPut("ThingUIDCounter")).index);
-            const field_offset: i32 = switch (self.compilation_options.game) {
-                .lbp1, .lbp2, .lbp3ps3 => 0xc,
-                .lbp3ps4, .vita => 0x10,
-            };
+            const field_name: MMTypes.ResolvableString = @intCast((try self.genny.a_string_table.getOrPut(machine_type_offsets.field_name)).index);
             const field_reference: u16 = @intCast((try self.genny.field_references.getOrPut(MMTypes.FieldReference{
                 .name = field_name,
                 .type_reference = raw_ptr_type,
@@ -1029,7 +1045,7 @@ const Codegen = struct {
             // Move the ptr into the temporary register
             try self.emitMoveS32(raw_ptr, dst);
             // Load the offset into a temporary register
-            try self.emitLoadConstInt(offset_reg, field_offset);
+            try self.emitLoadConstInt(offset_reg, machine_type_offsets.offset);
             // Subtract the destination address by the offset (so that when the game reads the field, it adds back the offset)
             try self.emitSubtractInt(raw_ptr, raw_ptr, offset_reg);
 

@@ -124,6 +124,7 @@ pub fn compile(
     stdout: anytype,
 ) !void {
     _ = stdout; // autofix
+
     const params = comptime clap.parseParamsComptime(
         \\-h, --help                       Display this help and exit.
         \\-o, --out-file <str>             The output path for the compilation, defaults to "inputname.ff"
