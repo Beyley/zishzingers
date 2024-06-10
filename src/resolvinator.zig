@@ -90,8 +90,21 @@ fn collectImportedTypes(
     defined_libraries: Libraries,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
     const script = script_table.get(class_name) orelse @panic("tsheointeonhsaoi");
+
+    const progress_node = parent_progress_node.start("Collecting imported types", blk: {
+        var i: usize = 0;
+
+        for (script.ast.root_elements.items) |item| {
+            if (item == .import or item == .from_import)
+                i += 1;
+        }
+
+        break :blk i;
+    });
+    defer progress_node.end();
 
     //TODO: we need to make sure to prevent two imported scripts from sharing the same GUID in the global script table
     for (script.ast.root_elements.items) |item| {
@@ -130,7 +143,12 @@ fn collectImportedTypes(
                         break :blk try lexemes.toOwnedSlice();
                     };
 
-                    const parser = try Parser.parse(script.ast.allocator, lexemes, self.type_intern_pool);
+                    const parser = try Parser.parse(
+                        script.ast.allocator,
+                        lexemes,
+                        self.type_intern_pool,
+                        progress_node,
+                    );
                     lexeme_allocator.deinit();
 
                     const class = getScriptClassNode(parser.tree);
@@ -142,6 +160,7 @@ fn collectImportedTypes(
                             script_table,
                             null,
                             a_string_table,
+                            progress_node,
                         );
 
                     switch (comptime import_type) {
@@ -191,10 +210,28 @@ fn collectImportedTypes(
     }
 }
 
-fn collectImportedLibraries(script: *ParsedScript, defined_libraries: Libraries) Error!void {
+fn collectImportedLibraries(
+    script: *ParsedScript,
+    defined_libraries: Libraries,
+    parent_progress_node: std.Progress.Node,
+) Error!void {
+    const progress_node = parent_progress_node.start("Collecting imported libraries", blk: {
+        var i: usize = 0;
+
+        for (script.ast.root_elements.items) |item| {
+            if (item == .using)
+                i += 1;
+        }
+
+        break :blk i;
+    });
+    defer progress_node.end();
+
     for (script.ast.root_elements.items) |item| {
         switch (item) {
             .using => |using| {
+                defer progress_node.completeOne();
+
                 if (using.type != .library)
                     @panic("unimplemented non-library using");
 
@@ -212,11 +249,16 @@ fn recursivelyResolveScript(
     script_table: *ParsedScriptTable,
     script_identifier: ?MMTypes.ResourceIdentifier,
     a_string_table: *AStringTable,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
     const class = getScriptClassNode(tree);
 
+    var progress_node_name_buf: [256]u8 = undefined;
+    const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Resolving dependencies for {s}", .{class.name}), 0);
+    defer progress_node.end();
+
     const script = try tree.allocator.create(ParsedScript);
-    script.* = ParsedScript{
+    script.* = .{
         .ast = tree,
         .class_name = getScriptClassNode(tree).name,
         .imported_libraries = Libraries.init(tree.allocator),
@@ -236,13 +278,21 @@ fn recursivelyResolveScript(
     // Add the script to its own import table, so it can reference itself
     try script.imported_types.putNoClobber(script.class_name, {});
 
-    // std.debug.print("resolving script {s}\n", .{script.class_name});
-
     //Collect all the libraries which are imported by the script
-    try collectImportedLibraries(script, defined_libraries);
+    try collectImportedLibraries(
+        script,
+        defined_libraries,
+        progress_node,
+    );
 
     //Collect all the script types which are imported
-    try self.collectImportedTypes(script.class_name, defined_libraries, script_table, a_string_table);
+    try self.collectImportedTypes(
+        script.class_name,
+        defined_libraries,
+        script_table,
+        a_string_table,
+        progress_node,
+    );
 
     script.is_thing = isScriptThing(script, script_table);
 
@@ -311,7 +361,18 @@ pub fn resolve(
     a_string_table: *AStringTable,
     script_identifier: ?MMTypes.ResourceIdentifier,
     type_intern_pool: *Parser.TypeInternPool,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
+    //Get the class of the script
+    const class = getScriptClassNode(tree);
+
+    const progress_node = parent_progress_node.start(
+        "Type resolving",
+        // all the fields, constructors, and functions plus the type fixup stage
+        4,
+    );
+    defer progress_node.end();
+
     var script_table = ParsedScriptTable.init(tree.allocator);
     defer script_table.deinit();
 
@@ -325,10 +386,8 @@ pub fn resolve(
         &script_table,
         script_identifier,
         a_string_table,
+        progress_node,
     );
-
-    //Get the class of the script
-    const class = getScriptClassNode(tree);
 
     class.type_reference = (try typeReferenceFromScript(
         script_table.get(class.name).?,
@@ -336,8 +395,12 @@ pub fn resolve(
         a_string_table,
     ));
 
+    const base_class_type_fixup_progress_node = progress_node.start("Fill in base class type references", script_table.count());
+    // fill in the type references of all the base classes
     var scripts = script_table.valueIterator();
     while (scripts.next()) |script| {
+        defer base_class_type_fixup_progress_node.completeOne();
+
         const script_class = getScriptClassNode(script.*.ast);
 
         if (script_class.base_class != .none) {
@@ -346,24 +409,61 @@ pub fn resolve(
             script_class.base_class.resolved.type_reference = try typeReferenceFromScript(script_table.get(base_class.name).?, 0, a_string_table);
         }
     }
+    base_class_type_fixup_progress_node.end();
 
     const script = script_table.get(class.name) orelse unreachable;
 
     // std.debug.print("type resolving {s}\n", .{script.class_name});
 
+    const fields_progress_node = progress_node.start("Fields", class.fields.len);
     for (class.fields) |field| {
-        try self.resolveField(field, script, &script_table, a_string_table);
+        try self.resolveField(
+            field,
+            script,
+            &script_table,
+            a_string_table,
+            fields_progress_node,
+        );
     }
+    fields_progress_node.end();
 
+    const constructors_progress_node = progress_node.start("Constructors", class.constructors.len * 2);
     for (class.constructors) |constructor| {
-        try self.resolveConstructorHead(constructor, script, &script_table, a_string_table);
-        try self.resolveConstructorBody(constructor, script, &script_table, a_string_table);
+        try self.resolveConstructorHead(
+            constructor,
+            script,
+            &script_table,
+            a_string_table,
+            constructors_progress_node,
+        );
+        try self.resolveConstructorBody(
+            constructor,
+            script,
+            &script_table,
+            a_string_table,
+            constructors_progress_node,
+        );
     }
+    constructors_progress_node.end();
 
+    const functions_progress_node = progress_node.start("Functions", class.functions.len * 2);
     for (class.functions) |function| {
-        try self.resolveFunctionHead(function, script, &script_table, a_string_table);
-        try self.resolveFunctionBody(function, script, &script_table, a_string_table);
+        try self.resolveFunctionHead(
+            function,
+            script,
+            &script_table,
+            a_string_table,
+            functions_progress_node,
+        );
+        try self.resolveFunctionBody(
+            function,
+            script,
+            &script_table,
+            a_string_table,
+            functions_progress_node,
+        );
     }
+    functions_progress_node.end();
 }
 
 fn resolveConstructorHead(
@@ -372,13 +472,20 @@ fn resolveConstructorHead(
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
+    var progress_node_name_buf: [256]u8 = undefined;
+
+    const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Resolving constructor head with params {d}", .{constructor.parameters.len}), 0);
+    defer progress_node.end();
+
     for (constructor.parameters) |*parameter| {
         try self.resolveParsedType(
             parameter.type,
             script,
             script_table,
             a_string_table,
+            progress_node,
         );
     }
 }
@@ -389,7 +496,13 @@ fn resolveConstructorBody(
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
+    var progress_node_name_buf: [256]u8 = undefined;
+
+    const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Resolving constructor body with params {d}", .{constructor.parameters.len}), 0);
+    defer progress_node.end();
+
     var variable_stack = FunctionVariableStack.init(script.ast.allocator);
     defer variable_stack.deinit();
 
@@ -406,6 +519,7 @@ fn resolveConstructorBody(
         script_table,
         a_string_table,
         &stack_info,
+        progress_node,
     );
 }
 
@@ -415,7 +529,13 @@ fn resolveFunctionBody(
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
+    var progress_node_name_buf: [256]u8 = undefined;
+
+    const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Resolving function body {s}", .{function.name}), 0);
+    defer progress_node.end();
+
     if (function.body) |body| {
         var variable_stack = FunctionVariableStack.init(script.ast.allocator);
         defer variable_stack.deinit();
@@ -437,6 +557,7 @@ fn resolveFunctionBody(
                 script_table,
                 a_string_table,
                 &stack_info,
+                progress_node,
             );
     }
 
@@ -449,17 +570,21 @@ fn resolveFunctionHead(
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
-    // std.debug.print("resolving function head {s}\n", .{function.name});
+    var progress_node_name_buf: [256]u8 = undefined;
 
-    const return_type = self.type_intern_pool.get(function.return_type);
-    _ = return_type; // autofix
+    const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Resolving function head {s}", .{function.name}), 0);
+    defer progress_node.end();
+
+    // std.debug.print("resolving function head {s}\n", .{function.name});
 
     try self.resolveParsedType(
         function.return_type,
         script,
         script_table,
         a_string_table,
+        progress_node,
     );
 
     // std.debug.print("resolved function return type as {}\n", .{return_type.resolved});
@@ -473,6 +598,7 @@ fn resolveFunctionHead(
             script,
             script_table,
             a_string_table,
+            progress_node,
         );
 
         // std.debug.print("resolved function parameter {s} as {}\n", .{ parameter.name, parameter_type.resolved });
@@ -514,7 +640,15 @@ fn resolveExpression(
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
     function_variable_stack: ?*FunctionVariableStackInfo,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
+    var progress_node_name_buf: [256]u8 = undefined;
+    const progress_node = parent_progress_node.start(
+        try std.fmt.bufPrint(&progress_node_name_buf, "Expression of type {s}", .{@tagName(expression.contents)}),
+        0,
+    );
+    defer progress_node.end();
+
     if (expression.type != .unknown) {
         const expression_type = self.type_intern_pool.get(expression.type);
 
@@ -535,6 +669,7 @@ fn resolveExpression(
             script,
             script_table,
             a_string_table,
+            progress_node,
         );
     }
 
@@ -559,6 +694,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             const assignment_destination_type = self.type_intern_pool.get(assignment.destination.type);
@@ -573,6 +709,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             // The type of the expression is the type of the destination value
@@ -588,6 +725,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             const field_access_source_type = self.type_intern_pool.get(field_access.source.type);
@@ -611,6 +749,7 @@ fn resolveExpression(
                             source_script,
                             script_table,
                             a_string_table,
+                            progress_node,
                         );
 
                         //Break out now that we have the field
@@ -643,6 +782,7 @@ fn resolveExpression(
                     script,
                     script_table,
                     a_string_table,
+                    progress_node,
                 );
 
                 expression.* = .{
@@ -674,6 +814,7 @@ fn resolveExpression(
                         script,
                         script_table,
                         a_string_table,
+                        progress_node,
                     );
                 } else {
                     const variable = function_variable_stack.?.stack.get(variable_or_class_access) orelse std.debug.panic(
@@ -699,6 +840,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .wide_string_literal => {
@@ -708,6 +850,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .int_string_literal => {
@@ -717,6 +860,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .ascii_string_literal => {
@@ -726,6 +870,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .function_call => |*function_call| {
@@ -738,6 +883,7 @@ fn resolveExpression(
                     script_table,
                     a_string_table,
                     function_variable_stack,
+                    progress_node,
                 );
 
                 const function = try self.findFunction(
@@ -748,6 +894,7 @@ fn resolveExpression(
                     script,
                     script_table,
                     a_string_table,
+                    progress_node,
                 );
                 // std.debug.print("found function {s}, special cased? {}\n", .{ function.found_function.name, function.special_cased });
 
@@ -764,6 +911,7 @@ fn resolveExpression(
                         script_table,
                         a_string_table,
                         function_variable_stack,
+                        progress_node,
                     );
                 }
 
@@ -814,6 +962,7 @@ fn resolveExpression(
                     function_script,
                     script_table,
                     a_string_table,
+                    progress_node,
                 );
 
                 function_call.function = .{
@@ -840,6 +989,7 @@ fn resolveExpression(
                         script_table,
                         a_string_table,
                         function_variable_stack,
+                        progress_node,
                     );
                 }
 
@@ -859,6 +1009,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             expression.type = logical_negation.type;
@@ -872,6 +1023,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             if (!isNumberLike(self.type_intern_pool.get(numeric_negation.type)))
@@ -886,6 +1038,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
 
             function_variable_stack.?.current_level += 1;
@@ -934,6 +1087,7 @@ fn resolveExpression(
                                     script_table,
                                     a_string_table,
                                     function_variable_stack,
+                                    progress_node,
                                 );
 
                                 const value_type = self.type_intern_pool.get(value.type);
@@ -957,6 +1111,7 @@ fn resolveExpression(
                                 script,
                                 script_table,
                                 a_string_table,
+                                progress_node,
                             );
 
                             //If the variable declaration has a value set, resolve the value expression to the type of the variable
@@ -968,6 +1123,7 @@ fn resolveExpression(
                                     script_table,
                                     a_string_table,
                                     function_variable_stack,
+                                    progress_node,
                                 );
                             }
                         }
@@ -985,6 +1141,7 @@ fn resolveExpression(
                             script_table,
                             a_string_table,
                             function_variable_stack,
+                            progress_node,
                         );
                     },
                     .return_statement => |return_statement| {
@@ -1015,6 +1172,7 @@ fn resolveExpression(
                                 script_table,
                                 a_string_table,
                                 function_variable_stack,
+                                progress_node,
                             );
                         }
                     },
@@ -1029,6 +1187,7 @@ fn resolveExpression(
                             script_table,
                             a_string_table,
                             function_variable_stack,
+                            progress_node,
                         );
 
                         try self.resolveExpression(
@@ -1038,6 +1197,7 @@ fn resolveExpression(
                             script_table,
                             a_string_table,
                             function_variable_stack,
+                            progress_node,
                         );
 
                         if (if_statement.else_body) |else_body| {
@@ -1048,6 +1208,7 @@ fn resolveExpression(
                                 script_table,
                                 a_string_table,
                                 function_variable_stack,
+                                progress_node,
                             );
                         }
                     },
@@ -1059,6 +1220,7 @@ fn resolveExpression(
                             script_table,
                             a_string_table,
                             function_variable_stack,
+                            progress_node,
                         );
 
                         try self.resolveExpression(
@@ -1068,6 +1230,7 @@ fn resolveExpression(
                             script_table,
                             a_string_table,
                             function_variable_stack,
+                            progress_node,
                         );
                     },
                     .inline_asm_statement => |inline_asm| {
@@ -1083,6 +1246,7 @@ fn resolveExpression(
                                         script,
                                         script_table,
                                         a_string_table,
+                                        progress_node,
                                     );
 
                                     call_bytecode.function = blk: {
@@ -1112,6 +1276,7 @@ fn resolveExpression(
                                                 referenced_script,
                                                 script_table,
                                                 a_string_table,
+                                                progress_node,
                                             );
 
                                             if (std.mem.eql(u8, call_bytecode.function.name, function.mangled_name.?)) {
@@ -1141,6 +1306,7 @@ fn resolveExpression(
                     script_table,
                     a_string_table,
                     function_variable_stack,
+                    progress_node,
                 );
             }
 
@@ -1150,6 +1316,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .vec4_construction => |vec4_construction| {
@@ -1162,6 +1329,7 @@ fn resolveExpression(
                     script_table,
                     a_string_table,
                     function_variable_stack,
+                    progress_node,
                 );
             }
 
@@ -1171,6 +1339,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .less_than, .less_than_or_equal, .greater_than, .greater_than_or_equal => |comparison| {
@@ -1181,6 +1350,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             try self.resolveExpression(
@@ -1190,6 +1360,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             expression.type = try self.type_intern_pool.fromFishType(.bool);
@@ -1198,6 +1369,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .bitwise_and => |bitwise_and| {
@@ -1209,6 +1381,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             const bitwise_and_lefthand_type = self.type_intern_pool.get(bitwise_and.lefthand.type);
@@ -1229,6 +1402,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             expression.type = bitwise_and.lefthand.type;
@@ -1242,6 +1416,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             const equality_lefthand_type = self.type_intern_pool.get(equality.lefthand.type);
@@ -1267,6 +1442,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             expression.type = try self.type_intern_pool.fromFishType(.bool);
@@ -1275,6 +1451,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .logical_and, .logical_or => |logical_op| {
@@ -1285,6 +1462,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             try self.resolveExpression(
@@ -1294,6 +1472,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             expression.type = try self.type_intern_pool.fromFishType(.bool);
@@ -1302,6 +1481,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .addition, .subtraction => |math_op| {
@@ -1312,6 +1492,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             const math_op_lefthand_type = self.type_intern_pool.get(math_op.lefthand.type);
@@ -1324,6 +1505,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             expression.type = math_op.lefthand.type;
@@ -1332,6 +1514,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .cast => |cast_expression| {
@@ -1340,6 +1523,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
 
             try self.resolveExpression(
@@ -1349,6 +1533,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             if (try self.coerceExpression(
@@ -1372,6 +1557,7 @@ fn resolveExpression(
                 script_table,
                 a_string_table,
                 function_variable_stack,
+                progress_node,
             );
 
             const dereference_type = self.type_intern_pool.get(dereference.type);
@@ -1392,6 +1578,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
@@ -1726,6 +1913,7 @@ fn findFunction(
     calling_script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
+    parent_progress_node: std.Progress.Node,
 ) !struct {
     found_function: *Parser.Node.Function,
     special_cased: bool,
@@ -1758,6 +1946,7 @@ fn findFunction(
                             type_script,
                             script_table,
                             a_string_table,
+                            parent_progress_node,
                         );
 
                         // Skip overloads which have the wrong count of parameters
@@ -1805,6 +1994,7 @@ fn findFunction(
                                             source_script,
                                             script_table,
                                             a_string_table,
+                                            parent_progress_node,
                                         );
 
                                         // You usually cant call static functions as member functions, aside from the case of
@@ -1937,6 +2127,7 @@ fn resolveParsedType(
     script: ?*ParsedScript,
     script_table: ?*ParsedScriptTable,
     a_string_table: ?*AStringTable,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
     const intern_type = self.type_intern_pool.getMutable(type_index);
 
@@ -1944,6 +2135,11 @@ fn resolveParsedType(
         return;
 
     const parsed_type = intern_type.parsed;
+
+    var progress_node_name_buf: [256]u8 = undefined;
+
+    const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Resolving parsed type {s}", .{parsed_type.name}), 0);
+    defer progress_node.end();
 
     if (parsed_type.indirection_count > 0) {
         intern_type.* = .{
@@ -2009,6 +2205,7 @@ fn resolveParsedType(
                             enumeration,
                             parsed_type.dimension_count,
                             a_string_table.?,
+                            progress_node,
                         ) } };
 
                         return;
@@ -2040,6 +2237,7 @@ pub fn typeReferenceFromScriptEnum(
     enumeration: *Parser.Node.Enum,
     dimension_count: u8,
     a_string_table: *AStringTable,
+    parent_progress_node: std.Progress.Node,
 ) Error!MMTypes.TypeReference {
     //Qualify the name
     const qualified_name = try std.fmt.allocPrint(script.ast.allocator, "{s}.{s}", .{ script.class_name, enumeration.name });
@@ -2055,6 +2253,7 @@ pub fn typeReferenceFromScriptEnum(
         script,
         script_table,
         a_string_table,
+        parent_progress_node,
     );
 
     const base_type = backing_type.resolved.fish;
@@ -2113,7 +2312,13 @@ fn resolveField(
     script: *ParsedScript,
     script_table: *ParsedScriptTable,
     a_string_table: *AStringTable,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
+    var progress_node_name_buf: [256]u8 = undefined;
+
+    const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Resolving field {s}", .{field.name}), 0);
+    defer progress_node.end();
+
     // std.debug.print("type resolving field {s}\n", .{field.name});
 
     var field_type = self.type_intern_pool.get(field.type);
@@ -2129,6 +2334,7 @@ fn resolveField(
                 script,
                 script_table,
                 a_string_table,
+                progress_node,
             );
         },
         .unknown => {
@@ -2141,6 +2347,7 @@ fn resolveField(
                     script_table,
                     a_string_table,
                     null,
+                    progress_node,
                 );
 
                 //Set the type of the field to the resolved default value type

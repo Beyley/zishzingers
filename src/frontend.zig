@@ -186,8 +186,20 @@ pub fn compile(
         try defined_libraries.putNoClobber(name, try std.fs.cwd().openDir(path, .{}));
     }
 
+    const root_progress_node = std.Progress.start(.{
+        .estimated_total_items = res.positionals.len,
+    });
+    defer root_progress_node.end();
+
     for (res.positionals) |source_file| {
-        // std.debug.print("{s}\n", .{source_file});
+        var progress_name_buf: [256]u8 = undefined;
+        const compile_progress_node = root_progress_node.start(
+            try std.fmt.bufPrint(&progress_name_buf, "Compile {s}", .{source_file}),
+            //5 steps, lexemeization, parsing, type resolution, compilation, serialization
+            5,
+        );
+        defer compile_progress_node.end();
+
         const source_code: []const u8 = try std.fs.cwd().readFileAlloc(allocator, source_file, std.math.maxInt(usize));
         defer allocator.free(source_code);
 
@@ -205,6 +217,8 @@ pub fn compile(
             break :blk try lexemes.toOwnedSlice();
         };
         defer allocator.free(lexemes);
+        // mark that lexemization is done
+        compile_progress_node.completeOne();
 
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
@@ -220,9 +234,8 @@ pub fn compile(
             ast_allocator,
             lexemes,
             &type_intern_pool,
+            compile_progress_node,
         );
-
-        // try Debug.dumpAst(stdout, ast);
 
         var a_string_table = Resolvinator.AStringTable.init(allocator);
         defer a_string_table.deinit();
@@ -236,6 +249,7 @@ pub fn compile(
             &a_string_table,
             script_identifier,
             &type_intern_pool,
+            compile_progress_node,
         );
 
         // var debug = Debug{
@@ -268,7 +282,7 @@ pub fn compile(
         );
         defer genny.deinit();
 
-        const script = try genny.generate();
+        const script = try genny.generate(compile_progress_node);
 
         //TODO: actually use `output` parameter
         const out_path = try std.fmt.allocPrint(allocator, "{s}.ff", .{std.fs.path.stem(source_file)});
@@ -294,6 +308,7 @@ pub fn compile(
 
         try resource_stream.writeScript(script, allocator);
 
+        const serialization_progress_node = compile_progress_node.start("Serialization", 0);
         var file_stream: std.io.StreamSource = .{ .file = out };
         try Resource.writeResource(
             .script,
@@ -306,6 +321,7 @@ pub fn compile(
             resource_stream.stream.array_list.items,
             allocator,
         );
+        serialization_progress_node.end();
 
         // try Disasm.disassembleScript(stdout, allocator, script);
     }

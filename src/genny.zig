@@ -8,7 +8,7 @@ const MMTypes = @import("MMTypes.zig");
 
 const Genny = @This();
 
-pub const Error = std.mem.Allocator.Error || error{InvalidUtf8};
+pub const Error = std.mem.Allocator.Error || std.fmt.BufPrintError || error{InvalidUtf8};
 
 pub const CompilationOptions = struct {
     pub const Game = enum {
@@ -1020,7 +1020,8 @@ const Codegen = struct {
         ensureAlignment(dst, .single_item);
         ensureType(dst, .s32);
 
-        if (!self.compilation_options.extended_runtime) {
+        // Only size s32 types work in the current version of the extended runtime, so if its a non-s32 size, we need to fall back to the native runtime version
+        if (!self.compilation_options.extended_runtime or src.machine_type().size() != MMTypes.MachineType.s32.size()) {
             const machine_type_offsets = offsetForType(self.compilation_options.game, src.machine_type());
 
             const raw_ptr_type: MMTypes.ResolvableTypeReference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
@@ -1056,7 +1057,6 @@ const Codegen = struct {
             try self.register_allocator.free(raw_ptr);
             try self.register_allocator.free(offset_reg);
         } else {
-            // Only size s32 types work in the current version of the extended runtime
             std.debug.assert(src.machine_type().size() == MMTypes.MachineType.s32.size());
 
             try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_STORE = .{
@@ -1118,7 +1118,12 @@ fn compileExpression(
     expression: *Parser.Node.Expression,
     discard_result: bool,
     result_register: ?Register,
+    parent_progress_node: std.Progress.Node,
 ) Error!?Register {
+    var progress_node_name_buf: [256]u8 = undefined;
+    const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Expression {s}", .{@tagName(expression.contents)}), 0);
+    defer progress_node.end();
+
     return switch (expression.contents) {
         .assignment => |assignment| blk: {
             switch (assignment.destination.contents) {
@@ -1134,6 +1139,7 @@ fn compileExpression(
                         assignment.value,
                         false,
                         register,
+                        progress_node,
                     );
 
                     break :blk if (discard_result) null else register;
@@ -1153,6 +1159,7 @@ fn compileExpression(
                         assignment.value,
                         false,
                         result_register,
+                        progress_node,
                     )).?;
 
                     if (register.machine_type() != machine_type)
@@ -1201,6 +1208,7 @@ fn compileExpression(
                         assignment.value,
                         false,
                         null,
+                        progress_node,
                     )).?;
 
                     const address_register = (try compileExpression(
@@ -1210,6 +1218,7 @@ fn compileExpression(
                         dereference,
                         false,
                         null,
+                        progress_node,
                     )).?;
 
                     try codegen.emitExtStore(address_register, intermediate_register);
@@ -1387,6 +1396,7 @@ fn compileExpression(
                     parameter,
                     false,
                     null,
+                    progress_node,
                 )) |parameter_result_register| {
                     parameter_register.* = parameter_result_register;
                 } else {
@@ -1553,6 +1563,7 @@ fn compileExpression(
                 cast_source,
                 discard_result,
                 null,
+                progress_node,
             )) |source| {
                 const register = result_register orelse
                     try codegen.register_allocator.allocate(codegen.genny.type_intern_pool.get(expression.type).resolved.machineType());
@@ -1618,6 +1629,7 @@ fn compileExpression(
                 logical_negation,
                 false,
                 null,
+                progress_node,
             )) |source_register| {
                 const register = result_register orelse try codegen.register_allocator.allocate(.bool);
 
@@ -1641,6 +1653,7 @@ fn compileExpression(
                 block,
                 false,
                 .void,
+                progress_node,
             );
 
             break :blk null;
@@ -1659,6 +1672,7 @@ fn compileExpression(
                     element_expression,
                     false,
                     null,
+                    progress_node,
                 )).?;
 
                 try codegen.emitSetVectorElement(register, @intCast(i), element_register);
@@ -1712,6 +1726,7 @@ fn compileExpression(
                         binary.lefthand,
                         false,
                         null,
+                        progress_node,
                     )).?;
                     const righthand = (try compileExpression(
                         codegen,
@@ -1720,6 +1735,7 @@ fn compileExpression(
                         binary.righthand,
                         false,
                         null,
+                        progress_node,
                     )).?;
 
                     std.debug.assert(lefthand.machine_type() == righthand.machine_type());
@@ -1767,6 +1783,7 @@ fn compileExpression(
                         binary.lefthand,
                         false,
                         null,
+                        progress_node,
                     )).?;
                     const righthand = (try compileExpression(
                         codegen,
@@ -1775,6 +1792,7 @@ fn compileExpression(
                         binary.righthand,
                         false,
                         null,
+                        progress_node,
                     )).?;
 
                     std.debug.assert(lefthand.machine_type() == .s32);
@@ -1837,6 +1855,7 @@ fn compileExpression(
                 logical_op.lefthand,
                 false,
                 null,
+                progress_node,
             )).?;
             std.debug.assert(lefthand.machine_type() == .bool);
 
@@ -1847,6 +1866,7 @@ fn compileExpression(
                 logical_op.righthand,
                 false,
                 null,
+                progress_node,
             )).?;
             std.debug.assert(righthand.machine_type() == .bool);
 
@@ -1880,6 +1900,7 @@ fn compileExpression(
                 dereference,
                 false,
                 null,
+                progress_node,
             )).?;
 
             try codegen.emitExtLoad(register, source_register);
@@ -1903,7 +1924,11 @@ fn compileBlock(
     block: []const Parser.Node,
     top_level: bool,
     return_type: MMTypes.MachineType,
+    parent_progress_node: std.Progress.Node,
 ) Error!void {
+    const progress_node = parent_progress_node.start("Block", block.len);
+    defer progress_node.end();
+
     var local_variables_from_this_scope = std.ArrayList([]const u8).init(codegen.register_allocator.allocator);
 
     var return_or_unreachable_emit = false;
@@ -1939,6 +1964,7 @@ fn compileBlock(
                         variable_value,
                         false,
                         register,
+                        progress_node,
                     )) |result_register| {
                         if (result_register.addr() != register.addr())
                             @panic("BUG: result register of variable assignment was bad");
@@ -1958,6 +1984,7 @@ fn compileBlock(
                     expression,
                     true,
                     null,
+                    progress_node,
                 )) |result_register| {
                     try codegen.register_allocator.free(result_register);
                 }
@@ -1971,6 +1998,7 @@ fn compileBlock(
                         return_value,
                         false,
                         null,
+                        progress_node,
                     )).?;
 
                     try codegen.emitRet(return_register);
@@ -1993,6 +2021,7 @@ fn compileBlock(
                     if_statement.condition,
                     false,
                     null,
+                    progress_node,
                 )).?;
 
                 // If the condition is false (0), we need to skip over the main body,
@@ -2011,6 +2040,7 @@ fn compileBlock(
                     if_statement.body,
                     true,
                     null,
+                    progress_node,
                 ) == null);
 
                 // If we have an else body, we need to emit an instruction after the main body to skip over the else block
@@ -2030,6 +2060,7 @@ fn compileBlock(
                         else_body,
                         true,
                         null,
+                        progress_node,
                     ) == null);
 
                     // Set the skip else target to the instruction after the current instruction
@@ -2057,6 +2088,7 @@ fn compileBlock(
                     while_statement.condition,
                     false,
                     null,
+                    progress_node,
                 )).?;
 
                 // Emit the branch which will conditionally skip to after the loop if the condition is zero
@@ -2070,6 +2102,7 @@ fn compileBlock(
                     while_statement.body,
                     true,
                     null,
+                    progress_node,
                 ) == null);
 
                 // Generate a branch which branches directly back to the condition check
@@ -2083,7 +2116,12 @@ fn compileBlock(
                 try codegen.register_allocator.free(condition_register);
             },
             .inline_asm_statement => |inline_asm| {
+                const inline_asm_progress_node = progress_node.start("Inline ASM", inline_asm.bytecode.len);
+                defer inline_asm_progress_node.end();
+
                 for (inline_asm.bytecode, 0..) |bytecode, i| {
+                    inline_asm_progress_node.completeOne();
+
                     switch (bytecode.op) {
                         inline else => |val, op| blk: {
                             const ParamType = @TypeOf(val);
@@ -2537,6 +2575,8 @@ fn compileBlock(
                 }
             },
             .@"unreachable" => {
+                progress_node.completeOne();
+
                 return_or_unreachable_emit = true;
 
                 try emitUnreachable(codegen);
@@ -2600,7 +2640,15 @@ fn compileFunction(
         constructor: *Parser.Node.Constructor,
     },
     class: *Parser.Node.Class,
+    parent_progress_node: std.Progress.Node,
 ) !?MMTypes.FunctionDefinition {
+    var progress_node_name_buf: [256]u8 = undefined;
+    const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Function {s}", .{switch (function) {
+        .function => function.function.mangled_name.?,
+        .constructor => "Constructor",
+    }}), 0);
+    defer progress_node.end();
+
     const initializer = blk: {
         var initializer = false;
 
@@ -2693,6 +2741,7 @@ fn compileFunction(
                 ast_function.body.?.contents.block,
                 true,
                 self.type_intern_pool.get(ast_function.return_type).resolved.machineType(),
+                progress_node,
             );
         },
         .constructor => |constructor| {
@@ -2704,6 +2753,7 @@ fn compileFunction(
                 constructor.body.?.contents.block,
                 true,
                 .void,
+                progress_node,
             );
         },
     }
@@ -2783,7 +2833,7 @@ fn compileFunction(
     };
 }
 
-pub fn generate(self: *Genny) !MMTypes.Script {
+pub fn generate(self: *Genny, parent_progress_node: std.Progress.Node) !MMTypes.Script {
     for (self.ast.root_elements.items) |node| {
         //Skip non class nodes
         if (node != .class)
@@ -2791,15 +2841,18 @@ pub fn generate(self: *Genny) !MMTypes.Script {
 
         const class = node.class;
 
+        const progress_node = parent_progress_node.start("Compiling", class.functions.len + class.constructors.len);
+        defer progress_node.end();
+
         var functions = std.ArrayList(MMTypes.FunctionDefinition).init(self.ast.allocator);
 
         for (class.functions) |ast_function| {
-            if (try self.compileFunction(.{ .function = ast_function }, class)) |function|
+            if (try self.compileFunction(.{ .function = ast_function }, class, progress_node)) |function|
                 try functions.append(function);
         }
 
         for (class.constructors) |constructor| {
-            try functions.append((try self.compileFunction(.{ .constructor = constructor }, class)).?);
+            try functions.append((try self.compileFunction(.{ .constructor = constructor }, class, progress_node)).?);
         }
 
         // If theres no constructors, or this class is not static, then we need to create a default parameterless constructor

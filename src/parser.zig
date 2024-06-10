@@ -15,6 +15,7 @@ tree: Tree,
 allocator: std.mem.Allocator,
 iter: SliceIterator(Lexeme),
 type_intern_pool: *TypeInternPool,
+root_progress_node: std.Progress.Node,
 
 pub const FromImportWanted = union(enum) {
     pub const ImportedFunction = struct {
@@ -636,6 +637,7 @@ pub fn parse(
     allocator: std.mem.Allocator,
     lexemes: []const Lexeme,
     type_intern_pool: *TypeInternPool,
+    parent_progress_node: std.Progress.Node,
 ) Error!Self {
     var self = Self{
         .tree = .{
@@ -648,9 +650,12 @@ pub fn parse(
             .slice = lexemes,
         },
         .type_intern_pool = type_intern_pool,
+        .root_progress_node = parent_progress_node.start("Parsing", 1),
     };
 
     try self.consumeTopLevel();
+
+    self.root_progress_node.end();
 
     return self;
 }
@@ -672,16 +677,19 @@ fn hashKeyword(keyword: []const u8) KeywordHash {
 }
 
 fn consumeTopLevel(self: *Self) !void {
+    const progress_node = self.root_progress_node.start("Parsing top level", 0);
+    defer progress_node.end();
+
     while (self.iter.peek() != null) {
-        const modifiers = self.consumeModifiers();
+        const modifiers = self.consumeModifiers(progress_node);
 
         const lexeme = self.iter.next().?;
 
         switch (hashKeyword(lexeme)) {
-            hashKeyword("using") => try self.consumeUsingStatement(),
-            hashKeyword("import") => try self.consumeImportStatement(),
-            hashKeyword("from") => try self.consumeFromImportStatement(),
-            hashKeyword("class") => try self.consumeClassStatement(modifiers),
+            hashKeyword("using") => try self.consumeUsingStatement(progress_node),
+            hashKeyword("import") => try self.consumeImportStatement(progress_node),
+            hashKeyword("from") => try self.consumeFromImportStatement(progress_node),
+            hashKeyword("class") => try self.consumeClassStatement(progress_node, modifiers),
             else => {
                 std.debug.panic("Unexpected top level lexeme \"{s}\"", .{lexeme});
             },
@@ -689,7 +697,10 @@ fn consumeTopLevel(self: *Self) !void {
     }
 }
 
-fn consumeClassStatement(self: *Self, class_modifiers: MMTypes.Modifiers) !void {
+fn consumeClassStatement(self: *Self, parent_progress_node: std.Progress.Node, class_modifiers: MMTypes.Modifiers) !void {
+    const progress_node = parent_progress_node.start("Parsing class", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.Class);
     errdefer self.allocator.destroy(node);
 
@@ -701,7 +712,7 @@ fn consumeClassStatement(self: *Self, class_modifiers: MMTypes.Modifiers) !void 
     const class_name = self.iter.next() orelse unreachable;
 
     const identifier: ?*Node.Expression = if (self.consumeArbitraryLexemeIfAvailable("(")) blk: {
-        const expression = try self.consumeExpression();
+        const expression = try self.consumeExpression(progress_node);
         if (expression.contents != .guid_literal)
             std.debug.panic("needs to be a guid, is {s}", .{@tagName(expression.contents)});
 
@@ -750,11 +761,13 @@ fn consumeClassStatement(self: *Self, class_modifiers: MMTypes.Modifiers) !void 
             break;
         }
 
+        const attributes_progress_node = progress_node.start("Parsing attributes", 0);
+
         var attributes = std.ArrayList(*Node.Attribute).init(self.allocator);
         while (self.iter.peek().?[0] == '@') {
             const name = (self.iter.next() orelse @panic("unexpected EOF when parsing attribute"))[1..];
 
-            const parameters = try self.consumeFunctionCallParameters();
+            const parameters = try self.consumeFunctionCallParameters(attributes_progress_node);
 
             const attribute = try self.allocator.create(Node.Attribute);
 
@@ -780,7 +793,9 @@ fn consumeClassStatement(self: *Self, class_modifiers: MMTypes.Modifiers) !void 
             try attributes.append(attribute);
         }
 
-        const modifiers = self.consumeModifiers();
+        attributes_progress_node.end();
+
+        const modifiers = self.consumeModifiers(parent_progress_node);
 
         const next = self.iter.peek() orelse std.debug.panic("unexpected EOF when parsing declaration", .{});
 
@@ -791,22 +806,22 @@ fn consumeClassStatement(self: *Self, class_modifiers: MMTypes.Modifiers) !void 
             //Get rid of the fn
             self.consumeArbitraryLexeme("fn");
 
-            try functions.append(try self.consumeFunction(modifiers, attributes.items));
+            try functions.append(try self.consumeFunction(modifiers, attributes.items, progress_node));
         } else if (next_keyword == comptime hashKeyword("enum")) {
-            try enums.append(try self.consumeEnum(modifiers));
+            try enums.append(try self.consumeEnum(modifiers, progress_node));
         }
         // Else, we are consuming a field, property, or constructor
         else blk: {
             if (self.iter.peekAt(1)) |ahead| {
                 if (ahead[0] == '(') {
-                    try constructors.append(try self.consumeConstructor(class_name, modifiers));
+                    try constructors.append(try self.consumeConstructor(class_name, modifiers, progress_node));
 
                     //Since we parsed it as a contructor, break out as we dont want to accidentally parse a property aswell
                     break :blk;
                 }
             }
 
-            switch (try self.consumeFieldOrProperty(modifiers)) {
+            switch (try self.consumeFieldOrProperty(modifiers, progress_node)) {
                 .field => |field| try fields.append(field),
                 .property => |property| try properties.append(property),
             }
@@ -832,7 +847,10 @@ fn consumeClassStatement(self: *Self, class_modifiers: MMTypes.Modifiers) !void 
     try self.tree.root_elements.append(self.allocator, .{ .class = node });
 }
 
-fn consumeEnum(self: *Self, modifiers: MMTypes.Modifiers) !*Node.Enum {
+fn consumeEnum(self: *Self, modifiers: MMTypes.Modifiers, parent_progress_node: std.Progress.Node) !*Node.Enum {
+    const progress_node = parent_progress_node.start("Parsing enum", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.Enum);
     errdefer self.allocator.destroy(node);
 
@@ -841,7 +859,7 @@ fn consumeEnum(self: *Self, modifiers: MMTypes.Modifiers) !*Node.Enum {
     const name = self.iter.next() orelse @panic("EOF");
 
     const backing_type = if (self.consumeArbitraryLexemeIfAvailable(":"))
-        try self.consumeTypeName()
+        try self.consumeTypeName(progress_node)
     else
         try self.type_intern_pool.fromFishType(.s32);
 
@@ -860,7 +878,10 @@ fn consumeEnum(self: *Self, modifiers: MMTypes.Modifiers) !*Node.Enum {
     return node;
 }
 
-fn consumeConstructor(self: *Self, class_name: []const u8, modifiers: MMTypes.Modifiers) !*Node.Constructor {
+fn consumeConstructor(self: *Self, class_name: []const u8, modifiers: MMTypes.Modifiers, parent_progress_node: std.Progress.Node) !*Node.Constructor {
+    const progress_node = parent_progress_node.start("Parsing constructor", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.Constructor);
     errdefer self.allocator.destroy(node);
 
@@ -868,12 +889,12 @@ fn consumeConstructor(self: *Self, class_name: []const u8, modifiers: MMTypes.Mo
 
     std.debug.assert(std.mem.eql(u8, name, class_name));
 
-    const parameters = try self.consumeFunctionParameters();
+    const parameters = try self.consumeFunctionParameters(progress_node);
 
     const body: ?*Node.Expression = if (self.consumeArbitraryLexemeIfAvailable(";"))
         null
     else
-        try self.consumeBlockExpression();
+        try self.consumeBlockExpression(progress_node);
 
     node.* = .{
         .modifiers = modifiers,
@@ -884,14 +905,17 @@ fn consumeConstructor(self: *Self, class_name: []const u8, modifiers: MMTypes.Mo
     return node;
 }
 
-fn consumeFieldOrProperty(self: *Self, modifiers: MMTypes.Modifiers) !union(enum) {
+fn consumeFieldOrProperty(self: *Self, modifiers: MMTypes.Modifiers, parent_progress_node: std.Progress.Node) !union(enum) {
     field: *Node.Field,
     property: *Node.Property,
 } {
+    const progress_node = parent_progress_node.start("Parsing field/property", 0);
+    defer progress_node.end();
+
     const name = self.iter.next() orelse std.debug.panic("unexpected EOF when parsing field name", .{});
 
     const field_type: TypeInternPool.Index = if (self.consumeArbitraryLexemeIfAvailable(":"))
-        try self.consumeTypeName()
+        try self.consumeTypeName(progress_node)
     else
         .unknown;
 
@@ -914,14 +938,14 @@ fn consumeFieldOrProperty(self: *Self, modifiers: MMTypes.Modifiers) !union(enum
                         if (self.consumeArbitraryLexemeIfAvailable(";")) {
                             get_body = .forward_declaration;
                         } else {
-                            get_body = .{ .expression = try self.consumeBlockExpression() };
+                            get_body = .{ .expression = try self.consumeBlockExpression(progress_node) };
                         }
                     },
                     hashKeyword("set") => {
                         if (self.consumeArbitraryLexemeIfAvailable(";")) {
                             set_body = .forward_declaration;
                         } else {
-                            set_body = .{ .expression = try self.consumeBlockExpression() };
+                            set_body = .{ .expression = try self.consumeBlockExpression(progress_node) };
                         }
                     },
                     hashKeyword("}") => break :blk .{ get_body, set_body },
@@ -941,7 +965,7 @@ fn consumeFieldOrProperty(self: *Self, modifiers: MMTypes.Modifiers) !union(enum
         return .{ .property = node };
     } else {
         const default_value: ?*Node.Expression = if (self.consumeArbitraryLexemeIfAvailable("="))
-            try self.consumeExpression()
+            try self.consumeExpression(progress_node)
         else
             null;
 
@@ -967,7 +991,10 @@ fn consumeFieldOrProperty(self: *Self, modifiers: MMTypes.Modifiers) !union(enum
 
 pub const Error = std.mem.Allocator.Error || std.fmt.ParseIntError || error{InvalidUtf8};
 
-fn consumeBlockExpression(self: *Self) Error!*Node.Expression {
+fn consumeBlockExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    const progress_node = parent_progress_node.start("Parsing block expression", 0);
+    defer progress_node.end();
+
     const body_node = try self.allocator.create(Node.Expression);
     errdefer self.allocator.destroy(body_node);
 
@@ -989,7 +1016,7 @@ fn consumeBlockExpression(self: *Self) Error!*Node.Expression {
         const was_keyword: bool = if (maybeHashKeyword(next)) |maybe_keyword| blk: {
             switch (maybe_keyword) {
                 hashKeyword("let") => {
-                    const variable_declaration = try self.consumeVariableDeclaration();
+                    const variable_declaration = try self.consumeVariableDeclaration(progress_node);
 
                     // std.debug.print("cc {}\n", .{variable_declaration});
 
@@ -997,7 +1024,7 @@ fn consumeBlockExpression(self: *Self) Error!*Node.Expression {
                     break :blk true;
                 },
                 hashKeyword("return") => {
-                    const return_statement = try self.consumeReturnStatement();
+                    const return_statement = try self.consumeReturnStatement(progress_node);
 
                     // std.debug.print("ee {}\n", .{return_statement});
 
@@ -1005,7 +1032,7 @@ fn consumeBlockExpression(self: *Self) Error!*Node.Expression {
                     break :blk true;
                 },
                 hashKeyword("if") => {
-                    const if_statement = try self.consumeIfStatement();
+                    const if_statement = try self.consumeIfStatement(progress_node);
 
                     // std.debug.print("ff {}\n", .{if_statement});
 
@@ -1013,13 +1040,13 @@ fn consumeBlockExpression(self: *Self) Error!*Node.Expression {
                     break :blk true;
                 },
                 hashKeyword("while") => {
-                    const while_statement = try self.consumeWhileStatement();
+                    const while_statement = try self.consumeWhileStatement(progress_node);
 
                     try body.append(while_statement);
                     break :blk true;
                 },
                 hashKeyword("inline_asm") => {
-                    const inline_asm_statement = try self.consumeInlineAsmStatement();
+                    const inline_asm_statement = try self.consumeInlineAsmStatement(progress_node);
 
                     try body.append(inline_asm_statement);
                     break :blk true;
@@ -1039,7 +1066,7 @@ fn consumeBlockExpression(self: *Self) Error!*Node.Expression {
 
         //If it was not parsed as a special keyword, then its an expression, and we need to parse it as one
         if (!was_keyword) {
-            const node: Node = .{ .expression = try self.consumeExpression() };
+            const node: Node = .{ .expression = try self.consumeExpression(progress_node) };
             self.consumeSemicolon();
 
             // std.debug.print("dd {}\n", .{node});
@@ -1058,7 +1085,10 @@ fn consumeBlockExpression(self: *Self) Error!*Node.Expression {
     return body_node;
 }
 
-fn consumeInlineAsmStatement(self: *Self) !Node {
+fn consumeInlineAsmStatement(self: *Self, parent_progress_node: std.Progress.Node) !Node {
+    const progress_node = parent_progress_node.start("Parsing inline asm statement", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.InlineAsmStatement);
 
     self.consumeArbitraryLexeme("inline_asm");
@@ -1069,6 +1099,8 @@ fn consumeInlineAsmStatement(self: *Self) !Node {
     self.consumeArbitraryLexeme("{");
 
     while (!self.consumeArbitraryLexemeIfAvailable("}")) {
+        defer progress_node.completeOne();
+
         const name = self.iter.next() orelse @panic("EOF parsing op");
 
         const parsed_op = std.meta.stringToEnum(MMTypes.InstructionType, name);
@@ -1556,7 +1588,8 @@ fn isFloatLiteral(str: []const u8) !?f64 {
     };
 }
 
-fn consumePrimaryExpression(self: *Self) Error!*Node.Expression {
+fn consumePrimaryExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+
     // Try to match bool/null literals
     if (self.consumeAnyMatches(&.{ "true", "false", "null" })) |match| {
         switch (match) {
@@ -1591,7 +1624,7 @@ fn consumePrimaryExpression(self: *Self) Error!*Node.Expression {
     const first = self.iter.next() orelse @panic("eof");
 
     if (first[0] == '(') {
-        const expression = try self.consumeExpression();
+        const expression = try self.consumeExpression(parent_progress_node);
 
         self.consumeArbitraryLexeme(")");
 
@@ -1643,7 +1676,7 @@ fn consumePrimaryExpression(self: *Self) Error!*Node.Expression {
     if (next[0] == '(') {
         const expression = try self.allocator.create(Node.Expression);
 
-        const parameters = try self.consumeFunctionCallParameters();
+        const parameters = try self.consumeFunctionCallParameters(parent_progress_node);
 
         //Builtin functions
         if (maybeHashKeyword(first)) |keyword| {
@@ -1749,8 +1782,8 @@ fn consumePrimaryExpression(self: *Self) Error!*Node.Expression {
     return expression;
 }
 
-fn consumeDotExpression(self: *Self) Error!*Node.Expression {
-    var node = try self.consumePrimaryExpression();
+fn consumeDotExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    var node = try self.consumePrimaryExpression(parent_progress_node);
 
     while (self.consumeArbitraryLexemeIfAvailable(".")) {
         const field_access = try self.allocator.create(Node.Expression);
@@ -1769,7 +1802,7 @@ fn consumeDotExpression(self: *Self) Error!*Node.Expression {
                     .function_call = .{
                         .source = node,
                         .function = .{ .name = name },
-                        .parameters = try self.consumeFunctionCallParameters(),
+                        .parameters = try self.consumeFunctionCallParameters(parent_progress_node),
                     },
                 }
             else
@@ -1788,20 +1821,20 @@ fn consumeDotExpression(self: *Self) Error!*Node.Expression {
     return node;
 }
 
-fn consumeUnaryExpression(self: *Self) Error!*Node.Expression {
+fn consumeUnaryExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
     if (self.consumeAnyMatches(&.{ "!", "-" })) |match| {
         const unary = try self.allocator.create(Node.Expression);
 
         unary.* = switch (match) {
             .@"!" => .{
                 .contents = .{
-                    .logical_negation = try self.consumeUnaryExpression(),
+                    .logical_negation = try self.consumeUnaryExpression(parent_progress_node),
                 },
                 .type = try self.type_intern_pool.fromFishType(.bool),
             },
             .@"-" => .{
                 .contents = .{
-                    .numeric_negation = try self.consumeUnaryExpression(),
+                    .numeric_negation = try self.consumeUnaryExpression(parent_progress_node),
                 },
                 .type = .unknown,
             },
@@ -1809,12 +1842,12 @@ fn consumeUnaryExpression(self: *Self) Error!*Node.Expression {
 
         return unary;
     } else {
-        return self.consumeDotExpression();
+        return self.consumeDotExpression(parent_progress_node);
     }
 }
 
-fn consumeFactorExpression(self: *Self) Error!*Node.Expression {
-    var node = try self.consumeUnaryExpression();
+fn consumeFactorExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    var node = try self.consumeUnaryExpression(parent_progress_node);
 
     while (self.consumeAnyMatches(&.{ "/", "*" })) |match| {
         node = switch (match) {
@@ -1830,7 +1863,7 @@ fn consumeFactorExpression(self: *Self) Error!*Node.Expression {
                         },
                         .{
                             .lefthand = node,
-                            .righthand = try self.consumeUnaryExpression(),
+                            .righthand = try self.consumeUnaryExpression(parent_progress_node),
                         },
                     ),
                     .type = .unknown,
@@ -1844,8 +1877,8 @@ fn consumeFactorExpression(self: *Self) Error!*Node.Expression {
     return node;
 }
 
-fn consumeTermExpression(self: *Self) Error!*Node.Expression {
-    var node = try self.consumeFactorExpression();
+fn consumeTermExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    var node = try self.consumeFactorExpression(parent_progress_node);
 
     while (self.consumeAnyMatches(&.{ "-", "+" })) |match| {
         node = switch (match) {
@@ -1861,7 +1894,7 @@ fn consumeTermExpression(self: *Self) Error!*Node.Expression {
                         },
                         .{
                             .lefthand = node,
-                            .righthand = try self.consumeFactorExpression(),
+                            .righthand = try self.consumeFactorExpression(parent_progress_node),
                         },
                     ),
                     .type = .unknown,
@@ -1875,8 +1908,8 @@ fn consumeTermExpression(self: *Self) Error!*Node.Expression {
     return node;
 }
 
-fn consumeBitwiseExpression(self: *Self) Error!*Node.Expression {
-    var node = try self.consumeTermExpression();
+fn consumeBitwiseExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    var node = try self.consumeTermExpression(parent_progress_node);
 
     while (self.consumeAnyMatches(&.{ "&", "^", "|" })) |match| {
         node = switch (match) {
@@ -1893,7 +1926,7 @@ fn consumeBitwiseExpression(self: *Self) Error!*Node.Expression {
                         },
                         .{
                             .lefthand = node,
-                            .righthand = try self.consumeTermExpression(),
+                            .righthand = try self.consumeTermExpression(parent_progress_node),
                         },
                     ),
                     .type = .unknown,
@@ -1907,15 +1940,15 @@ fn consumeBitwiseExpression(self: *Self) Error!*Node.Expression {
     return node;
 }
 
-fn consumeCastExpression(self: *Self) Error!*Node.Expression {
-    var node = try self.consumeBitwiseExpression();
+fn consumeCastExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    var node = try self.consumeBitwiseExpression(parent_progress_node);
 
     while (self.consumeArbitraryLexemeIfAvailable("as")) {
         const cast_expression = try self.allocator.create(Node.Expression);
 
         cast_expression.* = .{
             .contents = .{ .cast = node },
-            .type = try self.consumeTypeName(),
+            .type = try self.consumeTypeName(parent_progress_node),
         };
 
         node = cast_expression;
@@ -1924,8 +1957,8 @@ fn consumeCastExpression(self: *Self) Error!*Node.Expression {
     return node;
 }
 
-fn consumeComparisonExpression(self: *Self) Error!*Node.Expression {
-    var node = try self.consumeCastExpression();
+fn consumeComparisonExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    var node = try self.consumeCastExpression(parent_progress_node);
 
     while (self.consumeAnyMatches(&.{ ">", ">=", "<", "<=" })) |match| {
         node = switch (match) {
@@ -1943,7 +1976,7 @@ fn consumeComparisonExpression(self: *Self) Error!*Node.Expression {
                         },
                         .{
                             .lefthand = node,
-                            .righthand = try self.consumeCastExpression(),
+                            .righthand = try self.consumeCastExpression(parent_progress_node),
                         },
                     ),
                     .type = try self.type_intern_pool.fromFishType(.bool),
@@ -1957,8 +1990,8 @@ fn consumeComparisonExpression(self: *Self) Error!*Node.Expression {
     return node;
 }
 
-fn consumeEqualityExpression(self: *Self) Error!*Node.Expression {
-    var node = try self.consumeComparisonExpression();
+fn consumeEqualityExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    var node = try self.consumeComparisonExpression(parent_progress_node);
 
     while (self.consumeAnyMatches(&.{ "==", "!=" })) |match| {
         node = switch (match) {
@@ -1971,7 +2004,7 @@ fn consumeEqualityExpression(self: *Self) Error!*Node.Expression {
                         if (keyword == .@"==") @tagName(Node.Expression.Contents.equal) else @tagName(Node.Expression.Contents.not_equal),
                         .{
                             .lefthand = node,
-                            .righthand = try self.consumeComparisonExpression(),
+                            .righthand = try self.consumeComparisonExpression(parent_progress_node),
                         },
                     ),
                     .type = try self.type_intern_pool.fromFishType(.bool),
@@ -1985,8 +2018,8 @@ fn consumeEqualityExpression(self: *Self) Error!*Node.Expression {
     return node;
 }
 
-fn consumeLogicalAndExpression(self: *Self) Error!*Node.Expression {
-    var node = try self.consumeEqualityExpression();
+fn consumeLogicalAndExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    var node = try self.consumeEqualityExpression(parent_progress_node);
 
     while (self.consumeArbitraryLexemeIfAvailable("&&")) {
         const logical_and = try self.allocator.create(Node.Expression);
@@ -1995,7 +2028,7 @@ fn consumeLogicalAndExpression(self: *Self) Error!*Node.Expression {
             .contents = .{
                 .logical_and = .{
                     .lefthand = node,
-                    .righthand = try self.consumeEqualityExpression(),
+                    .righthand = try self.consumeEqualityExpression(parent_progress_node),
                 },
             },
             .type = try self.type_intern_pool.fromFishType(.bool),
@@ -2007,8 +2040,8 @@ fn consumeLogicalAndExpression(self: *Self) Error!*Node.Expression {
     return node;
 }
 
-fn consumeLogicalOrExpression(self: *Self) Error!*Node.Expression {
-    var node = try self.consumeLogicalAndExpression();
+fn consumeLogicalOrExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    var node = try self.consumeLogicalAndExpression(parent_progress_node);
 
     while (self.consumeArbitraryLexemeIfAvailable("||")) {
         const logical_or = try self.allocator.create(Node.Expression);
@@ -2017,7 +2050,7 @@ fn consumeLogicalOrExpression(self: *Self) Error!*Node.Expression {
             .contents = .{
                 .logical_or = .{
                     .lefthand = node,
-                    .righthand = try self.consumeLogicalAndExpression(),
+                    .righthand = try self.consumeLogicalAndExpression(parent_progress_node),
                 },
             },
             .type = try self.type_intern_pool.fromFishType(.bool),
@@ -2029,11 +2062,11 @@ fn consumeLogicalOrExpression(self: *Self) Error!*Node.Expression {
     return node;
 }
 
-fn consumeAssignmentExpression(self: *Self) Error!*Node.Expression {
-    const destination = try self.consumeLogicalOrExpression();
+fn consumeAssignmentExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    const destination = try self.consumeLogicalOrExpression(parent_progress_node);
 
     if (self.consumeArbitraryLexemeIfAvailable("=")) {
-        const value = try self.consumeAssignmentExpression();
+        const value = try self.consumeAssignmentExpression(parent_progress_node);
 
         const assignment = try self.allocator.create(Node.Expression);
 
@@ -2051,8 +2084,11 @@ fn consumeAssignmentExpression(self: *Self) Error!*Node.Expression {
     return destination;
 }
 
-fn consumeExpression(self: *Self) Error!*Node.Expression {
-    return self.consumeAssignmentExpression();
+fn consumeExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    const progress_node = parent_progress_node.start("Parsing expression", 0);
+    defer progress_node.end();
+
+    return self.consumeAssignmentExpression(progress_node);
 }
 
 fn MatchEnum(comptime matches: []const [:0]const u8) type {
@@ -2106,7 +2142,10 @@ fn consumeAnyMatches(self: *Self, comptime matches: []const [:0]const u8) ?Match
     return null;
 }
 
-fn consumeFunctionCallParameters(self: *Self) ![]const *Node.Expression {
+fn consumeFunctionCallParameters(self: *Self, parent_progress_node: std.Progress.Node) ![]const *Node.Expression {
+    const progress_node = parent_progress_node.start("Parsing function call parameters", 0);
+    defer progress_node.end();
+
     var parameters = std.ArrayList(*Node.Expression).init(self.allocator);
     defer parameters.deinit();
 
@@ -2124,7 +2163,7 @@ fn consumeFunctionCallParameters(self: *Self) ![]const *Node.Expression {
         if (i > 0)
             self.consumeArbitraryLexeme(",");
 
-        try parameters.append(try self.consumeExpression());
+        try parameters.append(try self.consumeExpression(progress_node));
 
         i += 1;
     }
@@ -2132,7 +2171,10 @@ fn consumeFunctionCallParameters(self: *Self) ![]const *Node.Expression {
     return parameters.toOwnedSlice();
 }
 
-fn consumeTypeName(self: *Self) !TypeInternPool.Index {
+fn consumeTypeName(self: *Self, parent_progress_node: std.Progress.Node) !TypeInternPool.Index {
+    const progress_node = parent_progress_node.start("Parsing type name", 0);
+    defer progress_node.end();
+
     const name, const base_type: ?[]const u8 = blk: {
         const name = self.iter.next() orelse std.debug.panic("unexpected EOF when reading type name", .{});
 
@@ -2169,7 +2211,10 @@ fn consumeTypeName(self: *Self) !TypeInternPool.Index {
     } });
 }
 
-fn consumeFunctionParameters(self: *Self) ![]Node.Function.Parameter {
+fn consumeFunctionParameters(self: *Self, parent_progress_node: std.Progress.Node) ![]Node.Function.Parameter {
+    const progress_node = parent_progress_node.start("Parsing function parameters", 0);
+    defer progress_node.end();
+
     self.consumeArbitraryLexeme("(");
 
     var parameters = std.ArrayListUnmanaged(Node.Function.Parameter){};
@@ -2182,7 +2227,7 @@ fn consumeFunctionParameters(self: *Self) ![]Node.Function.Parameter {
             break;
 
         self.consumeArbitraryLexeme(":");
-        const param_type = try self.consumeTypeName();
+        const param_type = try self.consumeTypeName(progress_node);
 
         try parameters.append(self.allocator, .{ .name = name, .type = param_type });
 
@@ -2192,25 +2237,28 @@ fn consumeFunctionParameters(self: *Self) ![]Node.Function.Parameter {
     return parameters.items;
 }
 
-fn consumeFunction(self: *Self, modifiers: MMTypes.Modifiers, attributes: []const *Node.Attribute) !*Node.Function {
+fn consumeFunction(self: *Self, modifiers: MMTypes.Modifiers, attributes: []const *Node.Attribute, parent_progress_node: std.Progress.Node) !*Node.Function {
+    const progress_node = parent_progress_node.start("Parsing function", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.Function);
     errdefer self.allocator.destroy(node);
 
     const name = self.iter.next() orelse std.debug.panic("unexpected EOF when parsing function name", .{});
 
-    const parameters = try self.consumeFunctionParameters();
+    const parameters = try self.consumeFunctionParameters(progress_node);
 
     const return_type: TypeInternPool.Index = blk: {
         if (std.mem.eql(u8, self.iter.peek() orelse std.debug.panic("EOF", .{}), "->")) {
             self.consumeArbitraryLexeme("->");
-            break :blk try self.consumeTypeName();
+            break :blk try self.consumeTypeName(progress_node);
         }
 
         break :blk try self.type_intern_pool.fromFishType(.void);
     };
 
     const body: ?*Node.Expression = if (!self.consumeArbitraryLexemeIfAvailable(";"))
-        try self.consumeBlockExpression()
+        try self.consumeBlockExpression(progress_node)
     else
         null;
 
@@ -2266,16 +2314,19 @@ fn isAsciiStringLiteral(allocator: std.mem.Allocator, lexeme: Lexeme) !?[]const 
     return try unwrapStringLiteral(allocator, lexeme);
 }
 
-fn consumeWhileStatement(self: *Self) !Node {
+fn consumeWhileStatement(self: *Self, parent_progress_node: std.Progress.Node) !Node {
+    const progress_node = parent_progress_node.start("Parsing while statement", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.WhileStatement);
 
     self.consumeArbitraryLexeme("while");
 
     self.consumeArbitraryLexeme("(");
-    const condition = try self.consumeExpression();
+    const condition = try self.consumeExpression(progress_node);
     self.consumeArbitraryLexeme(")");
 
-    const body = try self.consumeBlockExpression();
+    const body = try self.consumeBlockExpression(progress_node);
 
     node.* = .{
         .condition = condition,
@@ -2285,22 +2336,25 @@ fn consumeWhileStatement(self: *Self) !Node {
     return .{ .while_statement = node };
 }
 
-fn consumeIfStatement(self: *Self) !Node {
+fn consumeIfStatement(self: *Self, parent_progress_node: std.Progress.Node) !Node {
+    const progress_node = parent_progress_node.start("Parsing if statement", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.IfStatement);
     errdefer self.allocator.destroy(node);
 
     self.consumeArbitraryLexeme("if");
 
     self.consumeArbitraryLexeme("(");
-    const condition = try self.consumeExpression();
+    const condition = try self.consumeExpression(progress_node);
     self.consumeArbitraryLexeme(")");
 
-    const body = try self.consumeBlockExpression();
+    const body = try self.consumeBlockExpression(progress_node);
 
     const else_body: ?*Node.Expression = if (std.mem.eql(u8, "else", self.iter.peek() orelse @panic("EOF"))) blk: {
         self.consumeArbitraryLexeme("else");
 
-        break :blk try self.consumeBlockExpression();
+        break :blk try self.consumeBlockExpression(progress_node);
     } else null;
 
     node.* = .{
@@ -2312,7 +2366,10 @@ fn consumeIfStatement(self: *Self) !Node {
     return .{ .if_statement = node };
 }
 
-fn consumeReturnStatement(self: *Self) !Node {
+fn consumeReturnStatement(self: *Self, parent_progress_node: std.Progress.Node) !Node {
+    const progress_node = parent_progress_node.start("Parsing return statement", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.ReturnStatement);
     errdefer self.allocator.destroy(node);
 
@@ -2320,7 +2377,7 @@ fn consumeReturnStatement(self: *Self) !Node {
 
     //If the next lexeme is not a semicolon, then theres an expression after, parse it
     const expression: ?*Node.Expression = if (!self.consumeArbitraryLexemeIfAvailable(";")) blk: {
-        const expression = try self.consumeExpression();
+        const expression = try self.consumeExpression(progress_node);
 
         self.consumeSemicolon();
 
@@ -2332,7 +2389,10 @@ fn consumeReturnStatement(self: *Self) !Node {
     return .{ .return_statement = node };
 }
 
-fn consumeVariableDeclaration(self: *Self) !Node {
+fn consumeVariableDeclaration(self: *Self, parent_progress_node: std.Progress.Node) !Node {
+    const progress_node = parent_progress_node.start("Parsing variable declaration", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.VariableDeclaration);
     errdefer self.allocator.destroy(node);
 
@@ -2342,7 +2402,7 @@ fn consumeVariableDeclaration(self: *Self) !Node {
 
     const variable_type: TypeInternPool.Index = blk: {
         if (self.consumeArbitraryLexemeIfAvailable(":")) {
-            break :blk try self.consumeTypeName();
+            break :blk try self.consumeTypeName(progress_node);
         }
 
         break :blk .unknown;
@@ -2350,7 +2410,7 @@ fn consumeVariableDeclaration(self: *Self) !Node {
 
     const value: ?*Node.Expression = blk: {
         if (self.consumeArbitraryLexemeIfAvailable("=")) {
-            break :blk try self.consumeExpression();
+            break :blk try self.consumeExpression(progress_node);
         }
 
         break :blk null;
@@ -2371,10 +2431,15 @@ fn consumeVariableDeclaration(self: *Self) !Node {
     return .{ .variable_declaration = node };
 }
 
-fn consumeModifiers(self: *Self) MMTypes.Modifiers {
+fn consumeModifiers(self: *Self, parent_progress_node: std.Progress.Node) MMTypes.Modifiers {
+    const progress_node = parent_progress_node.start("Parsing modifiers", 0);
+    defer progress_node.end();
+
     var current_modifiers: MMTypes.Modifiers = .{};
 
     while (true) {
+        defer progress_node.completeOne();
+
         const lexeme = self.iter.peek() orelse std.debug.panic("unexpected EOF when parsing modifiers", .{});
 
         const modifiers_type_info: std.builtin.Type = @typeInfo(MMTypes.Modifiers);
@@ -2409,7 +2474,10 @@ fn consumeModifiers(self: *Self) MMTypes.Modifiers {
     return current_modifiers;
 }
 
-fn consumeFromImportStatement(self: *Self) !void {
+fn consumeFromImportStatement(self: *Self, parent_progress_node: std.Progress.Node) !void {
+    const progress_node = parent_progress_node.start("Parsing from/import statement", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.FromImport);
     errdefer self.allocator.destroy(node);
 
@@ -2482,7 +2550,10 @@ fn consumeFromImportStatement(self: *Self) !void {
         self.consumeSemicolon();
 }
 
-fn consumeImportStatement(self: *Self) !void {
+fn consumeImportStatement(self: *Self, parent_progress_node: std.Progress.Node) !void {
+    const progress_node = parent_progress_node.start("Parsing import statement", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.Import);
     errdefer self.allocator.destroy(node);
 
@@ -2498,7 +2569,10 @@ fn consumeImportStatement(self: *Self) !void {
     self.consumeSemicolon();
 }
 
-fn consumeUsingStatement(self: *Self) !void {
+fn consumeUsingStatement(self: *Self, parent_progress_node: std.Progress.Node) !void {
+    const progress_node = parent_progress_node.start("Parsing using statement", 0);
+    defer progress_node.end();
+
     const node = try self.allocator.create(Node.Using);
     errdefer self.allocator.destroy(node);
 
