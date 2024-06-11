@@ -13,6 +13,8 @@ pub const Error = std.mem.Allocator.Error || std.fmt.BufPrintError || error{Inva
 pub const CompilationOptions = struct {
     pub const Game = enum {
         lbp1,
+        lbp1debug,
+        lbp1deploy,
         lbp2,
         lbp3ps3,
         lbp3ps4,
@@ -380,19 +382,50 @@ const Codegen = struct {
     }
 
     pub fn emitNativeInvoke(self: *Codegen, dst: Register, call_address: u24, toc_index: u8) !void {
-        if (!self.compilation_options.extended_runtime)
-            @panic("Unable to emit EXT_INVOKE without extended runtime");
-
         ensureAlignment(dst, .single_item);
 
-        // The current version of the extended runtime only allows s32 sized return types
-        std.debug.assert(dst.machine_type().size() == MMTypes.MachineType.s32.size());
+        // If we dont have the extended runtime, then we need to emulate the call
+        if (!self.compilation_options.extended_runtime) {
+            // TODO: worry about TOC index for LBP1/2, whatever considerations actually have to be made
 
-        try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_INVOKE = .{
-            .dst_idx = dst.addr(),
-            .call_address = call_address,
-            .toc_index = toc_index,
-        } }, dst.machine_type()));
+            const ident: u32, const class_name: []const u8, const name: []const u8, const ptr_address: u24 = switch (self.compilation_options.game) {
+                .lbp3ps3 => .{ 18059, "Audio", "UserMusicPlay__", 0x00ed52d0 },
+                else => std.debug.panic("EXT_INVOKE emulation for game {s}", .{@tagName(self.compilation_options.game)}),
+            };
+
+            const ptr_address_register = try self.register_allocator.allocate(.s32);
+            const ptr_value_register = try self.register_allocator.allocate(.s32);
+
+            try self.emitLoadConstInt(ptr_address_register, ptr_address);
+            try self.emitLoadConstInt(ptr_value_register, call_address);
+
+            // Store the new jump address into the native function table
+            try self.emitExtStore(ptr_address_register, ptr_value_register);
+
+            try self.register_allocator.free(ptr_address_register);
+            try self.register_allocator.free(ptr_value_register);
+
+            try self.emitCall(dst, @intCast((try self.genny.function_references.getOrPut(MMTypes.FunctionReference{
+                .name = @intCast((try self.genny.a_string_table.getOrPut(name)).index),
+                .type_reference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
+                    .array_base_machine_type = .void,
+                    .dimension_count = 0,
+                    .fish_type = .void,
+                    .machine_type = .object_ref,
+                    .script = .{ .guid = ident },
+                    .type_name = @intCast((try self.genny.a_string_table.getOrPut(class_name)).index),
+                })).index),
+            })).index));
+        } else {
+            // The current version of the extended runtime only allows s32 sized return types
+            std.debug.assert(dst.machine_type().size() == MMTypes.MachineType.s32.size());
+
+            try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_INVOKE = .{
+                .dst_idx = dst.addr(),
+                .call_address = call_address,
+                .toc_index = toc_index,
+            } }, dst.machine_type()));
+        }
     }
 
     pub fn emitLoadConstInt(self: *Codegen, dst: Register, s32: i32) !void {
@@ -948,7 +981,7 @@ const Codegen = struct {
                 .class_name = "PTrigger",
                 .field_name = "AllZLayers",
                 .offset = switch (game) {
-                    .lbp2 => 0xe,
+                    .lbp2, .lbp3ps3 => 0xe,
                     else => std.debug.panic("TODO: AllZLayers offset for game {s}", .{@tagName(game)}),
                 },
             },
@@ -956,7 +989,7 @@ const Codegen = struct {
                 .class_name = "PWorld",
                 .field_name = "ThingUIDCounter",
                 .offset = switch (game) {
-                    .lbp1, .lbp2, .lbp3ps3 => 0xc,
+                    .lbp1, .lbp1debug, .lbp1deploy, .lbp2, .lbp3ps3 => 0xc,
                     .lbp3ps4, .vita => 0x10,
                 },
             },

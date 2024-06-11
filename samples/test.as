@@ -39,6 +39,7 @@ class Test(g1234568)
         let w: bool = true;
 
         NativeFunction(x, y, z, @float4(0, 1, 2, 3), w);
+        NativeFunction2();
     }
 
     pub fn InlineAsm() {
@@ -75,4 +76,7 @@ class Test(g1234568)
 
     @NativeInvoke(0x123456, 0)
     static fn NativeFunction(param1: void*, param2: Thing, param3: f32, param4: vec4, param5: bool) -> void*;
+
+    @NativeInvoke(0x654321, 0)
+    static fn NativeFunction2() -> void;
 }
