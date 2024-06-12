@@ -1581,6 +1581,47 @@ fn resolveExpression(
                 progress_node,
             );
         },
+        .native_strcpy => |native_strcpy| {
+            try self.resolveExpression(
+                native_strcpy[0],
+                try self.type_intern_pool.fishTypePtr(.s32, 1),
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+                parent_progress_node,
+            );
+
+            // Resolve the string type
+            try self.resolveParsedType(
+                try self.type_intern_pool.asciiStringType(),
+                script,
+                script_table,
+                a_string_table,
+                parent_progress_node,
+            );
+
+            try self.resolveExpression(
+                native_strcpy[1],
+                try self.type_intern_pool.asciiStringType(),
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+                parent_progress_node,
+            );
+
+            expression.type = try self.type_intern_pool.fromFishType(.void);
+
+            // Resolve the string type
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+                parent_progress_node,
+            );
+        },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }
 

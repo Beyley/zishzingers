@@ -152,6 +152,37 @@ pub const TypeInternPool = struct {
         return @enumFromInt((try self.hash_map.getOrPutValue(.null_literal, .{ .resolved = .null_literal })).index);
     }
 
+    pub fn fishTypePtr(self: *TypeInternPool, fish_type: MMTypes.FishType, indirection_count: u8) !Index {
+        const value: Type = .{
+            .resolved = .{
+                .pointer = .{
+                    .indirection_count = indirection_count,
+                    .type = .{ .fish = fish_type },
+                    .fish = .{
+                        .array_base_machine_type = .void,
+                        .dimension_count = 0,
+                        .fish_type = .s32,
+                        .machine_type = .s32,
+                        .script = null,
+                        .type_name = 0xFFFFFFFF,
+                    },
+                },
+            },
+        };
+
+        const parsed: Type.Parsed = .{
+            .base_type = null,
+            .name = @tagName(fish_type),
+            .indirection_count = indirection_count,
+            .dimension_count = 0,
+        };
+
+        if (self.getIndex(.{ .parsed = parsed })) |index|
+            return index;
+
+        return @enumFromInt((try self.hash_map.getOrPutValue(.{ .parsed = parsed }, value)).index);
+    }
+
     pub fn fromFishType(self: *TypeInternPool, fish_type: MMTypes.FishType) !Index {
         const value: Type = .{
             .parsed = .{
@@ -494,6 +525,7 @@ pub const Node = union(enum) {
             vec2_construction: [2]*Expression,
             vec3_construction: [3]*Expression,
             vec4_construction: [4]*Expression,
+            native_strcpy: [2]*Expression,
 
             pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
                 return switch (value) {
@@ -547,6 +579,7 @@ pub const Node = union(enum) {
                     .vec2_construction => |literal| writer.print("expression_contents {{ .vec2_construction = {d} }}", .{literal}),
                     .vec3_construction => |literal| writer.print("expression_contents {{ .vec3_construction = {d} }}", .{literal}),
                     .vec4_construction => |literal| writer.print("expression_contents {{ .vec4_construction = {d} }}", .{literal}),
+                    .native_strcpy => |literal| writer.print("expression_contents {{ .native_strcpy = {d} }}", .{literal}),
                 };
             }
         };
@@ -1681,6 +1714,17 @@ fn consumePrimaryExpression(self: *Self, parent_progress_node: std.Progress.Node
         //Builtin functions
         if (maybeHashKeyword(first)) |keyword| {
             switch (keyword) {
+                hashKeyword("@strcpy") => {
+                    if (parameters.len != 2)
+                        @panic("wrong parameter length for strcpy builtin");
+
+                    expression.* = .{
+                        .contents = .{ .native_strcpy = parameters[0..2].* },
+                        .type = try self.type_intern_pool.fromFishType(.void),
+                    };
+
+                    return expression;
+                },
                 hashKeyword("@float2") => {
                     if (parameters.len != 2)
                         @panic("wrong parameter length for vec2 construction");

@@ -1,6 +1,7 @@
 using library 'lbpdeploy';
 
 import 'std:thing';
+import 'std:stringa';
 
 class Test(g1234568)
 {
@@ -40,6 +41,13 @@ class Test(g1234568)
 
         NativeFunction(x, y, z, @float4(0, 1, 2, 3), w);
         NativeFunction2();
+    }
+
+    pub fn NativeStrCopy() {
+        let x: s32* = 0x100;
+
+        @strcpy(x, 'This is a pretty long string copy to test the strcpy code!');
+        @strcpy(x, 'This is a pretty long string copy to test the strcpy code!!!');
     }
 
     pub fn InlineAsm() {

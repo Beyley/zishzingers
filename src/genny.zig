@@ -1942,6 +1942,50 @@ fn compileExpression(
 
             break :blk register;
         },
+        .native_strcpy => |native_strcpy| blk: {
+            const address_register = try codegen.register_allocator.allocate(.s32);
+
+            std.debug.assert(try compileExpression(
+                codegen,
+                function_local_variables,
+                scope_local_variables,
+                native_strcpy[0],
+                false,
+                address_register,
+                progress_node,
+            ) != null);
+
+            const string = native_strcpy[1].contents.ascii_string_literal;
+
+            const value_temporary = try codegen.register_allocator.allocate(.s32);
+            const add_temporary = try codegen.register_allocator.allocate(.s32);
+            try codegen.emitLoadConstInt(add_temporary, 4);
+
+            //TODO: this currently will add 4 bytes of null byte padding, this isnt ideal. make it not do this at some point
+            var i: usize = 0;
+            while (i <= string.len) : (i += 4) {
+                var buf: [4]u8 = .{0} ** 4;
+
+                const left = @min(4, string.len - i);
+
+                @memcpy(buf[0..left], string[i..string.len][0..left]);
+
+                const int_value: i32 = @bitCast(std.mem.readInt(u32, &buf, .big));
+
+                // Load the new value
+                try codegen.emitLoadConstInt(value_temporary, int_value);
+                // Load the value into the native address
+                try codegen.emitExtStore(address_register, value_temporary);
+                // Move forward 4 bytes
+                try codegen.emitAddInt(address_register, address_register, add_temporary);
+            }
+
+            try codegen.register_allocator.free(address_register);
+            try codegen.register_allocator.free(value_temporary);
+            try codegen.register_allocator.free(add_temporary);
+
+            break :blk null;
+        },
         else => |tag| std.debug.panic("cant codegen for expression {s} yet\n", .{@tagName(tag)}),
     };
 }
