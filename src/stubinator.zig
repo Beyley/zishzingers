@@ -36,11 +36,16 @@ pub fn generateStubs(
         }
     }
 
+    var already_imported_classes = std.StringHashMap(void).init(allocator);
+    defer already_imported_classes.deinit();
+
     var referenced_script_iter = script_references.iterator();
     while (referenced_script_iter.next()) |referenced_script| {
         //Dont try to import self
         if (referenced_script.key_ptr.* == script_guid)
             continue;
+
+        try already_imported_classes.put(referenced_script.value_ptr.*, {});
 
         try writer.writeAll("import '");
         if (namespace) |script_namespace| {
@@ -51,6 +56,36 @@ pub fn generateStubs(
         }
         try writer.writeAll("';\n");
     }
+
+    for (script.type_references) |type_reference|
+        // If it has a name and is not an object ref or safe ptr, then its probably an enum
+        if (type_reference.type_name != 0xFFFFFFFF and
+            type_reference.fish_type != .void)
+        {
+            const type_name = script.a_string_table.strings[type_reference.type_name];
+
+            if (std.mem.indexOf(u8, type_name, &.{'.'})) |dot_idx| {
+                const base_name = type_name[0..dot_idx];
+
+                if (std.mem.eql(u8, base_name, script.class_name))
+                    continue;
+
+                if (already_imported_classes.get(base_name) != null) {
+                    continue;
+                }
+
+                try already_imported_classes.put(base_name, {});
+
+                try writer.writeAll("import '");
+                if (namespace) |script_namespace| {
+                    try writer.print("{s}:", .{script_namespace});
+                }
+                for (base_name) |c| {
+                    try writer.writeByte(std.ascii.toLower(c));
+                }
+                try writer.writeAll("';\n");
+            }
+        };
 
     try writer.writeByte('\n');
 
