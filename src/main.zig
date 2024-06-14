@@ -34,7 +34,7 @@ pub fn main() !void {
     // If we have runtime safety, use GPA
     var gpa = if (builtin.mode == .Debug)
         std.heap.GeneralPurposeAllocator(.{
-            // .stack_trace_frames = 0,
+            .stack_trace_frames = 20,
         }){}
     else {};
 

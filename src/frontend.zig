@@ -416,7 +416,7 @@ pub fn generateLibrary(
             },
         };
 
-        const file_db = try stream.readFileDB(allocator);
+        var file_db = try stream.readFileDB(allocator);
 
         if (i == 0) {
             full_db = file_db;
@@ -438,15 +438,15 @@ pub fn generateLibrary(
 
     var iter = full_db.?.guid_lookup.iterator();
     while (iter.next()) |entry| {
-        if (!std.mem.endsWith(u8, entry.value_ptr.path, ".ff"))
+        if (!std.mem.endsWith(u8, entry.value_ptr.path.constSlice(), ".ff"))
             continue;
 
-        std.debug.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
+        std.debug.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path.constSlice() });
         // try stdout.print("handling g{d}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.path });
 
-        const file_data = game_data_dir.readFileAlloc(allocator, entry.value_ptr.path, std.math.maxInt(usize)) catch |err| {
+        const file_data = game_data_dir.readFileAlloc(allocator, entry.value_ptr.path.constSlice(), std.math.maxInt(usize)) catch |err| {
             if (err == std.fs.File.OpenError.FileNotFound) {
-                std.debug.print("skipping {s}\n", .{entry.value_ptr.path});
+                std.debug.print("skipping {s}\n", .{entry.value_ptr.path.constSlice()});
                 continue;
             }
 

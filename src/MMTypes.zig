@@ -1627,25 +1627,14 @@ pub const FileDB = struct {
     };
 
     pub const Entry = struct {
-        path: []const u8,
+        path: std.BoundedArray(u8, 256),
         timestamp: i32,
         size: u32,
-
-        pub fn dupe(self: Entry, allocator: std.mem.Allocator) !Entry {
-            return .{
-                .timestamp = self.timestamp,
-                .size = self.size,
-                .path = try allocator.dupe(u8, self.path),
-            };
-        }
     };
 
-    pub fn deinit(self: FileDB) void {
-        // entries are duplicated between the two tables
-        var hash_iter = self.hash_lookup.valueIterator();
-        while (hash_iter.next()) |hash| {
-            self.allocator.free(hash.path);
-        }
+    pub fn deinit(self: *FileDB) void {
+        self.guid_lookup.deinit();
+        self.hash_lookup.deinit();
     }
 
     pub fn combine(self: *FileDB, other: FileDB) !void {
@@ -1653,11 +1642,11 @@ pub const FileDB = struct {
         var guid_iter = other.guid_lookup.iterator();
 
         while (hash_iter.next()) |hash| {
-            try self.hash_lookup.put(hash.key_ptr.*, try hash.value_ptr.dupe(self.allocator));
+            try self.hash_lookup.put(hash.key_ptr.*, hash.value_ptr.*);
         }
 
         while (guid_iter.next()) |guid| {
-            try self.guid_lookup.put(guid.key_ptr.*, try guid.value_ptr.dupe(self.allocator));
+            try self.guid_lookup.put(guid.key_ptr.*, guid.value_ptr.*);
         }
     }
 };

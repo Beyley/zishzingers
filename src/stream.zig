@@ -751,6 +751,7 @@ pub fn MMStream(comptime Stream: type) type {
             for (0..count) |_| {
                 //Read the path, length is i16 on LBP3, i32 on LBP1/2/Vita
                 var path = try allocator.alloc(u8, if (db_type == .lbp3) try self.readInt(u16) else try self.readInt(u32));
+                defer allocator.free(path);
                 _ = try self.readBytes(path);
 
                 //Skip 4 bytes on non lbp3
@@ -788,7 +789,7 @@ pub fn MMStream(comptime Stream: type) type {
                 }
 
                 const entry: MMTypes.FileDB.Entry = .{
-                    .path = path,
+                    .path = try std.BoundedArray(u8, 256).fromSlice(path),
                     .timestamp = timestamp,
                     .size = size,
                 };
