@@ -207,6 +207,7 @@ pub fn disassembleBytecode(
                                 try writer.writeAll("'");
                             },
                             .LCi => try writer.print("r{d}, {d}", .{ params.dst_idx, @as(i32, @bitCast(params.constant_idx)) }),
+                            .LCs64 => try writer.print("r{d}, {d}", .{ params.dst_idx, script.constant_table_s64.?[params.constant_idx] }),
                             .LCb => try writer.print("r{d}, {}", .{ params.dst_idx, (params.constant_idx >> 31) > 0 }),
                             .LCf => try writer.print("r{d}, {d}", .{ params.dst_idx, @as(f32, @bitCast(params.constant_idx)) }),
                             .LC_NULLo, .LC_NULLsp => try writer.print("r{d}", .{params.dst_idx}),

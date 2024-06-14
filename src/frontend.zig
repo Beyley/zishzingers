@@ -446,7 +446,7 @@ pub fn generateLibrary(
 
         const file_data = game_data_dir.readFileAlloc(allocator, entry.value_ptr.path.constSlice(), std.math.maxInt(usize)) catch |err| {
             if (err == std.fs.File.OpenError.FileNotFound) {
-                std.debug.print("skipping {s}\n", .{entry.value_ptr.path.constSlice()});
+                std.debug.print("Could not find file {s}. skipping...\n", .{entry.value_ptr.path.constSlice()});
                 continue;
             }
 
