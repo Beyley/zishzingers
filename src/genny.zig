@@ -3069,7 +3069,7 @@ pub fn generate(self: *Genny, parent_progress_node: std.Progress.Node) !MMTypes.
             .constant_table_float = std.mem.bytesAsSlice(f32, std.mem.sliceAsBytes(self.f32_constants.keys())),
             .field_references = self.field_references.keys(),
             .field_definitions = blk: {
-                var field_definitions = std.ArrayList(MMTypes.FieldDefinition).init(self.ast.allocator);
+                var field_definitions = try std.ArrayList(MMTypes.FieldDefinition).initCapacity(self.ast.allocator, class.fields.len + 1);
 
                 for (class.fields) |field| {
                     try field_definitions.append(.{
@@ -3077,6 +3077,27 @@ pub fn generate(self: *Genny, parent_progress_node: std.Progress.Node) !MMTypes.
                         .type_reference = @intCast((try self.type_references.getOrPut(self.type_intern_pool.get(field.type).resolved.fish)).index),
                         .modifiers = field.modifiers,
                     });
+                }
+
+                if (self.compilation_options.hashed) {
+                    // on LBP1,3 we need to add a field to force the game to fixup the script, for LBP3 this is step one of bypassing the hack check
+                    switch (self.compilation_options.game) {
+                        .lbp1, .lbp3ps3, .lbp3ps4 => {
+                            try field_definitions.append(.{
+                                .name = @intCast((try self.a_string_table.getOrPut(".fake.field.to.force.fixup")).index),
+                                .type_reference = @intCast((try self.type_references.getOrPut(.{
+                                    .array_base_machine_type = .void,
+                                    .machine_type = .s32,
+                                    .fish_type = .s32,
+                                    .dimension_count = 0,
+                                    .script = null,
+                                    .type_name = @intCast((try self.a_string_table.getOrPut("s32")).index),
+                                })).index),
+                                .modifiers = .{},
+                            });
+                        },
+                        else => {},
+                    }
                 }
 
                 break :blk try field_definitions.toOwnedSlice();
@@ -3096,38 +3117,56 @@ pub fn generate(self: *Genny, parent_progress_node: std.Progress.Node) !MMTypes.
                 break :blk try property_definitions.toOwnedSlice();
             },
             .type_references = blk: {
-                const type_references = self.type_references.keys();
+                var type_references = try std.ArrayList(MMTypes.TypeReference).initCapacity(self.ast.allocator, self.type_references.count() + 1);
+                try type_references.appendSlice(self.type_references.keys());
 
                 const class_guid = if (self.compilation_options.identifier == null)
                     class.identifier.?.contents.guid_literal
                 else
                     self.compilation_options.identifier.?.guid;
 
-                // If this is a hashed script we need to iterate all of the type references and "fixup" any references to self to instead go to the baseclass
-                if (self.compilation_options.hashed)
-                    for (type_references) |*type_reference| {
-                        if (type_reference.script) |script_ident| {
-                            switch (script_ident) {
-                                .guid => |reference_guid| {
-                                    // If the reference GUID matches the compiled class' GUID, then we need to "fixup" that into the base class
-                                    if (reference_guid == class_guid) {
-                                        type_reference.script = class.base_class.resolved.ident;
-                                        type_reference.type_name = @intCast((try self.a_string_table.getOrPut(try std.fmt.allocPrint(
-                                            self.ast.allocator,
-                                            "{s} (actually {s})",
-                                            .{
-                                                class.base_class.resolved.name,
-                                                self.a_string_table.keys()[type_reference.type_name],
-                                            },
-                                        ))).index);
-                                    }
-                                },
-                                .hash => {},
+                if (self.compilation_options.hashed) {
+
+                    // If this is a hashed script on LBP1 we need to iterate all of the type references and "fixup" any references to self to instead go to the baseclass,
+                    // this causes the script to be loadable on LBP1
+                    if (self.compilation_options.game == .lbp1) {
+                        for (type_references.items) |*type_reference| {
+                            if (type_reference.script) |script_ident| {
+                                switch (script_ident) {
+                                    .guid => |reference_guid| {
+                                        // If the reference GUID matches the compiled class' GUID, then we need to "fixup" that into the base class
+                                        if (reference_guid == class_guid) {
+                                            type_reference.script = class.base_class.resolved.ident;
+                                            type_reference.type_name = @intCast((try self.a_string_table.getOrPut(try std.fmt.allocPrint(
+                                                self.ast.allocator,
+                                                "{s} (actually {s})",
+                                                .{
+                                                    class.base_class.resolved.name,
+                                                    self.a_string_table.keys()[type_reference.type_name],
+                                                },
+                                            ))).index);
+                                        }
+                                    },
+                                    .hash => {},
+                                }
                             }
                         }
-                    };
+                    }
 
-                break :blk type_references;
+                    // If this is a hashed script on lbp3, we need to add an unresolvable type reference, this is step 2 to bypassing the hack check
+                    if (self.compilation_options.game == .lbp3ps3 or self.compilation_options.game == .lbp3ps4) {
+                        try type_references.append(.{
+                            .array_base_machine_type = .void,
+                            .machine_type = .safe_ptr,
+                            .fish_type = .void,
+                            .script = .{ .guid = 0x7FFFFFFF },
+                            .type_name = @intCast((try self.a_string_table.getOrPut(".unresolvable.type")).index),
+                            .dimension_count = 0,
+                        });
+                    }
+                }
+
+                break :blk type_references.items;
             },
             .a_string_table = blk: {
                 var buf = std.ArrayList(u8).init(self.ast.allocator);

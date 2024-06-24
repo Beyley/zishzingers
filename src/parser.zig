@@ -1654,6 +1654,14 @@ fn consumePrimaryExpression(self: *Self, parent_progress_node: std.Progress.Node
         }
     }
 
+    const peek = self.iter.peek() orelse @panic("EOF");
+
+    if (peek[0] == '{') {
+        const expression = try self.consumeBlockExpression(parent_progress_node);
+
+        return expression;
+    }
+
     const first = self.iter.next() orelse @panic("eof");
 
     if (first[0] == '(') {
