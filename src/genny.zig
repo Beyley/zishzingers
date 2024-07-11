@@ -388,15 +388,16 @@ const Codegen = struct {
         if (!self.compilation_options.extended_runtime) {
             // TODO: worry about TOC index for LBP1/2, whatever considerations actually have to be made
 
-            const ident: u32, const class_name: []const u8, const name: []const u8, const ptr_address: u24 = switch (self.compilation_options.game) {
+            const ident: u32, const class_name: []const u8, const name: []const u8, const ptr_address: u32 = switch (self.compilation_options.game) {
                 .lbp3ps3 => .{ 18059, "Audio", "UserMusicPlay__", 0x00ed52d0 },
+                .lbp3ps4 => .{ 18059, "Audio", "UserMusicPlay__", 0x020a9050 },
                 else => std.debug.panic("EXT_INVOKE emulation for game {s}", .{@tagName(self.compilation_options.game)}),
             };
 
             const ptr_address_register = try self.register_allocator.allocate(.s32);
             const ptr_value_register = try self.register_allocator.allocate(.s32);
 
-            try self.emitLoadConstInt(ptr_address_register, ptr_address);
+            try self.emitLoadConstInt(ptr_address_register, @bitCast(ptr_address));
             try self.emitLoadConstInt(ptr_value_register, call_address);
 
             // Store the new jump address into the native function table
