@@ -179,7 +179,7 @@ pub fn compile(
     }
 
     for (res.args.library) |library| {
-        var iter = std.mem.split(u8, library, ":");
+        var iter = std.mem.splitScalar(u8, library, ':');
         const name = iter.next() orelse @panic("no library name specified");
         const path = iter.next() orelse @panic("no library path specified");
 
