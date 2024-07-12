@@ -381,7 +381,7 @@ const Codegen = struct {
         } }, dst.machine_type()));
     }
 
-    pub fn emitNativeInvoke(self: *Codegen, dst: Register, call_address: u24, toc_index: u8) !void {
+    pub fn emitNativeInvoke(self: *Codegen, dst: Register, call_address: u32, toc_index: u8) !void {
         ensureAlignment(dst, .single_item);
 
         // If we dont have the extended runtime, then we need to emulate the call
@@ -398,7 +398,7 @@ const Codegen = struct {
             const ptr_value_register = try self.register_allocator.allocate(.s32);
 
             try self.emitLoadConstInt(ptr_address_register, @bitCast(ptr_address));
-            try self.emitLoadConstInt(ptr_value_register, call_address);
+            try self.emitLoadConstInt(ptr_value_register, @bitCast(call_address));
 
             // Store the new jump address into the native function table
             try self.emitExtStore(ptr_address_register, ptr_value_register);
@@ -423,7 +423,7 @@ const Codegen = struct {
 
             try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_INVOKE = .{
                 .dst_idx = dst.addr(),
-                .call_address = call_address,
+                .call_address = @intCast(call_address),
                 .toc_index = toc_index,
             } }, dst.machine_type()));
         }
@@ -1950,13 +1950,13 @@ fn compileExpression(
                 codegen,
                 function_local_variables,
                 scope_local_variables,
-                native_strcpy[0],
+                native_strcpy.dst,
                 false,
                 address_register,
                 progress_node,
             ) != null);
 
-            const string = native_strcpy[1].contents.ascii_string_literal;
+            const string = native_strcpy.src.contents.ascii_string_literal;
 
             const value_temporary = try codegen.register_allocator.allocate(.s32);
             const add_temporary = try codegen.register_allocator.allocate(.s32);
@@ -1965,7 +1965,8 @@ fn compileExpression(
             //TODO: this currently will add 4 bytes of null byte padding, this isnt ideal. make it not do this at some point
             var i: usize = 0;
             while (i <= string.len) : (i += 4) {
-                var buf: [4]u8 = .{0} ** 4;
+                var buf: [4]u8 = undefined;
+                @memset(&buf, native_strcpy.fill_byte orelse 0);
 
                 const left = @min(4, string.len - i);
 
@@ -1979,6 +1980,22 @@ fn compileExpression(
                 try codegen.emitExtStore(address_register, value_temporary);
                 // Move forward 4 bytes
                 try codegen.emitAddInt(address_register, address_register, add_temporary);
+            }
+
+            if (native_strcpy.length) |full_len| {
+                while (i <= full_len) : (i += 4) {
+                    var buf: [4]u8 = undefined;
+                    @memset(&buf, native_strcpy.fill_byte orelse 0);
+
+                    const int_value: i32 = @bitCast(std.mem.readInt(u32, &buf, .big));
+
+                    // Load the new value
+                    try codegen.emitLoadConstInt(value_temporary, int_value);
+                    // Load the value into the native address
+                    try codegen.emitExtStore(address_register, value_temporary);
+                    // Move forward 4 bytes
+                    try codegen.emitAddInt(address_register, address_register, add_temporary);
+                }
             }
 
             try codegen.register_allocator.free(address_register);

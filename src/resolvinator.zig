@@ -1583,7 +1583,7 @@ fn resolveExpression(
         },
         .native_strcpy => |native_strcpy| {
             try self.resolveExpression(
-                native_strcpy[0],
+                native_strcpy.dst,
                 try self.type_intern_pool.fishTypePtr(.s32, 1),
                 script,
                 script_table,
@@ -1602,7 +1602,7 @@ fn resolveExpression(
             );
 
             try self.resolveExpression(
-                native_strcpy[1],
+                native_strcpy.src,
                 try self.type_intern_pool.asciiStringType(),
                 script,
                 script_table,

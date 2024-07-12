@@ -525,7 +525,12 @@ pub const Node = union(enum) {
             vec2_construction: [2]*Expression,
             vec3_construction: [3]*Expression,
             vec4_construction: [4]*Expression,
-            native_strcpy: [2]*Expression,
+            native_strcpy: struct {
+                src: *Expression,
+                dst: *Expression,
+                fill_byte: ?u8,
+                length: ?u32,
+            },
 
             pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
                 return switch (value) {
@@ -627,7 +632,7 @@ pub const Node = union(enum) {
 
     pub const Attribute = union(enum) {
         pub const NativeInvoke = struct {
-            address: u24,
+            address: u32,
             toc_index: u8,
         };
 
@@ -1723,11 +1728,16 @@ fn consumePrimaryExpression(self: *Self, parent_progress_node: std.Progress.Node
         if (maybeHashKeyword(first)) |keyword| {
             switch (keyword) {
                 hashKeyword("@strcpy") => {
-                    if (parameters.len != 2)
+                    if (parameters.len != 2 and parameters.len != 4)
                         @panic("wrong parameter length for strcpy builtin");
 
                     expression.* = .{
-                        .contents = .{ .native_strcpy = parameters[0..2].* },
+                        .contents = .{ .native_strcpy = .{
+                            .dst = parameters[0],
+                            .src = parameters[1],
+                            .fill_byte = if (parameters.len > 2) parameters[2].contents.ascii_string_literal[0] else null,
+                            .length = if (parameters.len > 2) @intCast(parameters[3].contents.integer_literal.value) else null,
+                        } },
                         .type = try self.type_intern_pool.fromFishType(.void),
                     };
 
@@ -2710,6 +2720,15 @@ fn unwrapStringLiteral(allocator: std.mem.Allocator, literal: []const u8) ![]con
 
         try unescaped_literal.append(c);
     }
+
+    // std.debug.print("escaped string \"{s}\"\n", .{unescaped_literal.items});
+
+    // for (unescaped_literal.items) |c| {
+    //     if (c == '\n')
+    //         std.debug.print("\"", .{});
+    //     std.debug.print("{c}", .{c});
+    // }
+    // std.debug.print("\n", .{});
 
     return unescaped_literal.items;
 }
