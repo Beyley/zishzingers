@@ -1622,6 +1622,76 @@ fn resolveExpression(
                 parent_progress_node,
             );
         },
+        .new_array => |new_array| {
+            // Resolve the array size into an s32
+            try self.resolveExpression(
+                new_array.size,
+                try self.type_intern_pool.fromFishType(.s32),
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+                parent_progress_node,
+            );
+
+            // Resolve the child type of the array
+            try self.resolveParsedType(
+                new_array.child,
+                script,
+                script_table,
+                a_string_table,
+                parent_progress_node,
+            );
+
+            // Resolve the type of the array
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+                parent_progress_node,
+            );
+        },
+        .array_access => |array_access| {
+            try self.resolveExpression(
+                array_access.lefthand,
+                null,
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+                parent_progress_node,
+            );
+
+            try self.resolveExpression(
+                array_access.righthand,
+                try self.type_intern_pool.fromFishType(.s32),
+                script,
+                script_table,
+                a_string_table,
+                function_variable_stack,
+                parent_progress_node,
+            );
+
+            const array_type = self.type_intern_pool.get(array_access.lefthand.type);
+
+            expression.type = if (array_type.resolved.fish.dimension_count > 1) blk: {
+                var new_parsed = self.type_intern_pool.getKey(array_access.lefthand.type).parsed;
+                new_parsed.indirection_count -= 1;
+
+                const new_type = try self.type_intern_pool.getOrPutParsed(.{ .parsed = new_parsed });
+
+                break :blk new_type;
+            } else try self.type_intern_pool.fromFishType(MMTypes.FishType.guessFromMachineType(array_type.resolved.fish.array_base_machine_type));
+
+            try self.resolveParsedType(
+                expression.type,
+                script,
+                script_table,
+                a_string_table,
+                parent_progress_node,
+            );
+        },
         else => |contents| std.debug.panic("TODO: resolution of expression type {s}", .{@tagName(contents)}),
     }
 

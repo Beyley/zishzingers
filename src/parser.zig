@@ -531,6 +531,11 @@ pub const Node = union(enum) {
                 fill_byte: ?u8,
                 length: ?u32,
             },
+            new_array: struct {
+                size: *Expression,
+                child: TypeInternPool.Index,
+            },
+            array_access: BinaryExpression,
 
             pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
                 return switch (value) {
@@ -584,7 +589,9 @@ pub const Node = union(enum) {
                     .vec2_construction => |literal| writer.print("expression_contents {{ .vec2_construction = {d} }}", .{literal}),
                     .vec3_construction => |literal| writer.print("expression_contents {{ .vec3_construction = {d} }}", .{literal}),
                     .vec4_construction => |literal| writer.print("expression_contents {{ .vec4_construction = {d} }}", .{literal}),
-                    .native_strcpy => |literal| writer.print("expression_contents {{ .native_strcpy = {d} }}", .{literal}),
+                    .native_strcpy => |literal| writer.print("expression_contents {{ .native_strcpy = {{ .dst = {}, .fill_byte = {?d}, .length = {?d}, .src = {} }} }}", .{ literal.dst, literal.fill_byte, literal.length, literal.src }),
+                    .new_array => |new_array| writer.print("new_array {{ .new_array = {} }}", .{new_array.size}),
+                    .array_access => |array_access| writer.print("array_access {{ .array_access = .{{ .arr = {}, .idx = {} }} }}", .{ array_access.lefthand, array_access.righthand }),
                 };
             }
         };
@@ -897,7 +904,7 @@ fn consumeEnum(self: *Self, modifiers: MMTypes.Modifiers, parent_progress_node: 
     const name = self.iter.next() orelse @panic("EOF");
 
     const backing_type = if (self.consumeArbitraryLexemeIfAvailable(":"))
-        try self.consumeTypeName(progress_node)
+        try self.consumeTypeName(progress_node, false)
     else
         try self.type_intern_pool.fromFishType(.s32);
 
@@ -953,7 +960,7 @@ fn consumeFieldOrProperty(self: *Self, modifiers: MMTypes.Modifiers, parent_prog
     const name = self.iter.next() orelse std.debug.panic("unexpected EOF when parsing field name", .{});
 
     const field_type: TypeInternPool.Index = if (self.consumeArbitraryLexemeIfAvailable(":"))
-        try self.consumeTypeName(progress_node)
+        try self.consumeTypeName(progress_node, false)
     else
         .unknown;
 
@@ -1844,8 +1851,29 @@ fn consumePrimaryExpression(self: *Self, parent_progress_node: std.Progress.Node
     return expression;
 }
 
-fn consumeDotExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+fn consumeArrayAccessExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
     var node = try self.consumePrimaryExpression(parent_progress_node);
+
+    while (self.consumeArbitraryLexemeIfAvailable("[")) {
+        const array_access = try self.allocator.create(Node.Expression);
+
+        const index = try self.consumeExpression(parent_progress_node);
+
+        self.consumeArbitraryLexeme("]");
+
+        array_access.* = .{
+            .contents = .{ .array_access = .{ .lefthand = node, .righthand = index } },
+            .type = .unknown,
+        };
+
+        node = array_access;
+    }
+
+    return node;
+}
+
+fn consumeDotExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    var node = try self.consumeArrayAccessExpression(parent_progress_node);
 
     while (self.consumeArbitraryLexemeIfAvailable(".")) {
         const field_access = try self.allocator.create(Node.Expression);
@@ -1883,6 +1911,35 @@ fn consumeDotExpression(self: *Self, parent_progress_node: std.Progress.Node) Er
     return node;
 }
 
+fn consumeArrayInitExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
+    if (self.consumeArbitraryLexemeIfAvailable("new")) {
+        const array_init = try self.allocator.create(Node.Expression);
+
+        const return_pos = self.iter.pos;
+        const array_type = try self.consumeTypeName(parent_progress_node, true);
+        self.iter.pos = return_pos;
+        const child_type = try self.consumeTypeName(parent_progress_node, false);
+
+        self.consumeArbitraryLexeme("[");
+        const size = try self.consumeExpression(parent_progress_node);
+        self.consumeArbitraryLexeme("]");
+
+        array_init.* = .{
+            .contents = .{
+                .new_array = .{
+                    .size = size,
+                    .child = child_type,
+                },
+            },
+            .type = array_type,
+        };
+
+        return array_init;
+    }
+
+    return self.consumeDotExpression(parent_progress_node);
+}
+
 fn consumeUnaryExpression(self: *Self, parent_progress_node: std.Progress.Node) Error!*Node.Expression {
     if (self.consumeAnyMatches(&.{ "!", "-" })) |match| {
         const unary = try self.allocator.create(Node.Expression);
@@ -1904,7 +1961,7 @@ fn consumeUnaryExpression(self: *Self, parent_progress_node: std.Progress.Node) 
 
         return unary;
     } else {
-        return self.consumeDotExpression(parent_progress_node);
+        return self.consumeArrayInitExpression(parent_progress_node);
     }
 }
 
@@ -2010,7 +2067,7 @@ fn consumeCastExpression(self: *Self, parent_progress_node: std.Progress.Node) E
 
         cast_expression.* = .{
             .contents = .{ .cast = node },
-            .type = try self.consumeTypeName(parent_progress_node),
+            .type = try self.consumeTypeName(parent_progress_node, false),
         };
 
         node = cast_expression;
@@ -2233,7 +2290,7 @@ fn consumeFunctionCallParameters(self: *Self, parent_progress_node: std.Progress
     return parameters.toOwnedSlice();
 }
 
-fn consumeTypeName(self: *Self, parent_progress_node: std.Progress.Node) !TypeInternPool.Index {
+fn consumeTypeName(self: *Self, parent_progress_node: std.Progress.Node, is_array_type: bool) !TypeInternPool.Index {
     const progress_node = parent_progress_node.start("Parsing type name", 0);
     defer progress_node.end();
 
@@ -2247,11 +2304,15 @@ fn consumeTypeName(self: *Self, parent_progress_node: std.Progress.Node) !TypeIn
         break :blk .{ name, null };
     };
 
-    var dimension_count: u8 = 0;
+    var dimension_count: u8 = if (is_array_type) 1 else 0;
 
     blk: while (maybeHashKeyword(self.iter.peek() orelse @panic("EOF"))) |keyword| {
         switch (keyword) {
             hashKeyword("[") => {
+                // If the next isnt a closing, then its not part of the type name
+                if (self.iter.peekAt(1).?[0] != ']')
+                    break :blk;
+
                 self.consumeArbitraryLexeme("[");
                 self.consumeArbitraryLexeme("]");
 
@@ -2289,7 +2350,7 @@ fn consumeFunctionParameters(self: *Self, parent_progress_node: std.Progress.Nod
             break;
 
         self.consumeArbitraryLexeme(":");
-        const param_type = try self.consumeTypeName(progress_node);
+        const param_type = try self.consumeTypeName(progress_node, false);
 
         try parameters.append(self.allocator, .{ .name = name, .type = param_type });
 
@@ -2313,7 +2374,7 @@ fn consumeFunction(self: *Self, modifiers: MMTypes.Modifiers, attributes: []cons
     const return_type: TypeInternPool.Index = blk: {
         if (std.mem.eql(u8, self.iter.peek() orelse std.debug.panic("EOF", .{}), "->")) {
             self.consumeArbitraryLexeme("->");
-            break :blk try self.consumeTypeName(progress_node);
+            break :blk try self.consumeTypeName(progress_node, false);
         }
 
         break :blk try self.type_intern_pool.fromFishType(.void);
@@ -2464,7 +2525,7 @@ fn consumeVariableDeclaration(self: *Self, parent_progress_node: std.Progress.No
 
     const variable_type: TypeInternPool.Index = blk: {
         if (self.consumeArbitraryLexemeIfAvailable(":")) {
-            break :blk try self.consumeTypeName(progress_node);
+            break :blk try self.consumeTypeName(progress_node, false);
         }
 
         break :blk .unknown;

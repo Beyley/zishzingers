@@ -847,7 +847,7 @@ pub const TaggedInstruction = union(enum(u8)) {
     /// Gets the length of the array stored in the base_idx register,
     /// storing the result as a 32-bit integer inside of the destination register
     GET_ARRAY_LEN: GetBuiltinMemberClass = 0x9b,
-    /// Creates a new array with the specified type, with the size coming from the size_idx register,
+    /// Creates a new array with the specified child type, with the size being an s32 coming from the size_idx register,
     /// stores the result in the destination register
     NEW_ARRAY: NewArrayClass = 0x9c,
     /// TODO: 0x211e08

@@ -972,6 +972,49 @@ const Codegen = struct {
         } }, dst.machine_type()));
     }
 
+    pub fn emitNewArray(self: *Codegen, dst: Register, size: Register, type_idx: u16) !void {
+        // Ensure that the dst is a correct object_ref
+        ensureAlignment(dst, .single_item);
+        ensureType(dst, .object_ref);
+        // Ensure that the size is a correct s32
+        ensureAlignment(size, .single_item);
+        ensureType(size, .s32);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .NEW_ARRAY = .{
+            .dst_idx = dst.addr(),
+            .size_idx = size.addr(),
+            .type_idx = type_idx,
+        } }, .void));
+    }
+
+    pub fn emitGetElement(self: *Codegen, dst: Register, idx: Register, base: Register) !void {
+        ensureAlignment(dst, .single_item);
+        ensureAlignment(idx, .single_item);
+        ensureType(idx, .s32);
+        ensureAlignment(base, .single_item);
+        ensureType(base, .object_ref);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .GET_ELEMENT = .{
+            .dst_idx = dst.addr(),
+            .src_or_index_idx = idx.addr(),
+            .base_idx = base.addr(),
+        } }, dst.machine_type()));
+    }
+
+    pub fn emitSetElement(self: *Codegen, base: Register, idx: Register, src: Register) !void {
+        ensureAlignment(base, .single_item);
+        ensureType(base, .object_ref);
+        ensureAlignment(idx, .single_item);
+        ensureType(idx, .s32);
+        ensureAlignment(src, .single_item);
+
+        try self.appendBytecode(MMTypes.Bytecode.init(.{ .SET_ELEMENT = .{
+            .base_idx = base.addr(),
+            .index_idx = idx.addr(),
+            .src_idx = src.addr(),
+        } }, src.machine_type()));
+    }
+
     fn offsetForType(game: CompilationOptions.Game, machine_type: MMTypes.MachineType) struct {
         class_name: []const u8,
         field_name: []const u8,
@@ -1264,6 +1307,50 @@ fn compileExpression(
                     }
 
                     break :blk intermediate_register;
+                },
+                .array_access => |array_access| {
+                    const value_register = (try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        assignment.value,
+                        false,
+                        null,
+                        progress_node,
+                    )).?;
+
+                    const array_register = (try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        array_access.lefthand,
+                        false,
+                        null,
+                        parent_progress_node,
+                    )).?;
+
+                    const index_register = (try compileExpression(
+                        codegen,
+                        function_local_variables,
+                        scope_local_variables,
+                        array_access.righthand,
+                        false,
+                        null,
+                        parent_progress_node,
+                    )).?;
+
+                    try codegen.emitSetElement(array_register, index_register, value_register);
+
+                    try codegen.register_allocator.free(index_register);
+                    try codegen.register_allocator.free(array_register);
+
+                    if (discard_result) {
+                        try codegen.register_allocator.free(value_register);
+
+                        break :blk null;
+                    }
+
+                    break :blk value_register;
                 },
                 else => |tag| std.debug.panic("TODO: codegen for assignment to {s}", .{@tagName(tag)}),
             }
@@ -2003,6 +2090,70 @@ fn compileExpression(
             try codegen.register_allocator.free(add_temporary);
 
             break :blk null;
+        },
+        .new_array => |new_array| blk: {
+            if (discard_result)
+                break :blk null;
+
+            // All arrays are object_ref, so allocate an object_ref if its not valid
+            const register = result_register orelse try codegen.register_allocator.allocate(.object_ref);
+
+            // Get the size of the array
+            const array_size = (try compileExpression(
+                codegen,
+                function_local_variables,
+                scope_local_variables,
+                new_array.size,
+                false,
+                null,
+                parent_progress_node,
+            )).?;
+
+            const child_type = codegen.genny.type_intern_pool.get(new_array.child);
+
+            const type_idx: u16 = @intCast((try codegen.genny.type_references.getOrPut(child_type.resolved.valueTypeReference())).index);
+
+            try codegen.emitNewArray(register, array_size, type_idx);
+
+            // Free the array size register, since its no longer needed after we create the array
+            try codegen.register_allocator.free(array_size);
+
+            break :blk register;
+        },
+        .array_access => |array_access| blk: {
+            if (discard_result)
+                break :blk null;
+
+            const child_machine_type = codegen.genny.type_intern_pool.get(expression.type).resolved.machineType();
+
+            const dest_register = result_register orelse try codegen.register_allocator.allocate(child_machine_type);
+
+            const array_source = (try compileExpression(
+                codegen,
+                function_local_variables,
+                scope_local_variables,
+                array_access.lefthand,
+                false,
+                null,
+                parent_progress_node,
+            )).?;
+
+            const index = (try compileExpression(
+                codegen,
+                function_local_variables,
+                scope_local_variables,
+                array_access.righthand,
+                false,
+                null,
+                parent_progress_node,
+            )).?;
+
+            try codegen.emitGetElement(dest_register, index, array_source);
+
+            try codegen.register_allocator.free(index);
+            try codegen.register_allocator.free(array_source);
+
+            break :blk dest_register;
         },
         else => |tag| std.debug.panic("cant codegen for expression {s} yet\n", .{@tagName(tag)}),
     };

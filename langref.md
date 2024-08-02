@@ -31,8 +31,11 @@ bitwise             → term ( ( "&" | "^" | "|" ) term )* ;
 term                → factor ( ( "-" | "+" ) factor )* ;
 factor              → unary ( ( "/" | "*" ) unary )* ;
 unary               → ( "!" | "-" ) unary
+                    | array_init ;
+array_init          → "new" TYPE_NAME "[" expression "]"
                     | dot ;
-dot                 → primary ( "." ( FIELD | function_call | "*" ) )* ;
+dot                 → array_access ( "." ( FIELD | function_call | "*" ) )* ;
+array_access        → primary ( "[" expression "]" )* ;
 primary             → "true" | "false" | "null"
                     | "(" expression ")"
                     | INTEGER_LITERAL
@@ -49,17 +52,17 @@ primary             → "true" | "false" | "null"
                     | VARIABLE_ACCESS ;
 hash_literal        → hSHA1HASH ;
 guid_literal        → gNUMBER ;
-vec2_construction   → "float2(" expression "," expression ")"
-vec3_construction   → "float3(" expression "," expression "," expression ")"
-vec4_construction   → "float4(" 
+vec2_construction   → "float2(" expression "," expression ")" ;
+vec3_construction   → "float3(" expression "," expression "," expression ")" ;
+vec4_construction   → "float4("
                       expression "," 
                       expression "," 
                       expression "," 
-                      expression ")"
+                      expression ")" ;
 function_call       → FUNCTION_NAME "(" 
                       expression
                       | ( expression "," )+ expression
                       ")" ;
-wide_string_literal → "L" string_literal
-string_literal      → "'" STRING "'"
+wide_string_literal → "L" string_literal ;
+string_literal      → "'" STRING "'" ;
 ```
