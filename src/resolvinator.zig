@@ -94,17 +94,17 @@ fn collectImportedTypes(
 ) Error!void {
     const script = script_table.get(class_name) orelse @panic("tsheointeonhsaoi");
 
-    const progress_node = parent_progress_node.start("Collecting imported types", blk: {
-        var i: usize = 0;
+    // const progress_node = parent_progress_node.start("Collecting imported types", blk: {
+    //     var i: usize = 0;
 
-        for (script.ast.root_elements.items) |item| {
-            if (item == .import or item == .from_import)
-                i += 1;
-        }
+    //     for (script.ast.root_elements.items) |item| {
+    //         if (item == .import or item == .from_import)
+    //             i += 1;
+    //     }
 
-        break :blk i;
-    });
-    defer progress_node.end();
+    //     break :blk i;
+    // });
+    // defer progress_node.end();
 
     //TODO: we need to make sure to prevent two imported scripts from sharing the same GUID in the global script table
     for (script.ast.root_elements.items) |item| {
@@ -147,7 +147,7 @@ fn collectImportedTypes(
                         script.ast.allocator,
                         lexemes,
                         self.type_intern_pool,
-                        progress_node,
+                        parent_progress_node,
                     );
                     lexeme_allocator.deinit();
 
@@ -160,7 +160,7 @@ fn collectImportedTypes(
                             script_table,
                             null,
                             a_string_table,
-                            progress_node,
+                            parent_progress_node,
                         );
 
                     switch (comptime import_type) {
@@ -215,22 +215,23 @@ fn collectImportedLibraries(
     defined_libraries: Libraries,
     parent_progress_node: std.Progress.Node,
 ) Error!void {
-    const progress_node = parent_progress_node.start("Collecting imported libraries", blk: {
-        var i: usize = 0;
+    _ = parent_progress_node; // autofix
+    // const progress_node = parent_progress_node.start("Collecting imported libraries", blk: {
+    //     var i: usize = 0;
 
-        for (script.ast.root_elements.items) |item| {
-            if (item == .using)
-                i += 1;
-        }
+    //     for (script.ast.root_elements.items) |item| {
+    //         if (item == .using)
+    //             i += 1;
+    //     }
 
-        break :blk i;
-    });
-    defer progress_node.end();
+    //     break :blk i;
+    // });
+    // defer progress_node.end();
 
     for (script.ast.root_elements.items) |item| {
         switch (item) {
             .using => |using| {
-                defer progress_node.completeOne();
+                // defer progress_node.completeOne();
 
                 if (using.type != .library)
                     @panic("unimplemented non-library using");
@@ -253,9 +254,9 @@ fn recursivelyResolveScript(
 ) Error!void {
     const class = getScriptClassNode(tree);
 
-    var progress_node_name_buf: [256]u8 = undefined;
-    const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Resolving dependencies for {s}", .{class.name}), 0);
-    defer progress_node.end();
+    // var progress_node_name_buf: [256]u8 = undefined;
+    // const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Resolving dependencies for {s}", .{class.name}), 0);
+    // defer progress_node.end();
 
     const script = try tree.allocator.create(ParsedScript);
     script.* = .{
@@ -282,7 +283,7 @@ fn recursivelyResolveScript(
     try collectImportedLibraries(
         script,
         defined_libraries,
-        progress_node,
+        parent_progress_node,
     );
 
     //Collect all the script types which are imported
@@ -291,7 +292,7 @@ fn recursivelyResolveScript(
         defined_libraries,
         script_table,
         a_string_table,
-        progress_node,
+        parent_progress_node,
     );
 
     script.is_thing = isScriptThing(script, script_table);
@@ -485,6 +486,7 @@ fn resolveConstructorHead(
             script,
             script_table,
             a_string_table,
+            false,
             progress_node,
         );
     }
@@ -584,6 +586,7 @@ fn resolveFunctionHead(
         script,
         script_table,
         a_string_table,
+        false,
         progress_node,
     );
 
@@ -598,6 +601,7 @@ fn resolveFunctionHead(
             script,
             script_table,
             a_string_table,
+            false,
             progress_node,
         );
 
@@ -669,6 +673,7 @@ fn resolveExpression(
             script,
             script_table,
             a_string_table,
+            false,
             progress_node,
         );
     }
@@ -782,6 +787,7 @@ fn resolveExpression(
                     script,
                     script_table,
                     a_string_table,
+                    false,
                     progress_node,
                 );
 
@@ -814,6 +820,7 @@ fn resolveExpression(
                         script,
                         script_table,
                         a_string_table,
+                        false,
                         progress_node,
                     );
                 } else {
@@ -840,6 +847,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -850,6 +858,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -860,6 +869,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -870,6 +880,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -1038,6 +1049,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
 
@@ -1111,6 +1123,7 @@ fn resolveExpression(
                                 script,
                                 script_table,
                                 a_string_table,
+                                false,
                                 progress_node,
                             );
 
@@ -1246,6 +1259,7 @@ fn resolveExpression(
                                         script,
                                         script_table,
                                         a_string_table,
+                                        false,
                                         progress_node,
                                     );
 
@@ -1287,6 +1301,16 @@ fn resolveExpression(
                                         std.debug.panic("could not find function {s} on type {s}", .{ call_bytecode.function.name, type_name });
                                     };
                                 },
+                                .GET_SP_NATIVE_MEMBER, .GET_OBJ_MEMBER, .GET_SP_MEMBER, .GET_RP_MEMBER => |get_member_bytecode| {
+                                    try self.resolveParsedType(
+                                        get_member_bytecode.type,
+                                        script,
+                                        script_table,
+                                        a_string_table,
+                                        bytecode.op == .GET_RP_MEMBER,
+                                        parent_progress_node,
+                                    );
+                                },
                                 else => {},
                             }
                         }
@@ -1316,6 +1340,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -1339,6 +1364,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -1369,6 +1395,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -1451,6 +1478,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -1481,6 +1509,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -1514,6 +1543,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -1523,6 +1553,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
 
@@ -1578,6 +1609,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
@@ -1598,6 +1630,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 parent_progress_node,
             );
 
@@ -1619,6 +1652,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 parent_progress_node,
             );
         },
@@ -1640,6 +1674,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 parent_progress_node,
             );
 
@@ -1649,6 +1684,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 parent_progress_node,
             );
         },
@@ -1689,6 +1725,7 @@ fn resolveExpression(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 parent_progress_node,
             );
         },
@@ -2238,6 +2275,7 @@ fn resolveParsedType(
     script: ?*ParsedScript,
     script_table: ?*ParsedScriptTable,
     a_string_table: ?*AStringTable,
+    is_raw_ptr: bool,
     parent_progress_node: std.Progress.Node,
 ) Error!void {
     const intern_type = self.type_intern_pool.getMutable(type_index);
@@ -2251,6 +2289,24 @@ fn resolveParsedType(
 
     const progress_node = parent_progress_node.start(try std.fmt.bufPrint(&progress_node_name_buf, "Resolving parsed type {s}", .{parsed_type.name}), 0);
     defer progress_node.end();
+
+    // TODO: raw_ptr class stubs? this hack shouldnt be here
+    if (is_raw_ptr) {
+        intern_type.* = .{
+            .resolved = .{
+                .fish = .{
+                    .type_name = @intCast((try a_string_table.?.getOrPut(parsed_type.name)).index),
+                    .script = null,
+                    .machine_type = .raw_ptr,
+                    .fish_type = .void,
+                    .dimension_count = parsed_type.dimension_count,
+                    .array_base_machine_type = .void,
+                },
+            },
+        };
+
+        return;
+    }
 
     if (parsed_type.indirection_count > 0) {
         intern_type.* = .{
@@ -2364,6 +2420,7 @@ pub fn typeReferenceFromScriptEnum(
         script,
         script_table,
         a_string_table,
+        false,
         parent_progress_node,
     );
 
@@ -2445,6 +2502,7 @@ fn resolveField(
                 script,
                 script_table,
                 a_string_table,
+                false,
                 progress_node,
             );
         },
