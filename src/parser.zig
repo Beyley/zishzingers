@@ -1200,6 +1200,12 @@ fn consumeInlineAsmStatement(self: *Self, parent_progress_node: std.Progress.Nod
 
                                         const int = try std.fmt.parseInt(i33, self.iter.next().?, 0);
 
+                                        // If the int value is greater than what can be stored in an i32
+                                        if (int > std.math.maxInt(i32)) {
+                                            // Cast to a u32, then bitcast to i32
+                                            break :blk @bitCast(@as(u32, @intCast(int)));
+                                        }
+
                                         break :blk if (is_negative) @intCast(-int) else @intCast(int);
                                     },
                                 },
@@ -1595,6 +1601,8 @@ fn consumeRegister(self: *Self, want_comma: bool) !u16 {
 
     if (want_comma)
         self.consumeArbitraryLexeme(",");
+
+    // std.debug.print("register: {s}\n", .{register});
 
     return try std.fmt.parseInt(u16, register[1..], 10);
 }
