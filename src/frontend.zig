@@ -308,6 +308,13 @@ pub fn compile(
 
         try resource_stream.writeScript(script, allocator);
 
+        const dependencies = try allocator.alloc(Resource.Dependency, script.depending_guids.?.len);
+        defer allocator.free(dependencies);
+
+        for (dependencies, script.depending_guids.?) |*dependency, guid| {
+            dependency.* = .{ .type = .script, .ident = .{ .guid = guid } };
+        }
+
         const serialization_progress_node = compile_progress_node.start("Serialization", 0);
         var file_stream: std.io.StreamSource = .{ .file = out };
         try Resource.writeResource(
@@ -315,7 +322,7 @@ pub fn compile(
             compression_flags,
             // Scripts dont actually need to have their dependency table filled out
             // https://github.com/ennuo/toolkit/blob/15342e1afca2d5ac1de49e207922099e7aacef86/lib/cwlib/src/main/java/cwlib/util/Resources.java#L152
-            &.{},
+            dependencies,
             compilation_options.revision,
             &file_stream,
             resource_stream.stream.array_list.items,
@@ -486,5 +493,78 @@ pub fn generateLibrary(
             res.args.namespace,
             res.args.name.?,
         );
+    }
+}
+
+pub fn dumpModdedAssetHashes(
+    allocator: std.mem.Allocator,
+    arg_iter: *std.process.ArgIterator,
+    stderr: anytype,
+    stdout: anytype,
+) !void {
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help    Display this help and exit.
+        \\<str>...      The map files to parse
+        \\
+    );
+
+    var diag = clap.Diagnostic{};
+    var res = clap.parseEx(clap.Help, &params, clap.parsers.default, arg_iter, .{
+        .diagnostic = &diag,
+        .allocator = allocator,
+    }) catch |err| {
+        // Report useful error and exit
+        diag.report(std.io.getStdErr().writer(), err) catch {};
+        return err;
+    };
+    defer res.deinit();
+
+    //If no arguments are passed or the user requested the help menu, display the help menu
+    if (res.args.help != 0 or
+        res.positionals.len == 0)
+    {
+        try clap.help(stderr, clap.Help, &params, .{});
+
+        return;
+    }
+
+    var full_db: ?MMTypes.FileDB = null;
+    defer full_db.?.deinit();
+
+    for (res.positionals, 0..) |map_path, i| {
+        const map_file = try std.fs.cwd().openFile(map_path, .{});
+        defer map_file.close();
+
+        const MMStream = Stream.MMStream(std.io.StreamSource);
+
+        var stream = MMStream{
+            .stream = std.io.StreamSource{ .file = map_file },
+            // nonsense compression files, since its not important for MAP files
+            .compression_flags = .{
+                .compressed_integers = false,
+                .compressed_matrices = false,
+                .compressed_vectors = false,
+            },
+            // nonsense revision, since its not important for MAP files
+            .revision = .{
+                .branch_id = 0,
+                .branch_revision = 0,
+                .head = 0,
+            },
+        };
+
+        var file_db = try stream.readFileDB(allocator);
+
+        if (i == 0) {
+            full_db = file_db;
+        } else {
+            try full_db.?.combine(file_db);
+            file_db.deinit();
+        }
+    }
+
+    var iter = full_db.?.hash_lookup.iterator();
+    while (iter.next()) |entry| {
+        try stdout.print("{s}\n", .{std.fmt.bytesToHex(entry.key_ptr.*, .lower)});
     }
 }
