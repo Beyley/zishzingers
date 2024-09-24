@@ -4,8 +4,8 @@
 
     .dependencies = .{
         .clap = .{
-            .url = "git+https://github.com/Beyley/zig-clap#f0a281ffe91fb64f116dcb04c34cecef70e8c79c",
-            .hash = "122026b67ce2974e3b2fcfd3e2e164b73ee60c55d13f3f60ca7db6c316c8f22a6bf8",
+            .url = "git+https://github.com/Hejsil/zig-clap#e9207ad2b86131fa9f0dfbd5c68cafd67f00fe64",
+            .hash = "1220cb2f28680ef73c1020bfd8c7b08de38821b0bc19b5469f60dcf813f1d8455dbd",
         },
     },
 

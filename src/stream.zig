@@ -13,7 +13,7 @@ pub fn MMStream(comptime Stream: type) type {
 
         pub fn readInt(self: *Self, comptime T: type) !T {
             //If the file has compressed integers, read the varint
-            if (self.compression_flags.compressed_integers and @typeInfo(T).Int.bits > 16)
+            if (self.compression_flags.compressed_integers and @typeInfo(T).int.bits > 16)
                 return try self.readVarInt(T);
 
             //Else read the int as normal
@@ -21,7 +21,7 @@ pub fn MMStream(comptime Stream: type) type {
         }
 
         pub fn readFloat(self: *Self, comptime T: type) !T {
-            return @bitCast(try self.stream.reader().readInt(std.meta.Int(.unsigned, @typeInfo(T).Float.bits), .big));
+            return @bitCast(try self.stream.reader().readInt(std.meta.Int(.unsigned, @typeInfo(T).float.bits), .big));
         }
 
         pub fn readSha1(self: *Self) ![std.crypto.hash.Sha1.digest_length]u8 {
@@ -356,9 +356,9 @@ pub fn MMStream(comptime Stream: type) type {
             const TypeInfo = @typeInfo(T);
 
             for (arr) |*item| {
-                if (TypeInfo == .Int) {
+                if (TypeInfo == .int) {
                     item.* = try self.readInt(T);
-                } else if (TypeInfo == .Float) {
+                } else if (TypeInfo == .float) {
                     item.* = try self.readFloat(T);
                 } else item.* = switch (T) {
                     MMTypes.Bytecode => @bitCast(try self.readInt(u64)),
@@ -436,7 +436,7 @@ pub fn MMStream(comptime Stream: type) type {
         }
 
         pub fn writeInt(self: *Self, comptime T: type, val: T) !void {
-            const bit_count = @typeInfo(T).Int.bits;
+            const bit_count = @typeInfo(T).int.bits;
 
             //If the int is >16 bits and we have compressed integers enabled, use them
             if (bit_count > 16 and self.compression_flags.compressed_integers) {
@@ -472,7 +472,7 @@ pub fn MMStream(comptime Stream: type) type {
 
         pub fn writeFloat(self: *Self, val: anytype) !void {
             return self.stream.writer().writeInt(
-                std.meta.Int(.unsigned, @typeInfo(@TypeOf(val)).Float.bits),
+                std.meta.Int(.unsigned, @typeInfo(@TypeOf(val)).float.bits),
                 @bitCast(val),
                 .big,
             );
@@ -645,9 +645,9 @@ pub fn MMStream(comptime Stream: type) type {
             const TypeInfo = @typeInfo(T);
 
             for (arr) |item| {
-                if (TypeInfo == .Int) {
+                if (TypeInfo == .int) {
                     try self.writeInt(T, item);
-                } else if (TypeInfo == .Float) {
+                } else if (TypeInfo == .float) {
                     try self.writeFloat(item);
                 } else switch (T) {
                     MMTypes.Bytecode => try self.writeInt(u64, @bitCast(item)),

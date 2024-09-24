@@ -298,8 +298,8 @@ const Codegen = struct {
     }
 
     fn ensureType(register: Register, machine_type: MMTypes.MachineType) void {
-        if (register.machine_type() != machine_type) {
-            std.debug.panic("BUG: Bad register type! Wanted {s}, got {s}", .{ @tagName(machine_type), @tagName(register.machine_type()) });
+        if (register.machineType() != machine_type) {
+            std.debug.panic("BUG: Bad register type! Wanted {s}, got {s}", .{ @tagName(machine_type), @tagName(register.machineType()) });
         }
     }
 
@@ -353,23 +353,23 @@ const Codegen = struct {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALLVo = .{
             .dst_idx = dst.addr(),
             .call_idx = call_idx,
-        } }, dst.machine_type()));
+        } }, dst.machineType()));
     }
 
     pub fn emitArg(self: *Codegen, arg: Register, src: Register) !void {
         ensureAlignment(arg, .single_item);
         ensureAlignment(src, .single_item);
 
-        if (src.machine_type() != arg.machine_type())
+        if (src.machineType() != arg.machineType())
             std.debug.print(
                 "BUG: ARG src and dst register machine types do not match! src: {s} arg: {s}",
-                .{ @tagName(src.machine_type()), @tagName(arg.machine_type()) },
+                .{ @tagName(src.machineType()), @tagName(arg.machineType()) },
             );
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .ARG = .{
             .src_idx = src.addr(),
             .arg_idx = arg.addr(),
-        } }, arg.machine_type()));
+        } }, arg.machineType()));
     }
 
     pub fn emitCall(self: *Codegen, dst: Register, call_idx: u16) !void {
@@ -378,7 +378,7 @@ const Codegen = struct {
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .CALL = .{
             .dst_idx = dst.addr(),
             .call_idx = call_idx,
-        } }, dst.machine_type()));
+        } }, dst.machineType()));
     }
 
     pub fn emitNativeInvoke(self: *Codegen, dst: Register, call_address: u32, toc_index: u8) !void {
@@ -419,13 +419,13 @@ const Codegen = struct {
             })).index));
         } else {
             // The current version of the extended runtime only allows s32 sized return types
-            std.debug.assert(dst.machine_type().size() == MMTypes.MachineType.s32.size());
+            std.debug.assert(dst.machineType().size() == MMTypes.MachineType.s32.size());
 
             try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_INVOKE = .{
                 .dst_idx = dst.addr(),
                 .call_address = @intCast(call_address),
                 .toc_index = toc_index,
-            } }, dst.machine_type()));
+            } }, dst.machineType()));
         }
     }
 
@@ -478,7 +478,7 @@ const Codegen = struct {
             .src_idx = src.addr(),
             .base_idx = base.addr(),
             .field_ref = field_ref,
-        } }, src.machine_type()));
+        } }, src.machineType()));
     }
 
     pub fn emitSetSafePtrMember(self: *Codegen, src: Register, base: Register, field_ref: u16) !void {
@@ -490,7 +490,7 @@ const Codegen = struct {
             .src_idx = src.addr(),
             .base_idx = base.addr(),
             .field_ref = field_ref,
-        } }, src.machine_type()));
+        } }, src.machineType()));
     }
 
     pub fn emitGetObjectMember(self: *Codegen, dst: Register, base: Register, field_ref: u16) !void {
@@ -502,7 +502,7 @@ const Codegen = struct {
             .dst_idx = dst.addr(),
             .base_idx = base.addr(),
             .field_ref = field_ref,
-        } }, dst.machine_type()));
+        } }, dst.machineType()));
     }
 
     pub fn emitGetSafePtrMember(self: *Codegen, dst: Register, base: Register, field_ref: u16) !void {
@@ -514,7 +514,7 @@ const Codegen = struct {
             .dst_idx = dst.addr(),
             .base_idx = base.addr(),
             .field_ref = field_ref,
-        } }, dst.machine_type()));
+        } }, dst.machineType()));
     }
 
     pub fn emitBoolToS32(self: *Codegen, dst: Register, src: Register) !void {
@@ -570,7 +570,7 @@ const Codegen = struct {
 
         try self.appendBytecode(MMTypes.Bytecode.init(.{ .RET = .{
             .src_idx = src.addr(),
-        } }, src.machine_type()));
+        } }, src.machineType()));
     }
 
     pub fn emitBranchNotEqualZero(self: *Codegen, src: Register) !usize {
@@ -957,7 +957,7 @@ const Codegen = struct {
             .base_idx = base.addr(),
             .field_ref = field_ref,
             .src_idx = src.addr(),
-        } }, src.machine_type()));
+        } }, src.machineType()));
     }
 
     pub fn emitGetRawPtrMember(self: *Codegen, dst: Register, base: Register, field_ref: u16) !void {
@@ -969,7 +969,7 @@ const Codegen = struct {
             .base_idx = base.addr(),
             .dst_idx = dst.addr(),
             .field_ref = field_ref,
-        } }, dst.machine_type()));
+        } }, dst.machineType()));
     }
 
     pub fn emitNewArray(self: *Codegen, dst: Register, size: Register, type_idx: u16) !void {
@@ -998,7 +998,7 @@ const Codegen = struct {
             .dst_idx = dst.addr(),
             .src_or_index_idx = idx.addr(),
             .base_idx = base.addr(),
-        } }, dst.machine_type()));
+        } }, dst.machineType()));
     }
 
     pub fn emitSetElement(self: *Codegen, base: Register, idx: Register, src: Register) !void {
@@ -1012,7 +1012,7 @@ const Codegen = struct {
             .base_idx = base.addr(),
             .index_idx = idx.addr(),
             .src_idx = src.addr(),
-        } }, src.machine_type()));
+        } }, src.machineType()));
     }
 
     fn offsetForType(game: CompilationOptions.Game, machine_type: MMTypes.MachineType) struct {
@@ -1047,7 +1047,7 @@ const Codegen = struct {
         ensureAlignment(dst, .single_item);
 
         if (!self.compilation_options.extended_runtime) {
-            const machine_type_offsets = offsetForType(self.compilation_options.game, dst.machine_type());
+            const machine_type_offsets = offsetForType(self.compilation_options.game, dst.machineType());
 
             const raw_ptr_type: MMTypes.ResolvableTypeReference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
                 .machine_type = .raw_ptr,
@@ -1077,18 +1077,18 @@ const Codegen = struct {
 
             // Reads the data at the offset raw_ptr
             // TODO: this shouldnt always be hardcoded to s32
-            try self.emitGetRawPtrMember(dst, raw_ptr.single_item.cast_to(.raw_ptr), field_reference);
+            try self.emitGetRawPtrMember(dst, raw_ptr.single_item.castTo(.raw_ptr), field_reference);
 
             try self.register_allocator.free(raw_ptr);
             try self.register_allocator.free(offset_reg);
         } else {
             // Only size s32 types work in the current version of the extended runtime
-            std.debug.assert(dst.machine_type().size() == MMTypes.MachineType.s32.size());
+            std.debug.assert(dst.machineType().size() == MMTypes.MachineType.s32.size());
 
             try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_LOAD = .{
                 .src_idx = src.addr(),
                 .dst_idx = dst.addr(),
-            } }, dst.machine_type()));
+            } }, dst.machineType()));
         }
     }
 
@@ -1098,8 +1098,8 @@ const Codegen = struct {
         ensureType(dst, .s32);
 
         // Only size s32 types work in the current version of the extended runtime, so if its a non-s32 size, we need to fall back to the native runtime version
-        if (!self.compilation_options.extended_runtime or src.machine_type().size() != MMTypes.MachineType.s32.size()) {
-            const machine_type_offsets = offsetForType(self.compilation_options.game, src.machine_type());
+        if (!self.compilation_options.extended_runtime or src.machineType().size() != MMTypes.MachineType.s32.size()) {
+            const machine_type_offsets = offsetForType(self.compilation_options.game, src.machineType());
 
             const raw_ptr_type: MMTypes.ResolvableTypeReference = @intCast((try self.genny.type_references.getOrPut(MMTypes.TypeReference{
                 .machine_type = .raw_ptr,
@@ -1129,29 +1129,29 @@ const Codegen = struct {
 
             // Store the value into the offset address
             // TODO: this shouldnt always be hardcoded to s32
-            try self.emitSetRawPtrMember(raw_ptr.single_item.cast_to(.raw_ptr), src, field_reference);
+            try self.emitSetRawPtrMember(raw_ptr.single_item.castTo(.raw_ptr), src, field_reference);
 
             try self.register_allocator.free(raw_ptr);
             try self.register_allocator.free(offset_reg);
         } else {
-            std.debug.assert(src.machine_type().size() == MMTypes.MachineType.s32.size());
+            std.debug.assert(src.machineType().size() == MMTypes.MachineType.s32.size());
 
             try self.appendBytecode(MMTypes.Bytecode.init(.{ .EXT_STORE = .{
                 .src_idx = src.addr(),
                 .dst_idx = dst.addr(),
-            } }, src.machine_type()));
+            } }, src.machineType()));
         }
     }
 };
 
 const Register = union(enum) {
-    pub const Enum = @typeInfo(Register).Union.tag_type.?;
+    pub const Enum = @typeInfo(Register).@"union".tag_type.?;
 
     pub const SingleItem = struct {
         addr: u16,
         type: MMTypes.MachineType,
 
-        pub fn cast_to(self: SingleItem, new_machine_type: MMTypes.MachineType) Register {
+        pub fn castTo(self: SingleItem, new_machine_type: MMTypes.MachineType) Register {
             if (self.type.size() != new_machine_type.size())
                 std.debug.panic("invalid cast from {s} to {s}", .{ @tagName(self.type), @tagName(new_machine_type) });
 
@@ -1176,13 +1176,13 @@ const Register = union(enum) {
         };
     }
 
-    pub fn machine_type(self: Register) MMTypes.MachineType {
+    pub fn machineType(self: Register) MMTypes.MachineType {
         return switch (self) {
             inline else => |register| register.type,
         };
     }
 
-    pub fn single_item(idx: u16, idx_type: MMTypes.MachineType) Register {
+    pub fn singleItem(idx: u16, idx_type: MMTypes.MachineType) Register {
         return .{ .single_item = .{ .addr = idx, .type = idx_type } };
     }
 };
@@ -1207,7 +1207,7 @@ fn compileExpression(
                 .variable_access => |variable_access| {
                     const variable = scope_local_variables.get(variable_access) orelse std.debug.panic("missing variable {s}", .{variable_access});
 
-                    const register = Register.single_item(@intCast(variable.offset), codegen.genny.type_references.keys()[variable.type_reference].machine_type);
+                    const register = Register.singleItem(@intCast(variable.offset), codegen.genny.type_references.keys()[variable.type_reference].machine_type);
 
                     _ = try compileExpression(
                         codegen,
@@ -1225,7 +1225,7 @@ fn compileExpression(
                     const source_variable = scope_local_variables.get(field_access.source.contents.variable_access).?;
                     const source_variable_type = codegen.genny.type_references.keys()[source_variable.type_reference];
 
-                    const source_variable_register = Register.single_item(@intCast(source_variable.offset), source_variable_type.machine_type);
+                    const source_variable_register = Register.singleItem(@intCast(source_variable.offset), source_variable_type.machine_type);
 
                     const machine_type = codegen.genny.type_intern_pool.get(expression.type).resolved.fish.machine_type;
 
@@ -1239,10 +1239,10 @@ fn compileExpression(
                         progress_node,
                     )).?;
 
-                    if (register.machine_type() != machine_type)
+                    if (register.machineType() != machine_type)
                         std.debug.panic(
                             "BUG: register type is {s} when it should be {s}",
-                            .{ @tagName(register.machine_type()), @tagName(machine_type) },
+                            .{ @tagName(register.machineType()), @tagName(machine_type) },
                         );
 
                     const field_reference: u16 = @intCast((try codegen.genny.field_references.getOrPut(.{
@@ -1374,7 +1374,7 @@ fn compileExpression(
 
             const register = result_register orelse try codegen.register_allocator.allocate(.s32);
 
-            try codegen.emitLoadConstInt(register.single_item.cast_to(.s32), value);
+            try codegen.emitLoadConstInt(register.single_item.castTo(.s32), value);
 
             break :blk register;
         },
@@ -1479,7 +1479,7 @@ fn compileExpression(
 
             const variable_machine_type = codegen.genny.type_references.keys()[variable.type_reference].machine_type;
 
-            const variable_register = Register.single_item(@intCast(variable.offset), variable_machine_type);
+            const variable_register = Register.singleItem(@intCast(variable.offset), variable_machine_type);
 
             if (result_register) |result_idx| {
                 switch (variable_machine_type) {
@@ -1540,7 +1540,7 @@ fn compileExpression(
                 var curr_vector_register: u16 = 0;
 
                 for (parameter_registers) |parameter_register| {
-                    switch (parameter_register.machine_type()) {
+                    switch (parameter_register.machineType()) {
                         .bool, .char, .s32, .safe_ptr, .object_ref => |machine_type| {
                             const parameter_size = machine_type.size();
 
@@ -1551,20 +1551,20 @@ fn compileExpression(
                             // Align to machine type
                             curr_integer_register += (parameter_size - (curr_integer_register % parameter_size)) % parameter_size;
 
-                            if (parameter_register.machine_type().size() < 4) {
+                            if (parameter_register.machineType().size() < 4) {
                                 const temporary_register = try codegen.register_allocator.allocate(.s32);
                                 try codegen.emitLoadConstInt(temporary_register, 0);
                                 try codegen.emitArg(
-                                    Register.single_item(curr_integer_register, .s32),
+                                    Register.singleItem(curr_integer_register, .s32),
                                     temporary_register,
                                 );
                                 try codegen.register_allocator.free(temporary_register);
 
-                                curr_integer_register += parameter_size - parameter_register.machine_type().size();
+                                curr_integer_register += parameter_size - parameter_register.machineType().size();
                             }
 
                             try codegen.emitArg(
-                                Register.single_item(curr_integer_register, machine_type),
+                                Register.singleItem(curr_integer_register, machine_type),
                                 parameter_register,
                             );
 
@@ -1581,7 +1581,7 @@ fn compileExpression(
                             curr_float_register += (parameter_size - (curr_float_register % parameter_size)) % parameter_size;
 
                             try codegen.emitArg(
-                                Register.single_item(curr_float_register + 32, .f32),
+                                Register.singleItem(curr_float_register + 32, .f32),
                                 parameter_register,
                             );
 
@@ -1598,7 +1598,7 @@ fn compileExpression(
                             curr_vector_register += (parameter_size - (curr_vector_register % parameter_size)) % parameter_size;
 
                             try codegen.emitArg(
-                                Register.single_item(curr_vector_register + 48, .v4),
+                                Register.singleItem(curr_vector_register + 48, .v4),
                                 parameter_register,
                             );
 
@@ -1619,8 +1619,8 @@ fn compileExpression(
                         const source_machine_type = codegen.genny.type_references.keys()[source_variable.type_reference].machine_type;
 
                         try codegen.emitArg(
-                            Register.single_item(0, source_machine_type),
-                            Register.single_item(@intCast(source_variable.offset), source_machine_type),
+                            Register.singleItem(0, source_machine_type),
+                            Register.singleItem(@intCast(source_variable.offset), source_machine_type),
                         );
 
                         curr_arg_register += source_machine_type.size();
@@ -1628,13 +1628,13 @@ fn compileExpression(
                 }
 
                 for (parameter_registers) |parameter_register| {
-                    const parameter_size = parameter_register.machine_type().size();
+                    const parameter_size = parameter_register.machineType().size();
 
                     // Align to machine type
                     curr_arg_register += (parameter_size - (curr_arg_register % parameter_size)) % parameter_size;
 
                     try codegen.emitArg(
-                        Register.single_item(curr_arg_register, parameter_register.machine_type()),
+                        Register.singleItem(curr_arg_register, parameter_register.machineType()),
                         parameter_register,
                     );
 
@@ -1646,7 +1646,7 @@ fn compileExpression(
                 result_register_idx
                 // We actually need to have a valid return register for native invokes
             else if (discard_result and native_invoke == null)
-                Register.single_item(std.math.maxInt(u16), .void)
+                Register.singleItem(std.math.maxInt(u16), .void)
                 // We need to have a valid s32 return register for native calls
             else if (native_invoke != null and return_type == .void)
                 try codegen.register_allocator.allocate(.s32)
@@ -1726,14 +1726,14 @@ fn compileExpression(
                 .object_ref => {
                     try codegen.emitGetObjectMember(
                         register,
-                        Register.single_item(@intCast(source_variable.offset), .object_ref),
+                        Register.singleItem(@intCast(source_variable.offset), .object_ref),
                         field_reference,
                     );
                 },
                 .safe_ptr => {
                     try codegen.emitGetSafePtrMember(
                         register,
-                        Register.single_item(@intCast(source_variable.offset), .safe_ptr),
+                        Register.singleItem(@intCast(source_variable.offset), .safe_ptr),
                         field_reference,
                     );
                 },
@@ -1859,8 +1859,8 @@ fn compileExpression(
                         progress_node,
                     )).?;
 
-                    std.debug.assert(lefthand.machine_type() == righthand.machine_type());
-                    std.debug.assert(lefthand.machine_type() == fish.machine_type);
+                    std.debug.assert(lefthand.machineType() == righthand.machineType());
+                    std.debug.assert(lefthand.machineType() == fish.machine_type);
 
                     switch (fish.machine_type) {
                         .s32 => switch (binary_type) {
@@ -1916,7 +1916,7 @@ fn compileExpression(
                         progress_node,
                     )).?;
 
-                    std.debug.assert(lefthand.machine_type() == .s32);
+                    std.debug.assert(lefthand.machineType() == .s32);
 
                     switch (binary_type) {
                         .not_equal => try codegen.emitIntNotEqual(register, lefthand, righthand),
@@ -1931,6 +1931,8 @@ fn compileExpression(
                             // Add the resulting offset with the pointer, and store it in the result register
                             try codegen.emitAddInt(register, register, lefthand);
                         },
+                        .less_than_or_equal => try codegen.emitIntLessThanOrEqual(register, lefthand, righthand),
+                        .greater_than => try codegen.emitIntGreaterThan(register, lefthand, righthand),
                         else => |tag| std.debug.panic("TODO: comparisons for op {s}", .{@tagName(tag)}),
                     }
 
@@ -1958,7 +1960,7 @@ fn compileExpression(
 
             if (forced_intermediary and result_register != null) {
                 // this might not hold false all the time, but this should only ever trigger for ptr work, so it should always hold true
-                std.debug.assert(register.machine_type() == .s32);
+                std.debug.assert(register.machineType() == .s32);
 
                 // Move the result into the result register
                 try codegen.emitMoveS32(result_register.?, register);
@@ -1978,7 +1980,7 @@ fn compileExpression(
                 null,
                 progress_node,
             )).?;
-            std.debug.assert(lefthand.machine_type() == .bool);
+            std.debug.assert(lefthand.machineType() == .bool);
 
             const righthand = (try compileExpression(
                 codegen,
@@ -1989,7 +1991,7 @@ fn compileExpression(
                 null,
                 progress_node,
             )).?;
-            std.debug.assert(righthand.machine_type() == .bool);
+            std.debug.assert(righthand.machineType() == .bool);
 
             if (!discard_result) {
                 const register = result_register orelse try codegen.register_allocator.allocate(.bool);
@@ -2369,7 +2371,7 @@ fn compileBlock(
                     inline_asm_progress_node.completeOne();
 
                     switch (bytecode.op) {
-                        inline else => |val, op| blk: {
+                        inline else => |val, op| {
                             const ParamType = @TypeOf(val);
 
                             switch (op) {
@@ -2388,7 +2390,7 @@ fn compileBlock(
                                 .GET_OBJ_MEMBER,
                                 .GET_SP_NATIVE_MEMBER,
                                 .GET_ELEMENT,
-                                => {
+                                => blk: {
                                     // If its any of the machine type dependent instructions, dont add if the target isnt object ref
                                     if ((op == .GET_RP_MEMBER or
                                         op == .GET_SP_MEMBER or
@@ -2436,8 +2438,8 @@ fn compileBlock(
                                 .GET_OBJ_MEMBER,
                                 .GET_SP_NATIVE_MEMBER,
                                 .GET_ELEMENT,
-                                => {
-                                    // If its any of the machine type dependent instructions, dont add if the target isnt object ref
+                                => blk: {
+                                    // If its any of the machine type dependent instructions, dont add if the target isnt safe ptr
                                     if ((op == .GET_RP_MEMBER or
                                         op == .GET_SP_MEMBER or
                                         op == .GET_OBJ_MEMBER or
@@ -2446,7 +2448,7 @@ fn compileBlock(
                                         op == .CALLVo or
                                         op == .CALLVsp or
                                         op == .GET_ELEMENT) and
-                                        bytecode.machine_type != .object_ref)
+                                        bytecode.machine_type != .safe_ptr)
                                     {
                                         break :blk;
                                     }
@@ -2761,11 +2763,38 @@ fn compileBlock(
                                 },
                                 Parser.Bytecode.Params.GetBuiltinMemberClass => @panic("TODO"),
                                 Parser.Bytecode.Params.SetBuiltinMemberClass => @panic("TODO"),
-                                Parser.Bytecode.Params.GetMemberClass => @panic("TODO"),
+                                Parser.Bytecode.Params.GetMemberClass => MMTypes.Bytecode{
+                                    .type = bytecode.machine_type,
+                                    .op = op,
+                                    .params = @bitCast(MMTypes.GetMemberClass{
+                                        .dst_idx = val.dst_idx,
+                                        .base_idx = val.base_idx,
+                                        .field_ref = @intCast((try codegen.genny.field_references.getOrPut(.{
+                                            .name = @intCast((try codegen.genny.a_string_table.getOrPut(val.field)).index),
+                                            .type_reference = @intCast((try codegen.genny.type_references.getOrPut(codegen.genny.type_intern_pool.get(val.type).resolved.valueTypeReference())).index),
+                                        })).index),
+                                    }),
+                                },
                                 Parser.Bytecode.Params.SetMemberClass => @panic("TODO"),
                                 Parser.Bytecode.Params.GetElementClass => @panic("TODO"),
-                                Parser.Bytecode.Params.SetElementClass => @panic("TODO"),
-                                Parser.Bytecode.Params.NewArrayClass => @panic("TODO"),
+                                Parser.Bytecode.Params.SetElementClass => MMTypes.Bytecode{
+                                    .type = bytecode.machine_type,
+                                    .op = op,
+                                    .params = @bitCast(MMTypes.SetElementClass{
+                                        .base_idx = val.base_idx,
+                                        .index_idx = val.index_idx,
+                                        .src_idx = val.src_idx,
+                                    }),
+                                },
+                                Parser.Bytecode.Params.NewArrayClass => MMTypes.Bytecode{
+                                    .type = bytecode.machine_type,
+                                    .op = op,
+                                    .params = @bitCast(MMTypes.NewArrayClass{
+                                        .dst_idx = val.dst_idx,
+                                        .size_idx = val.size_idx,
+                                        .type_idx = @intCast((try codegen.genny.type_references.getOrPut(codegen.genny.type_intern_pool.get(val.type).resolved.valueTypeReference())).index),
+                                    }),
+                                },
                                 Parser.Bytecode.Params.WriteClass => @panic("TODO"),
                                 Parser.Bytecode.Params.ArgClass => MMTypes.Bytecode.init(.{
                                     .ARG = .{
@@ -2835,7 +2864,7 @@ fn compileBlock(
     for (local_variables_from_this_scope.items) |local_variable_to_free| {
         const local_variable = function_local_variables.get(local_variable_to_free).?;
 
-        try codegen.register_allocator.free(Register.single_item(
+        try codegen.register_allocator.free(Register.singleItem(
             @intCast(local_variable.offset),
             codegen.genny.type_references.keys()[local_variable.type_reference].machine_type,
         ));
@@ -2845,7 +2874,7 @@ fn compileBlock(
     if (top_level and !return_or_unreachable_emit) {
         if (return_type == .void) {
             //On void return functions, we can emit an implicit RET
-            try codegen.emitRet(Register.single_item(0, .void));
+            try codegen.emitRet(Register.singleItem(0, .void));
         } else {
             //On non void return functions, we need to error
             std.debug.panic("non void return function does not return at end of function!", .{});
@@ -2871,10 +2900,10 @@ fn emitUnreachable(codegen: *Codegen) !void {
     try codegen.emitLoadConstNullObjectRef(nullptr);
 
     // Copy into a0 so that CALLVo is calling off an invalid object
-    try codegen.emitArg(Register.single_item(0, .object_ref), nullptr);
+    try codegen.emitArg(Register.singleItem(0, .object_ref), nullptr);
 
     // Emit a call instruction which uses a nonsense target and 0 source, causing a script exception
-    try codegen.emitCallVo(Register.single_item(0, .void), 0);
+    try codegen.emitCallVo(Register.singleItem(0, .void), 0);
 
     try codegen.register_allocator.free(nullptr);
 }
@@ -3130,11 +3159,11 @@ pub fn generate(self: *Genny, parent_progress_node: std.Progress.Node) !MMTypes.
             // If the base class has a parameterless constructor, then we need to emit a "call super class"
             if (class.base_class == .resolved and class.base_class.resolved.has_parameterless_constructor) {
                 try codegen.emitArg(
-                    Register.single_item(0, class.type_reference.?.machine_type),
-                    Register.single_item(0, class.type_reference.?.machine_type),
+                    Register.singleItem(0, class.type_reference.?.machine_type),
+                    Register.singleItem(0, class.type_reference.?.machine_type),
                 );
                 try codegen.emitCall(
-                    Register.single_item(std.math.maxInt(u16), .void),
+                    Register.singleItem(std.math.maxInt(u16), .void),
                     @intCast((try self.function_references.getOrPut(MMTypes.FunctionReference{
                         .name = @intCast((try self.a_string_table.getOrPut(".ctor__")).index),
                         .type_reference = @intCast((try self.type_references.getOrPut(class.base_class.resolved.type_reference.?)).index),
@@ -3142,7 +3171,7 @@ pub fn generate(self: *Genny, parent_progress_node: std.Progress.Node) !MMTypes.
                 );
             }
 
-            try codegen.emitRet(Register.single_item(0, .void));
+            try codegen.emitRet(Register.singleItem(0, .void));
 
             try functions.append(MMTypes.FunctionDefinition{
                 .name = @intCast((try self.a_string_table.getOrPut(".ctor__")).index),
@@ -3211,13 +3240,14 @@ pub fn generate(self: *Genny, parent_progress_node: std.Progress.Node) !MMTypes.
                     class.identifier.?.contents.guid_literal
                 else
                     self.compilation_options.identifier.?.guid;
+                _ = class_guid; // autofix
 
                 for (self.type_references.keys()) |type_reference| {
                     if (type_reference.script) |script| {
                         switch (script) {
                             .guid => |guid| {
-                                if (guid == class_guid)
-                                    continue;
+                                // if (guid == class_guid)
+                                //     continue;
 
                                 try depending_guids.append(guid);
                             },
@@ -3252,18 +3282,18 @@ pub fn generate(self: *Genny, parent_progress_node: std.Progress.Node) !MMTypes.
                     // on LBP1,3 we need to add a field to force the game to fixup the script, for LBP3 this is step one of bypassing the hack check
                     switch (self.compilation_options.game) {
                         .lbp1, .lbp3ps3, .lbp3ps4 => {
-                            try field_definitions.append(.{
-                                .name = @intCast((try self.a_string_table.getOrPut(".fake.field.to.force.fixup")).index),
-                                .type_reference = @intCast((try self.type_references.getOrPut(.{
-                                    .array_base_machine_type = .void,
-                                    .machine_type = .s32,
-                                    .fish_type = .s32,
-                                    .dimension_count = 0,
-                                    .script = null,
-                                    .type_name = @intCast((try self.a_string_table.getOrPut("s32")).index),
-                                })).index),
-                                .modifiers = .{},
-                            });
+                            // try field_definitions.append(.{
+                            //     .name = @intCast((try self.a_string_table.getOrPut(".fake.field.to.force.fixup")).index),
+                            //     .type_reference = @intCast((try self.type_references.getOrPut(.{
+                            //         .array_base_machine_type = .void,
+                            //         .machine_type = .s32,
+                            //         .fish_type = .s32,
+                            //         .dimension_count = 0,
+                            //         .script = null,
+                            //         .type_name = @intCast((try self.a_string_table.getOrPut("s32")).index),
+                            //     })).index),
+                            //     .modifiers = .{},
+                            // });
                         },
                         else => {},
                     }
@@ -3295,7 +3325,6 @@ pub fn generate(self: *Genny, parent_progress_node: std.Progress.Node) !MMTypes.
                     self.compilation_options.identifier.?.guid;
 
                 if (self.compilation_options.hashed) {
-
                     // If this is a hashed script on LBP1 we need to iterate all of the type references and "fixup" any references to self to instead go to the baseclass,
                     // this causes the script to be loadable on LBP1
                     if (self.compilation_options.game == .lbp1) {
@@ -3323,16 +3352,16 @@ pub fn generate(self: *Genny, parent_progress_node: std.Progress.Node) !MMTypes.
                     }
 
                     // If this is a hashed script on lbp3, we need to add an unresolvable type reference, this is step 2 to bypassing the hack check
-                    if (self.compilation_options.game == .lbp3ps3 or self.compilation_options.game == .lbp3ps4) {
-                        try type_references.append(.{
-                            .array_base_machine_type = .void,
-                            .machine_type = .safe_ptr,
-                            .fish_type = .void,
-                            .script = .{ .guid = 0x7FFFFFFF },
-                            .type_name = @intCast((try self.a_string_table.getOrPut(".unresolvable.type")).index),
-                            .dimension_count = 0,
-                        });
-                    }
+                    // if (self.compilation_options.game == .lbp3ps3 or self.compilation_options.game == .lbp3ps4) {
+                    //     try type_references.append(.{
+                    //         .array_base_machine_type = .void,
+                    //         .machine_type = .safe_ptr,
+                    //         .fish_type = .void,
+                    //         .script = .{ .guid = 0x7FFFFFFF },
+                    //         .type_name = @intCast((try self.a_string_table.getOrPut(".unresolvable.type")).index),
+                    //         .dimension_count = 0,
+                    //     });
+                    // }
                 }
 
                 break :blk type_references.items;

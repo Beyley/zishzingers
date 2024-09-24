@@ -4,7 +4,7 @@ A set of tools for working with the fish fingers (FF) bytecode script format use
 
 ## Compilation
 
-- Install the latest version of [Zig](https://ziglang.org/) (tested with version `0.14.0-dev.655+d30d37e35`)
+- Install the latest version of [Zig](https://ziglang.org/) (tested with version `0.14.0-dev.1632+d83a3f174`)
 - Run `zig build`, which will place an executable file titled `zishzingers` in `zig-out/bin/`
 
 ## Usage

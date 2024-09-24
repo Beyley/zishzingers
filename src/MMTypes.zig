@@ -246,9 +246,9 @@ pub const Bytecode = packed struct(u64) {
     }
 };
 
-pub const InstructionType = @typeInfo(TaggedInstruction).Union.tag_type.?;
-pub const InstructionParams = @Type(.{ .Union = blk: {
-    var info = @typeInfo(TaggedInstruction).Union;
+pub const InstructionType = @typeInfo(TaggedInstruction).@"union".tag_type.?;
+pub const InstructionParams = @Type(.{ .@"union" = blk: {
+    var info = @typeInfo(TaggedInstruction).@"union";
     info.tag_type = null;
     info.layout = .@"packed";
     info.decls = &.{};
@@ -1235,7 +1235,7 @@ pub const Modifiers = packed struct(u32) {
     pub fn format(value: @This(), comptime _: []const u8, _: std.fmt.FormatOptions, writer: anytype) !void {
         var first = true;
 
-        inline for (@typeInfo(Modifiers).Struct.fields) |field| {
+        inline for (@typeInfo(Modifiers).@"struct".fields) |field| {
             if (comptime std.mem.eql(u8, "_unused", field.name))
                 continue;
 
@@ -1404,7 +1404,7 @@ fn GenerateResourceType(items: anytype) type {
 
         return struct {
             pub const ResourceType = @Type(std.builtin.Type{
-                .Enum = .{
+                .@"enum" = .{
                     .tag_type = u8,
                     .decls = &.{},
                     .is_exhaustive = false,

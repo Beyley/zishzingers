@@ -2220,7 +2220,7 @@ fn consumeExpression(self: *Self, parent_progress_node: std.Progress.Node) Error
 
 fn MatchEnum(comptime matches: []const [:0]const u8) type {
     const Enum = @Type(.{
-        .Enum = .{
+        .@"enum" = .{
             .tag_type = std.math.IntFittingRange(0, matches.len),
             .is_exhaustive = true,
             .decls = &.{},
@@ -2583,7 +2583,7 @@ fn consumeModifiers(self: *Self, parent_progress_node: std.Progress.Node) MMType
         } else {
             var found = false;
 
-            inline for (modifiers_type_info.Struct.fields) |field| {
+            inline for (modifiers_type_info.@"struct".fields) |field| {
                 if (comptime std.mem.eql(u8, field.name, "_unused"))
                     continue;
 
