@@ -136,9 +136,7 @@ pub fn disassembleBytecode(
         }
     }
 
-    for (function.bytecode.slice(script.bytecode), function.line_numbers.slice(script.line_numbers), 0..) |bytecode, line_number, i| {
-        _ = line_number; // autofix
-
+    for (function.bytecode.slice(script.bytecode), 0..) |bytecode, i| {
         if (inline_asm) {
             if (branch_targets.get(@intCast(i)) != null) {
                 for (0..indentation) |_| {
